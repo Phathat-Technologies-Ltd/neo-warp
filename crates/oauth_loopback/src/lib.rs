@@ -4,7 +4,7 @@
 
 use std::future::Future;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -14,7 +14,6 @@ use anyhow::{Context as _, bail};
 // re-exports the std type on native targets.
 use instant::Instant;
 
-const BIND_HOST: &str = "127.0.0.1";
 /// How long to nap between non-blocking `accept()` and `read()` attempts.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How long to wait for an accepted connection to send its request before giving up on it.
@@ -27,8 +26,8 @@ pub struct LoopbackConfig {
     pub label: &'static str,
     /// Port to bind, or `0` for an OS-assigned port.
     pub port: u16,
-    /// Host written into the redirect URI. The listener always binds `127.0.0.1`; use
-    /// `"localhost"` for providers whose app registration only accepts that name.
+    /// Host written into the redirect URI. The listener binds `127.0.0.1`, and also `::1` when
+    /// this is `"localhost"`, since browsers may resolve that name to either.
     pub redirect_host: &'static str,
     /// How long to wait for the browser redirect before failing.
     pub timeout: Duration,
@@ -43,7 +42,8 @@ pub struct LoopbackConfig {
 ///
 /// Bind before opening the browser so a bind failure surfaces before a browser tab opens.
 pub struct LoopbackListener {
-    listener: TcpListener,
+    /// IPv4 first; IPv6 when the redirect host is `localhost` and `::1` could be bound.
+    listeners: Vec<TcpListener>,
     port: u16,
     config: LoopbackConfig,
 }
@@ -93,22 +93,32 @@ pub struct AuthorizationDenied {
 impl LoopbackListener {
     pub fn bind(config: LoopbackConfig) -> anyhow::Result<Self> {
         let label = config.label;
-        let listener = TcpListener::bind((BIND_HOST, config.port)).with_context(|| {
+        let ipv4 = TcpListener::bind((Ipv4Addr::LOCALHOST, config.port)).with_context(|| {
             format!(
-                "couldn't bind the {label} sign-in callback server to {BIND_HOST}:{}. Another \
+                "couldn't bind the {label} sign-in callback server to 127.0.0.1:{}. Another \
                  sign-in may be in progress, or another app is using the port.",
                 config.port
             )
         })?;
-        listener.set_nonblocking(true).with_context(|| {
-            format!("failed to set the {label} callback listener to non-blocking mode")
-        })?;
-        let port = listener
+        let port = ipv4
             .local_addr()
             .with_context(|| format!("failed to read the {label} callback listener address"))?
             .port();
+        let mut listeners = vec![ipv4];
+        // Best effort: without IPv6, or with the port taken on `::1`, browsers still reach the
+        // IPv4 listener after falling back from `::1`.
+        if config.redirect_host == "localhost"
+            && let Ok(ipv6) = TcpListener::bind((Ipv6Addr::LOCALHOST, port))
+        {
+            listeners.push(ipv6);
+        }
+        for listener in &listeners {
+            listener.set_nonblocking(true).with_context(|| {
+                format!("failed to set the {label} callback listener to non-blocking mode")
+            })?;
+        }
         Ok(Self {
-            listener,
+            listeners,
             port,
             config,
         })
@@ -146,7 +156,7 @@ async fn run(
     release_tx: async_channel::Sender<()>,
 ) -> anyhow::Result<String> {
     let LoopbackListener {
-        listener, config, ..
+        listeners, config, ..
     } = loopback;
     let label = config.label;
     // The accept loop is blocking, so run it on a dedicated OS thread and bridge the result back
@@ -155,11 +165,11 @@ async fn run(
     let callback_thread = std::thread::Builder::new()
         .name(format!("{}-oauth-callback", label.to_lowercase()))
         .spawn(move || {
-            let callback = wait_for_callback(&listener, &config, &cancellation);
-            // Close the socket *before* publishing the result: whoever observes the result may
+            let callback = wait_for_callback(&listeners, &config, &cancellation);
+            // Close the sockets *before* publishing the result: whoever observes the result may
             // immediately rebind the port (a retried sign-in), which fails with "address in use"
-            // while this listener is still open.
-            drop(listener);
+            // while a listener is still open.
+            drop(listeners);
             // Signal release before publishing the callback: work after the callback doesn't
             // hold the port and shouldn't block a caller that only wants to retry.
             // `send_blocking` is disallowed (no wasm support); block this dedicated thread on the
@@ -192,7 +202,7 @@ struct CallbackData {
 }
 
 fn wait_for_callback(
-    listener: &TcpListener,
+    listeners: &[TcpListener],
     config: &LoopbackConfig,
     cancellation: &CancellationHandle,
 ) -> anyhow::Result<CallbackData> {
@@ -205,20 +215,26 @@ fn wait_for_callback(
         if Instant::now() >= deadline {
             bail!("timed out waiting for the {label} authorization callback");
         }
-        match listener.accept() {
-            Ok((stream, _)) => match handle_callback_connection(stream, config, cancellation)? {
-                Some(data) => return Ok(data),
-                // Unrelated request (e.g. /favicon.ico); keep waiting.
-                None => continue,
-            },
-            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                std::thread::sleep(POLL_INTERVAL);
+        let mut accepted_any = false;
+        for listener in listeners {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    accepted_any = true;
+                    if let Some(data) = handle_callback_connection(stream, config, cancellation)? {
+                        return Ok(data);
+                    }
+                    // Unrelated request (e.g. /favicon.ico); keep waiting.
+                }
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock => {}
+                Err(e) => {
+                    return Err(
+                        anyhow::Error::new(e).context(format!("{label} callback accept failed"))
+                    );
+                }
             }
-            Err(e) => {
-                return Err(
-                    anyhow::Error::new(e).context(format!("{label} callback accept failed"))
-                );
-            }
+        }
+        if !accepted_any {
+            std::thread::sleep(POLL_INTERVAL);
         }
     }
 }

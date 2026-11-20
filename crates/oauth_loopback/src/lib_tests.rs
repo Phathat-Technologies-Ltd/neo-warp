@@ -214,7 +214,7 @@ fn cancelling_with_a_stalled_accepted_connection_still_releases_promptly() {
     // Connect without ever sending data, standing in for a stray probe or a browser tab that
     // opened the socket but hasn't sent the request yet.
     let stalled_client = TcpStream::connect(address).expect("stalled client should connect");
-    let mut accepted = accept_test_connection(&listener.listener);
+    let mut accepted = accept_test_connection(&listener.listeners[0]);
 
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let reader_cancellation = cancellation.clone();
@@ -245,4 +245,27 @@ fn cancelling_with_a_stalled_accepted_connection_still_releases_promptly() {
          immediately rather than blocking for CALLBACK_READ_TIMEOUT"
     );
     drop(stalled_client);
+}
+
+#[test]
+fn localhost_redirects_also_reach_an_ipv6_browser() {
+    let listener = LoopbackListener::bind(TEST_CONFIG).expect("should bind");
+    if listener.listeners.len() < 2 {
+        // No IPv6 loopback on this machine; IPv4 alone is the expected behavior.
+        return;
+    }
+    let address = SocketAddr::from((Ipv6Addr::LOCALHOST, listener.port()));
+    let browser = send_browser_request(address, "GET /callback?code=v6-code&state=s1 HTTP/1.1");
+    assert_eq!(wait(listener, "s1").unwrap(), "v6-code");
+    browser.join().unwrap();
+}
+
+#[test]
+fn non_localhost_redirect_hosts_bind_only_ipv4() {
+    let listener = LoopbackListener::bind(LoopbackConfig {
+        redirect_host: "127.0.0.1",
+        ..TEST_CONFIG
+    })
+    .expect("should bind");
+    assert_eq!(listener.listeners.len(), 1);
 }
