@@ -213,6 +213,16 @@ pub fn is_warp_cloud_models_enabled(app: &AppContext) -> bool {
 }
 
 fn is_warp_cloud_model_visible(llm: &LLMInfo, prefs: &LLMPreferences, app: &AppContext) -> bool {
+    // When the user skipped signup/sign-in at first launch they are fully
+    // logged out (no credentials). Warp-hosted models require a Warp account,
+    // so hide every Warp Cloud model in that state — no Warp model is
+    // available until they sign in. BYOK/custom-router models remain visible
+    // via the early return below.
+    if !crate::auth::AuthStateProvider::as_ref(app).is_logged_in()
+        && is_warp_cloud_model(llm, prefs)
+    {
+        return false;
+    }
     if is_warp_cloud_models_enabled(app) {
         return true;
     }
