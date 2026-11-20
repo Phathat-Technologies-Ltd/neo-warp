@@ -23681,6 +23681,9 @@ impl Workspace {
         if *ai_settings.can_use_warp_credits_for_fallback.value() {
             context.set.insert(flags::WARP_CREDIT_FALLBACK_FLAG);
         }
+        if *ai_settings.warp_cloud_models_enabled.value() {
+            context.set.insert(flags::WARP_CLOUD_MODELS_ENABLED_FLAG);
+        }
         if *session_settings.show_model_selectors_in_prompt.value() {
             context
                 .set
