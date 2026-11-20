@@ -58,7 +58,14 @@ your organization" entry point in the product at all.
 
 ## Configuration
 
-Set by whoever builds or deploys the client (environment variables first; channel config later):
+Set by whoever builds or deploys the client. Sources, highest priority first:
+
+1. Environment variables, for development and testing.
+2. A config file deployed by IT (for example, through device management), so one build can serve
+   any company.
+3. The build's channel config, next to the existing server URL, for a build made for one company.
+
+Settings:
 
 - Backend URL: the existing `SERVER_ROOT_URL` / `WS_SERVER_URL`.
 - OIDC issuer URL (for Entra, `https://login.microsoftonline.com/{tenant}/v2.0`).

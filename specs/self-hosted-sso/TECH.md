@@ -52,6 +52,11 @@ Example issuer URLs: Entra `https://login.microsoftonline.com/{tenant}/v2.0`, Ok
 `https://{org}.okta.com/oauth2/default`, Google `https://accounts.google.com`, Keycloak
 `https://{host}/realms/{realm}`.
 
+**Configuration source.** The settings (issuer URL, client ID, display name, extra scopes,
+redirect port, token-service root URL) form one `OrganizationSignInConfig`. It is read from
+environment variables, then a deployed config file, then the channel config's `server_config`
+(where `server_root_url` already lives), first match wins per field.
+
 **2. Configurable token endpoint**
 
 Add a token-service root URL (env `AUTH_TOKEN_ROOT_URL`, later channel config). When set,
