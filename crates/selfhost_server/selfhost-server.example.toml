@@ -1,0 +1,21 @@
+# Configuration for `selfhost-server`. Run with:
+#   cargo run -p selfhost_server -- path/to/selfhost-server.toml
+
+# Address the server listens on.
+listen = "127.0.0.1:8090"
+
+[oidc]
+# The identity provider's issuer URL and the public client ID registered there. Must match the
+# client's organization sign-in settings. For Entra:
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+client_id = "<application-client-id>"
+# Optional: only users whose ID token lists this group may sign in. Requires a groups claim
+# (see docs/self-hosted/entra-setup.md, step 6).
+# required_group = "<group-object-id>"
+
+[session]
+# How long a sign-in lasts before the user must pass the identity provider again. This bounds how
+# long a user removed in the provider keeps access.
+max_age_hours = 12
+# Secret for signing the server's tokens. Without it, restarting the server signs everyone out.
+# signing_secret = "<long random string>"

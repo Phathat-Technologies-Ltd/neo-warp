@@ -1,0 +1,31 @@
+[package]
+name = "selfhost_server"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "selfhost-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+env_logger.workspace = true
+hex.workspace = true
+jsonwebtoken = "9.3"
+log.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+toml = "0.8.13"
+
+[dev-dependencies]
+cynic.workspace = true
+tower = { workspace = true, features = ["util"] }
+warp_graphql.workspace = true

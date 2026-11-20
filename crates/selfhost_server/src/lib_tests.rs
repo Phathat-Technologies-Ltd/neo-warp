@@ -1,0 +1,322 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use axum::body::{Body, to_bytes};
+use axum::http::Request;
+use jsonwebtoken::jwk::JwkSet;
+use jsonwebtoken::{EncodingKey, Header};
+use serde_json::Value;
+use tower::ServiceExt as _;
+
+use super::*;
+
+const ISSUER: &str = "https://login.example/tenant/v2.0";
+const CLIENT_ID: &str = "client-123";
+/// Test-only RSA key standing in for the identity provider's signing key.
+const PROVIDER_KEY_PEM: &str = include_str!("testdata/test_only_rsa_key.pem");
+const PROVIDER_JWKS: &str = include_str!("testdata/test_only_jwks.json");
+
+fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> {
+    let keys: JwkSet = serde_json::from_str(PROVIDER_JWKS).unwrap();
+    Arc::new(AppState {
+        verifier: OidcVerifier::with_keys(ISSUER, CLIENT_ID, keys),
+        sessions: SessionStore::new(Some("test-secret"), max_age),
+        required_group: required_group.map(str::to_owned),
+    })
+}
+
+fn state() -> Arc<AppState> {
+    state_with(None, Duration::from_secs(12 * 60 * 60))
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn provider_claims() -> Value {
+    json!({
+        "iss": ISSUER,
+        "aud": CLIENT_ID,
+        "sub": "provider-subject",
+        "email": "ada@example.com",
+        "name": "Ada Lovelace",
+        "iat": now(),
+        "exp": now() + 3600,
+    })
+}
+
+fn provider_token(claims: &Value, kid: &str) -> String {
+    let mut header = Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(kid.to_owned());
+    jsonwebtoken::encode(
+        &header,
+        claims,
+        &EncodingKey::from_rsa_pem(PROVIDER_KEY_PEM.as_bytes()).unwrap(),
+    )
+    .unwrap()
+}
+
+async fn send(state: &Arc<AppState>, request: Request<Body>) -> (StatusCode, Value) {
+    let response = router(state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
+    (status, body)
+}
+
+fn json_post(path: &str, body: Value) -> Request<Body> {
+    Request::post(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn form_post(path: &str, fields: &[(&str, &str)]) -> Request<Body> {
+    Request::post(path)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(serde_urlencoded_string(fields)))
+        .unwrap()
+}
+
+fn serde_urlencoded_string(fields: &[(&str, &str)]) -> String {
+    fields
+        .iter()
+        .map(|(key, value)| format!("{key}={}", value.replace('+', "%2B").replace('/', "%2F")))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn graphql_post(operation: &str, id_token: Option<&str>) -> Request<Body> {
+    let mut request = Request::post(format!("/graphql/v2?op={operation}"))
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(id_token) = id_token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {id_token}"));
+    }
+    request
+        .body(Body::from(
+            json!({ "query": "", "variables": {} }).to_string(),
+        ))
+        .unwrap()
+}
+
+async fn exchange(state: &Arc<AppState>, claims: &Value) -> (StatusCode, Value) {
+    send(
+        state,
+        json_post(
+            "/auth/sso/exchange",
+            json!({ "id_token": provider_token(claims, "test-key") }),
+        ),
+    )
+    .await
+}
+
+async fn sign_in(state: &Arc<AppState>) -> (String, String) {
+    let (status, body) = exchange(state, &provider_claims()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let custom_token = body["custom_token"].as_str().unwrap();
+    let (status, body) = send(
+        state,
+        form_post(
+            "/v1/accounts:signInWithCustomToken",
+            &[("returnSecureToken", "true"), ("token", custom_token)],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["expiresIn"], "3600");
+    (
+        body["idToken"].as_str().unwrap().to_owned(),
+        body["refreshToken"].as_str().unwrap().to_owned(),
+    )
+}
+
+#[tokio::test]
+async fn sign_in_then_get_user_returns_the_provider_identity() {
+    let state = state();
+    let (id_token, _) = sign_in(&state).await;
+
+    let (status, body) = send(&state, graphql_post("GetUser", Some(&id_token))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let response: cynic::GraphQlResponse<warp_graphql::queries::get_user::GetUser> =
+        serde_json::from_value(body).expect("GetUser response must match the client's query");
+    let warp_graphql::queries::get_user::UserResult::UserOutput(output) =
+        response.data.expect("GetUser should return data").user
+    else {
+        panic!("GetUser should return a UserOutput");
+    };
+    assert_eq!(
+        output.user.profile.email.as_deref(),
+        Some("ada@example.com")
+    );
+    assert_eq!(
+        output.user.profile.display_name.as_deref(),
+        Some("Ada Lovelace")
+    );
+    assert!(!output.user.llms.agent_mode.choices.is_empty());
+    assert_eq!(
+        output.user.llms.agent_mode.default_id,
+        output.user.llms.agent_mode.choices[0].id
+    );
+}
+
+#[tokio::test]
+async fn user_id_is_stable_for_the_same_provider_identity() {
+    let state = state();
+    let uid = |body: Value| body["data"]["user"]["user"]["profile"]["uid"].clone();
+    let (first, _) = sign_in(&state).await;
+    let (second, _) = sign_in(&state).await;
+    let (_, first_user) = send(&state, graphql_post("GetUser", Some(&first))).await;
+    let (_, second_user) = send(&state, graphql_post("GetUser", Some(&second))).await;
+    assert_eq!(uid(first_user), uid(second_user));
+}
+
+#[tokio::test]
+async fn refresh_rotates_the_refresh_token() {
+    let state = state();
+    let (_, refresh_token) = sign_in(&state).await;
+    let refresh = |token: &str| {
+        form_post(
+            "/v1/token",
+            &[("grant_type", "refresh_token"), ("refresh_token", token)],
+        )
+    };
+
+    let (status, body) = send(&state, refresh(&refresh_token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["expires_in"], "3600");
+    let next = body["refresh_token"].as_str().unwrap().to_owned();
+    assert_ne!(next, refresh_token);
+    let (status, _) = send(&state, graphql_post("GetUser", body["id_token"].as_str())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = send(&state, refresh(&refresh_token)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["message"], "INVALID_REFRESH_TOKEN");
+}
+
+#[tokio::test]
+async fn refresh_fails_once_the_sign_in_is_older_than_the_max_age() {
+    let state = state_with(None, Duration::ZERO);
+    let (_, refresh_token) = sign_in(&state).await;
+    let (status, body) = send(
+        &state,
+        form_post(
+            "/v1/token",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["message"], "INVALID_REFRESH_TOKEN");
+}
+
+#[tokio::test]
+async fn custom_tokens_are_single_use() {
+    let state = state();
+    let (_, body) = exchange(&state, &provider_claims()).await;
+    let custom_token = body["custom_token"].as_str().unwrap().to_owned();
+    let redeem = || {
+        form_post(
+            "/v1/accounts:signInWithCustomToken",
+            &[("token", &custom_token)],
+        )
+    };
+    assert_eq!(send(&state, redeem()).await.0, StatusCode::OK);
+    let (status, body) = send(&state, redeem()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["message"], "INVALID_CUSTOM_TOKEN");
+}
+
+#[tokio::test]
+async fn provider_tokens_for_another_client_issuer_or_key_are_rejected() {
+    let state = state();
+    let mut wrong_audience = provider_claims();
+    wrong_audience["aud"] = json!("someone-else");
+    let mut wrong_issuer = provider_claims();
+    wrong_issuer["iss"] = json!("https://evil.example");
+    let mut expired = provider_claims();
+    expired["exp"] = json!(now() - 3600);
+    for claims in [wrong_audience, wrong_issuer, expired] {
+        assert_eq!(exchange(&state, &claims).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    let unknown_key = provider_token(&provider_claims(), "unknown-key");
+    let (status, _) = send(
+        &state,
+        json_post("/auth/sso/exchange", json!({ "id_token": unknown_key })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _) = send(
+        &state,
+        json_post("/auth/sso/exchange", json!({ "id_token": "not-a-jwt" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn required_group_is_enforced() {
+    let state = state_with(Some("warp-users"), Duration::from_secs(3600));
+    assert_eq!(
+        exchange(&state, &provider_claims()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let mut member = provider_claims();
+    member["groups"] = json!(["other", "warp-users"]);
+    assert_eq!(exchange(&state, &member).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_user_requires_a_valid_server_token() {
+    let state = state();
+    assert_eq!(
+        send(&state, graphql_post("GetUser", None)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let provider_token = provider_token(&provider_claims(), "test-key");
+    assert_eq!(
+        send(&state, graphql_post("GetUser", Some(&provider_token)))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn unsupported_operations_return_graphql_errors() {
+    let state = state();
+    let (id_token, _) = sign_in(&state).await;
+    let (status, body) = send(
+        &state,
+        graphql_post("GetWorkspacesMetadataForUser", Some(&id_token)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["data"].is_null());
+    assert!(
+        body["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("GetWorkspacesMetadataForUser")
+    );
+}
+
+#[test]
+fn email_falls_back_to_the_preferred_username() {
+    let claims: oidc::ProviderClaims = serde_json::from_value(json!({
+        "iss": ISSUER,
+        "sub": "s",
+        "preferred_username": "ada@example.com",
+    }))
+    .unwrap();
+    assert_eq!(claims.email(), Some("ada@example.com"));
+}
