@@ -901,11 +901,13 @@ impl LLMPreferences {
         // RequiresUpgrade models may become usable or unusable.
         // Also rebuild `custom_llms` so adds/edits/removals to the user's custom endpoints
         // immediately flow through to the model picker.
+        // Removing a key can also hide a selected Warp Cloud model while the allowlist is on.
         ctx.subscribe_to_model(
             &ApiKeyManager::handle(ctx),
             |me, _, event: &ApiKeyManagerEvent, ctx| {
                 me.rebuild_custom_llms(ctx);
                 me.reconcile_disabled_model_preferences_for_known_scopes(ctx);
+                me.reconcile_hidden_warp_cloud_preferences(ctx);
                 ctx.emit(LLMPreferencesEvent::UpdatedAvailableLLMs);
                 if matches!(event, ApiKeyManagerEvent::ChatGPTConnectionUpdated) {
                     me.refresh_models_if_chatgpt_subscription_changed(ctx);

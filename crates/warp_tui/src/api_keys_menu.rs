@@ -1,6 +1,7 @@
 //! Stateful `/api-keys` inline menu backed by the shared TUI input editor.
 
 use ai::LLMProvider;
+use ai::anthropic_subscription::oauth::AnthropicOAuthFlow;
 use ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent, CustomEndpointId};
 use ai::grok_subscription::oauth::OauthAttempt;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
@@ -83,9 +84,21 @@ struct AnthropicSelectorRow {
 }
 fn anthropic_selector_rows() -> Vec<AnthropicSelectorRow> {
     vec![
-        AnthropicSelectorRow { kind: AnthropicSelectorRowKind::PastedKey, title: "Pasted API Key".to_owned(), description: Some("Use a sk-ant-* key".to_owned()) },
-        AnthropicSelectorRow { kind: AnthropicSelectorRowKind::Console, title: "Connect with Claude — Console / API".to_owned(), description: Some("console.anthropic.com (default)".to_owned()) },
-        AnthropicSelectorRow { kind: AnthropicSelectorRowKind::ClaudeCode, title: "Connect with Claude — Claude Code".to_owned(), description: Some("claude.ai (Pro/Max/Team)".to_owned()) },
+        AnthropicSelectorRow {
+            kind: AnthropicSelectorRowKind::PastedKey,
+            title: "Pasted API Key".to_owned(),
+            description: Some("Use a sk-ant-* key".to_owned()),
+        },
+        AnthropicSelectorRow {
+            kind: AnthropicSelectorRowKind::Console,
+            title: "Connect with Claude — Console / API".to_owned(),
+            description: Some("console.anthropic.com (default)".to_owned()),
+        },
+        AnthropicSelectorRow {
+            kind: AnthropicSelectorRowKind::ClaudeCode,
+            title: "Connect with Claude — Claude Code".to_owned(),
+            description: Some("claude.ai (Pro/Max/Team)".to_owned()),
+        },
     ]
 }
 
@@ -190,13 +203,18 @@ impl TuiApiKeysMenuModel {
         UserWorkspaces::as_ref(ctx).are_member_byo_keys_allowed(&scope)
     }
 
-    fn start_anthropic_oauth(&mut self, flow: ai::anthropic_subscription::oauth::AnthropicOAuthFlow, ctx: &mut ModelContext<Self>) {
+    fn start_anthropic_oauth(&mut self, flow: AnthropicOAuthFlow, ctx: &mut ModelContext<Self>) {
         let policy_error = if !UserWorkspaces::as_ref(ctx).is_byo_api_key_enabled(ctx) {
             Some("Claude subscriptions require BYOK access for this workspace.")
         } else if !self.member_byo_keys_allowed(ctx) {
             Some("Your organization doesn't allow member-provided credentials.")
-        } else { None };
-        if let Some(error) = policy_error { self.set_browsing_error(error.to_owned(), ctx); return; }
+        } else {
+            None
+        };
+        if let Some(error) = policy_error {
+            self.set_browsing_error(error.to_owned(), ctx);
+            return;
+        }
         self.clear_input(ctx);
         let controller = ctx.add_model(move |ctx| TuiAnthropicOAuthController::new(flow, ctx));
         ctx.subscribe_to_model(&controller, |menu, _, event, ctx| match event {
@@ -338,8 +356,12 @@ impl TuiApiKeysMenuModel {
                 Some(TuiApiKeysFooter::EditingCustomEndpoint(name.clone()))
             }
             TuiApiKeysMenuState::ConnectingGrok { .. } => Some(TuiApiKeysFooter::ConnectingGrok),
-            TuiApiKeysMenuState::AnthropicSelector { .. } => Some(TuiApiKeysFooter::AnthropicSelector),
-            TuiApiKeysMenuState::ConnectingAnthropic { .. } => Some(TuiApiKeysFooter::ConnectingAnthropic),
+            TuiApiKeysMenuState::AnthropicSelector { .. } => {
+                Some(TuiApiKeysFooter::AnthropicSelector)
+            }
+            TuiApiKeysMenuState::ConnectingAnthropic { .. } => {
+                Some(TuiApiKeysFooter::ConnectingAnthropic)
+            }
         }
     }
 
@@ -393,7 +415,9 @@ impl TuiApiKeysMenuModel {
                 });
                 Ok(())
             }
-            TuiApiKeysRowKind::Provider(LLMProvider::Anthropic) if ApiKeyManager::as_ref(ctx).has_anthropic_subscription() => {
+            TuiApiKeysRowKind::Provider(LLMProvider::Anthropic)
+                if ApiKeyManager::as_ref(ctx).has_anthropic_subscription() =>
+            {
                 ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
                     manager.set_anthropic_tokens(None, ctx);
                 });
@@ -421,17 +445,37 @@ impl TuiApiKeysMenuModel {
 
     pub(crate) fn select_previous(&mut self, ctx: &mut ModelContext<Self>) {
         match &mut self.state {
-            TuiApiKeysMenuState::Browsing { list, .. } => { list.select_previous(MAX_VISIBLE_ROWS, |row| row.is_selectable); ctx.emit(TuiApiKeysMenuEvent); }
-            TuiApiKeysMenuState::AnthropicSelector { list } => { list.select_previous(MAX_VISIBLE_ROWS, |_| true); ctx.emit(TuiApiKeysMenuEvent); }
-            _ => {}
+            TuiApiKeysMenuState::Browsing { list, .. } => {
+                list.select_previous(MAX_VISIBLE_ROWS, |row| row.is_selectable);
+                ctx.emit(TuiApiKeysMenuEvent);
+            }
+            TuiApiKeysMenuState::AnthropicSelector { list } => {
+                list.select_previous(MAX_VISIBLE_ROWS, |_| true);
+                ctx.emit(TuiApiKeysMenuEvent);
+            }
+            TuiApiKeysMenuState::Closed
+            | TuiApiKeysMenuState::EditingProvider { .. }
+            | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
+            | TuiApiKeysMenuState::ConnectingGrok { .. }
+            | TuiApiKeysMenuState::ConnectingAnthropic { .. } => {}
         }
     }
 
     pub(crate) fn select_next(&mut self, ctx: &mut ModelContext<Self>) {
         match &mut self.state {
-            TuiApiKeysMenuState::Browsing { list, .. } => { list.select_next(MAX_VISIBLE_ROWS, |row| row.is_selectable); ctx.emit(TuiApiKeysMenuEvent); }
-            TuiApiKeysMenuState::AnthropicSelector { list } => { list.select_next(MAX_VISIBLE_ROWS, |_| true); ctx.emit(TuiApiKeysMenuEvent); }
-            _ => {}
+            TuiApiKeysMenuState::Browsing { list, .. } => {
+                list.select_next(MAX_VISIBLE_ROWS, |row| row.is_selectable);
+                ctx.emit(TuiApiKeysMenuEvent);
+            }
+            TuiApiKeysMenuState::AnthropicSelector { list } => {
+                list.select_next(MAX_VISIBLE_ROWS, |_| true);
+                ctx.emit(TuiApiKeysMenuEvent);
+            }
+            TuiApiKeysMenuState::Closed
+            | TuiApiKeysMenuState::EditingProvider { .. }
+            | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
+            | TuiApiKeysMenuState::ConnectingGrok { .. }
+            | TuiApiKeysMenuState::ConnectingAnthropic { .. } => {}
         }
     }
 
@@ -481,13 +525,23 @@ impl TuiApiKeysMenuModel {
                 let kind = list.selected_row().map(|r| r.kind.clone());
                 match kind {
                     Some(AnthropicSelectorRowKind::PastedKey) => {
-                        let key = LLMProvider::Anthropic.api_key(ApiKeyManager::as_ref(ctx).keys()).unwrap_or_default().to_owned();
+                        let key = LLMProvider::Anthropic
+                            .api_key(ApiKeyManager::as_ref(ctx).keys())
+                            .unwrap_or_default()
+                            .to_owned();
                         self.set_input(&key, ctx);
-                        self.state = TuiApiKeysMenuState::EditingProvider { provider: LLMProvider::Anthropic, error: None };
+                        self.state = TuiApiKeysMenuState::EditingProvider {
+                            provider: LLMProvider::Anthropic,
+                            error: None,
+                        };
                         ctx.emit(TuiApiKeysMenuEvent);
                     }
-                    Some(AnthropicSelectorRowKind::Console) => self.start_anthropic_oauth(ai::anthropic_subscription::oauth::AnthropicOAuthFlow::Console, ctx),
-                    Some(AnthropicSelectorRowKind::ClaudeCode) => self.start_anthropic_oauth(ai::anthropic_subscription::oauth::AnthropicOAuthFlow::ClaudeCode, ctx),
+                    Some(AnthropicSelectorRowKind::Console) => {
+                        self.start_anthropic_oauth(AnthropicOAuthFlow::Console, ctx)
+                    }
+                    Some(AnthropicSelectorRowKind::ClaudeCode) => {
+                        self.start_anthropic_oauth(AnthropicOAuthFlow::ClaudeCode, ctx)
+                    }
                     None => {}
                 }
             }
@@ -503,12 +557,13 @@ impl TuiApiKeysMenuModel {
             }
             TuiApiKeysMenuState::ConnectingAnthropic { controller } => {
                 let controller = controller.clone();
-                let raw = input_text(&self.input_editor, ctx);
-                let code = if raw.trim().is_empty() {
-                    std::env::var("ANTHROPIC_OAUTH_CODE").or_else(|_| std::env::var("CODE")).unwrap_or_default()
-                } else { raw.clone() };
-                if !code.trim().is_empty() && code == raw { self.clear_input(ctx); }
-                controller.update(ctx, |controller, ctx| { controller.submit_manual_code(code, ctx); });
+                let code = input_text(&self.input_editor, ctx);
+                if !code.trim().is_empty() {
+                    self.clear_input(ctx);
+                }
+                controller.update(ctx, |controller, ctx| {
+                    controller.submit_manual_code(code, ctx);
+                });
             }
         }
     }
@@ -564,8 +619,23 @@ impl TuiApiKeysMenuModel {
                 })
             }
             TuiApiKeysMenuState::AnthropicSelector { list } => Some(TuiInlineMenuSnapshot {
-                header: Some(TuiInlineMenuHeader { title: Some("Anthropic — choose method".to_owned()), tabs: Vec::new() }),
-                rows: list.rows().iter().map(|row| TuiInlineMenuRow { title: row.title.clone(), prefix: None, description: row.description.clone(), state_suffix: None, promotional_suffix: None, is_selectable: true, style: TuiInlineMenuRowStyle::InlineMenuItem }).collect(),
+                header: Some(TuiInlineMenuHeader {
+                    title: Some("Anthropic — choose method".to_owned()),
+                    tabs: Vec::new(),
+                }),
+                rows: list
+                    .rows()
+                    .iter()
+                    .map(|row| TuiInlineMenuRow {
+                        title: row.title.clone(),
+                        prefix: None,
+                        description: row.description.clone(),
+                        state_suffix: None,
+                        promotional_suffix: None,
+                        is_selectable: true,
+                        style: TuiInlineMenuRowStyle::InlineMenuItem,
+                    })
+                    .collect(),
                 selected_index: list.selected_index(),
                 scroll_offset: list.scroll_offset(),
                 scroll_anchor: list.scroll_anchor(),
@@ -593,8 +663,24 @@ impl TuiApiKeysMenuModel {
             }
             TuiApiKeysMenuState::ConnectingAnthropic { controller } => {
                 let error = controller.as_ref(ctx).error().map(ToOwned::to_owned);
-                let rows = all_rows(ctx).into_iter().map(|row| self.snapshot_row(&row, ctx, true)).collect();
-                Some(TuiInlineMenuSnapshot { header: Some(TuiInlineMenuHeader { title: Some(error.unwrap_or_else(|| "Connect Claude — paste CODE#STATE".to_owned())), tabs: Vec::new() }), rows, selected_index: Some(0), scroll_offset: 0, scroll_anchor: TuiInlineMenuScrollAnchor::Selection, max_visible_rows: MAX_VISIBLE_ROWS, status: None })
+                let rows = all_rows(ctx)
+                    .into_iter()
+                    .map(|row| self.snapshot_row(&row, ctx, true))
+                    .collect();
+                Some(TuiInlineMenuSnapshot {
+                    header: Some(TuiInlineMenuHeader {
+                        title: Some(
+                            error.unwrap_or_else(|| "Connect Claude — paste CODE#STATE".to_owned()),
+                        ),
+                        tabs: Vec::new(),
+                    }),
+                    rows,
+                    selected_index: Some(0),
+                    scroll_offset: 0,
+                    scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
+                    max_visible_rows: MAX_VISIBLE_ROWS,
+                    status: None,
+                })
             }
         }
     }
@@ -672,7 +758,10 @@ impl TuiApiKeysMenuModel {
     fn edit_provider(&mut self, provider: LLMProvider, ctx: &mut ModelContext<Self>) {
         if provider == LLMProvider::Anthropic {
             if ApiKeyManager::as_ref(ctx).has_anthropic_subscription() {
-                self.set_browsing_error("Claude is already connected. Press Ctrl-X to disconnect.".to_owned(), ctx);
+                self.set_browsing_error(
+                    "Claude is already connected. Press Ctrl-X to disconnect.".to_owned(),
+                    ctx,
+                );
                 return;
             }
             self.open_anthropic_selector(ctx);
@@ -761,11 +850,6 @@ impl TuiApiKeysMenuModel {
         self.state = TuiApiKeysMenuState::AnthropicSelector { list };
         ctx.emit(TuiApiKeysMenuEvent);
     }
-    fn accept_anthropic_selector(&mut self, ctx: &mut ModelContext<Self>) {
-        // Called when already in AnthropicSelector but accept triggered without list context;
-        // default to Console flow (index 1).
-        self.start_anthropic_oauth(ai::anthropic_subscription::oauth::AnthropicOAuthFlow::Console, ctx);
-    }
     fn toggle_fallback(&mut self, ctx: &mut ModelContext<Self>) {
         let result = AISettings::handle(ctx).update(ctx, |settings, ctx| {
             settings
@@ -812,24 +896,23 @@ impl TuiApiKeysMenuModel {
         if matches!(self.state, TuiApiKeysMenuState::Closed) {
             return;
         }
-        let grok_controller = match &self.state {
-            TuiApiKeysMenuState::ConnectingGrok { controller } => Some(controller.clone()),
-            _ => None,
-        };
-        let anthropic_controller = match &self.state {
-            TuiApiKeysMenuState::ConnectingAnthropic { controller } => Some(controller.clone()),
-            _ => None,
-        };
-        self.state = TuiApiKeysMenuState::Closed;
-        if let Some(controller) = grok_controller
-            && controller.as_ref(ctx).is_active()
-        {
-            controller.update(ctx, |controller, ctx| controller.cancel(ctx));
-        }
-        if let Some(controller) = anthropic_controller
-            && controller.as_ref(ctx).is_active()
-        {
-            controller.update(ctx, |controller, ctx| controller.cancel(ctx));
+        let previous_state = std::mem::replace(&mut self.state, TuiApiKeysMenuState::Closed);
+        match previous_state {
+            TuiApiKeysMenuState::ConnectingGrok { controller } => {
+                if controller.as_ref(ctx).is_active() {
+                    controller.update(ctx, |controller, ctx| controller.cancel(ctx));
+                }
+            }
+            TuiApiKeysMenuState::ConnectingAnthropic { controller } => {
+                if controller.as_ref(ctx).is_active() {
+                    controller.update(ctx, |controller, ctx| controller.cancel(ctx));
+                }
+            }
+            TuiApiKeysMenuState::Closed
+            | TuiApiKeysMenuState::Browsing { .. }
+            | TuiApiKeysMenuState::EditingProvider { .. }
+            | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
+            | TuiApiKeysMenuState::AnthropicSelector { .. } => {}
         }
         self.clear_input(ctx);
         ctx.emit(TuiApiKeysMenuEvent);
@@ -942,19 +1025,37 @@ fn provider_connected(provider: LLMProvider, ctx: &AppContext) -> bool {
         ApiKeyManager::as_ref(ctx).has_grok_subscription()
     } else if provider == LLMProvider::Anthropic {
         ApiKeyManager::as_ref(ctx).has_anthropic_subscription()
-            || provider.api_key(ApiKeyManager::as_ref(ctx).keys()).is_some_and(|k| !k.is_empty())
+            || provider
+                .api_key(ApiKeyManager::as_ref(ctx).keys())
+                .is_some_and(|k| !k.is_empty())
     } else {
-        provider.api_key(ApiKeyManager::as_ref(ctx).keys()).is_some_and(|key| !key.is_empty())
+        provider
+            .api_key(ApiKeyManager::as_ref(ctx).keys())
+            .is_some_and(|key| !key.is_empty())
     }
 }
 fn anthropic_connected_suffix(ctx: &AppContext) -> String {
-    if let Some(t) = ApiKeyManager::as_ref(ctx).anthropic_tokens() {
-        if let Some(at) = t.connected_at {
-            return format!("Connected on {}", chrono::DateTime::<chrono::Local>::from(at).format("%m/%d/%Y at %-I:%M%P"));
-        }
+    let manager = ApiKeyManager::as_ref(ctx);
+    if manager
+        .keys()
+        .anthropic
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
+    {
         return "Connected".to_owned();
     }
-    if ApiKeyManager::as_ref(ctx).keys().anthropic.as_deref().is_some_and(|k| !k.trim().is_empty()) { "Connected".to_owned() } else { "Not connected".to_owned() }
+    let Some(tokens) = manager.anthropic_tokens() else {
+        return "Not connected".to_owned();
+    };
+    // Requests have no field to carry the OAuth token yet, so a subscription alone can't run
+    // Claude models.
+    match tokens.connected_at {
+        Some(connected_at) => format!(
+            "Connected on {}, not yet used for requests",
+            chrono::DateTime::<chrono::Local>::from(connected_at).format("%m/%d/%Y at %-I:%M%P")
+        ),
+        None => "Connected, not yet used for requests".to_owned(),
+    }
 }
 fn open_anthropic_selector_impl(list: &mut TuiInlineMenuListState<AnthropicSelectorRow>) {
     let rows = anthropic_selector_rows();

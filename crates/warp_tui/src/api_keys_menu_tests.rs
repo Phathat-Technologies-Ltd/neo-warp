@@ -265,6 +265,17 @@ fn connected_provider_prefills_secret_input_and_saves_replacement() {
         menu.update(&mut app, |menu, ctx| menu.accept_selected(ctx));
         app.read(|ctx| {
             assert_eq!(
+                menu.as_ref(ctx).footer(ctx),
+                Some(TuiApiKeysFooter::AnthropicSelector)
+            );
+        });
+
+        menu.update(&mut app, |menu, ctx| {
+            menu.select_previous(ctx);
+            menu.accept_selected(ctx);
+        });
+        app.read(|ctx| {
+            assert_eq!(
                 menu.as_ref(ctx).input_ownership(ctx),
                 TuiInlineMenuInputOwnership::InlineMenuMasked
             );

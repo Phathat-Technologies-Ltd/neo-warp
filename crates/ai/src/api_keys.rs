@@ -904,8 +904,9 @@ impl ApiKeyManager {
     }
 
     /// Returns `true` when the user has any usable BYO credential: a pasted
-    /// provider or custom-endpoint key, or a connected Grok, Anthropic or ChatGPT
-    /// subscription.
+    /// provider or custom-endpoint key, or a connected Grok or ChatGPT
+    /// subscription. A connected Anthropic subscription doesn't count yet: requests
+    /// have no field to carry its OAuth token until the server API adds one.
     pub fn has_any_key(&self) -> bool {
         self.keys.provider_key_count() > 0
             || self
@@ -914,7 +915,6 @@ impl ApiKeyManager {
                 .iter()
                 .any(|endpoint| !endpoint.api_key.trim().is_empty())
             || self.has_grok_subscription()
-            || self.has_anthropic_subscription()
             || self.has_chatgpt_subscription()
     }
 
@@ -1004,7 +1004,11 @@ impl ApiKeyManager {
             .and_then(AnthropicTokens::access_token_for_request)
             .is_some()
     }
-    pub fn set_anthropic_tokens(&mut self, tokens: Option<AnthropicTokens>, ctx: &mut ModelContext<Self>) {
+    pub fn set_anthropic_tokens(
+        &mut self,
+        tokens: Option<AnthropicTokens>,
+        ctx: &mut ModelContext<Self>,
+    ) {
         if self.anthropic_tokens == tokens {
             return;
         }
@@ -1264,21 +1268,6 @@ impl ApiKeyManager {
             .flatten()
             .unwrap_or_default();
 
-        // Anthropic OAuth access token (sk-ant-oat01) — same BYO policy gate as
-        // Grok/pasted keys. Stored under AnthropicOAuthTokens; server wiring is
-        // a follow-up (new `anthropic_oauth_access_token` proto field on
-        // `ApiKeys`). For now the token is held client-side and exercised via
-        // `has_anthropic_subscription()` / refresh lifecycle; request attachment
-        // is TODO(server).
-        let _anthropic_oauth_access_token = include_byo_keys
-            .then(|| {
-                self.anthropic_tokens
-                    .as_ref()
-                    .and_then(AnthropicTokens::access_token_for_request)
-                    .map(str::to_owned)
-            })
-            .flatten()
-            .unwrap_or_default();
         // The connected Grok subscription's OAuth access token is user-provided
         // auth, just like a pasted BYO API key, so it respects the same BYO
         // policy gate: when BYO keys are disabled (e.g. by workspace policy),
@@ -1323,7 +1312,6 @@ impl ApiKeyManager {
             && google.is_empty()
             && open_router.is_empty()
             && grok_oauth_access_token.is_empty()
-            && _anthropic_oauth_access_token.is_empty()
             && aws_credentials.is_none()
             && google_cloud_credentials.is_none()
         {
@@ -1442,14 +1430,68 @@ impl ApiKeyManager {
         });
     }
 
-    fn load_anthropic_tokens_from_secure_storage(ctx: &mut ModelContext<Self>) -> Option<AnthropicTokens> {
-        let json = match ctx.secure_storage().read_value(ANTHROPIC_SECURE_STORAGE_KEY) { Ok(j) => j, Err(e) => { if !matches!(e, secure_storage::Error::NotFound) { report_error!(anyhow::Error::new(e).context("Failed to read Anthropic tokens from secure storage")); } return None; } };
-        match serde_json::from_str(&json) { Ok(t) => Some(t), Err(e) => { report_error!(anyhow::Error::new(e).context("Failed to deserialize Anthropic tokens")); None } }
+    fn load_anthropic_tokens_from_secure_storage(
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<AnthropicTokens> {
+        let json = match ctx
+            .secure_storage()
+            .read_value(ANTHROPIC_SECURE_STORAGE_KEY)
+        {
+            Ok(j) => j,
+            Err(e) => {
+                if !matches!(e, secure_storage::Error::NotFound) {
+                    report_error!(
+                        anyhow::Error::new(e)
+                            .context("Failed to read Anthropic tokens from secure storage")
+                    );
+                }
+                return None;
+            }
+        };
+        match serde_json::from_str(&json) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                report_error!(
+                    anyhow::Error::new(e).context("Failed to deserialize Anthropic tokens")
+                );
+                None
+            }
+        }
     }
     fn write_anthropic_tokens_to_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
-        let payload = match self.anthropic_tokens.as_ref().map(serde_json::to_string) { Some(Ok(j)) => Some(j), Some(Err(e)) => { report_error!(anyhow::Error::new(e).context("Failed to serialize Anthropic tokens")); return; } None => None };
-        self.anthropic_secure_storage_write_version += 1; let wv = self.anthropic_secure_storage_write_version;
-        ctx.spawn(async move { payload }, move |me, payload, ctx| { if wv != me.anthropic_secure_storage_write_version { return; } let r = match payload { Some(ref j) => ctx.secure_storage().write_value(ANTHROPIC_SECURE_STORAGE_KEY, j), None => ctx.secure_storage().remove_value(ANTHROPIC_SECURE_STORAGE_KEY) }; if let Err(e) = r && !matches!(e, secure_storage::Error::NotFound) { report_error!(anyhow::Error::new(e).context("Failed to persist Anthropic tokens to secure storage")); } });
+        let payload = match self.anthropic_tokens.as_ref().map(serde_json::to_string) {
+            Some(Ok(j)) => Some(j),
+            Some(Err(e)) => {
+                report_error!(
+                    anyhow::Error::new(e).context("Failed to serialize Anthropic tokens")
+                );
+                return;
+            }
+            None => None,
+        };
+        self.anthropic_secure_storage_write_version += 1;
+        let wv = self.anthropic_secure_storage_write_version;
+        ctx.spawn(async move { payload }, move |me, payload, ctx| {
+            if wv != me.anthropic_secure_storage_write_version {
+                return;
+            }
+            let r = match payload {
+                Some(ref j) => ctx
+                    .secure_storage()
+                    .write_value(ANTHROPIC_SECURE_STORAGE_KEY, j),
+                None => ctx
+                    .secure_storage()
+                    .remove_value(ANTHROPIC_SECURE_STORAGE_KEY),
+            };
+            if let Err(e) = r
+                && !matches!(e, secure_storage::Error::NotFound)
+            {
+                report_error!(
+                    anyhow::Error::new(e)
+                        .context("Failed to persist Anthropic tokens to secure storage")
+                );
+            }
+        });
     }
     fn load_grok_tokens_from_secure_storage(ctx: &mut ModelContext<Self>) -> Option<GrokTokens> {
         let json = match ctx.secure_storage().read_value(GROK_SECURE_STORAGE_KEY) {

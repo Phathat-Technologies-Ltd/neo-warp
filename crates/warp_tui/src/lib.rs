@@ -29,6 +29,7 @@ mod tui_ask_question_view;
 mod tui_builder;
 mod ui;
 
+mod anthropic_oauth;
 mod completion_menu;
 mod conversation_menu;
 mod conversation_selection;
@@ -36,7 +37,6 @@ mod editor_element;
 mod editor_interaction;
 mod editor_view;
 mod exit_confirmation;
-mod anthropic_oauth;
 mod grok_oauth;
 mod handoff;
 mod inline_menu;
