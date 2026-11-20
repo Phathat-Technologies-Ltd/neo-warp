@@ -79,7 +79,8 @@ Settings:
 In the identity provider:
 
 - Register an application as a public client (native/desktop) with the redirect URI
-  `http://localhost` (add the port if the provider requires an exact match).
+  `http://localhost/callback` (add the port if the provider requires an exact match). Step-by-step
+  guides: `docs/self-hosted/` (Entra: `entra-setup.md`).
 - Restrict who may sign in (Entra: "Assignment required" plus assigned users or groups; other
   providers: their equivalent app assignment or group rule).
 - Give the backend the issuer URL and client ID so it can validate tokens.

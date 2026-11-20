@@ -44,9 +44,10 @@ plus optional extra scopes and an optional fixed redirect port.
   `{ "id_token": "..." }`. The response is `{ "custom_token": "..." }`.
 - Continue with the existing path: `fetch_user(LoginToken::Firebase(FirebaseToken::Custom(token)))`.
 
-Loopback port rules differ by provider. Entra and Google accept a registered `http://localhost`
-redirect on any port for public clients; Okta and some others require the exact registered port,
-which is what the fixed-port setting is for. Verify against the Entra test tenant first.
+Loopback port rules differ by provider. Entra and Google accept a registered
+`http://localhost/callback` redirect on any port for public clients (the path must still match);
+Okta and some others require the exact registered port, which is what the fixed-port setting is
+for. Verify against the Entra test tenant first.
 
 Example issuer URLs: Entra `https://login.microsoftonline.com/{tenant}/v2.0`, Okta
 `https://{org}.okta.com/oauth2/default`, Google `https://accounts.google.com`, Keycloak
