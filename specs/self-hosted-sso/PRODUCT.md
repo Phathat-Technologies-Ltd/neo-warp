@@ -42,8 +42,9 @@ your organization" entry point in the product at all.
 
 1. The user launches a build configured with the organization's issuer URL, client ID, and backend
    URL.
-2. The login screen offers one option: **Sign in with your organization**. Warp signup, sign-in, and
-   "skip" are not shown.
+2. The login screen offers one option: **Sign in with {provider}** (for example, "Sign in with
+   Microsoft"), or **Sign in with your organization** when no provider name is configured. Warp
+   signup, sign-in, and "skip" are not shown.
 3. Choosing it opens the browser on the company's sign-in page. The TUI shows the URL with a copy
    action, as the existing login does, for when the browser can't be opened.
 4. After the user signs in (including any MFA or conditional-access prompts), the browser shows
@@ -62,6 +63,7 @@ Set by whoever builds or deploys the client (environment variables first; channe
 - Backend URL: the existing `SERVER_ROOT_URL` / `WS_SERVER_URL`.
 - OIDC issuer URL (for Entra, `https://login.microsoftonline.com/{tenant}/v2.0`).
 - Public client ID.
+- Optional: a provider display name for the sign-in button (for example, `Microsoft`).
 - Optional: extra scopes, and a fixed redirect port for providers that require an exact
   registered port.
 
