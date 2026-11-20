@@ -219,13 +219,6 @@ fn is_warp_cloud_model_visible(llm: &LLMInfo, prefs: &LLMPreferences, app: &AppC
     if !is_warp_cloud_model(llm, prefs) {
         return true;
     }
-    // Unknown-provider models (e.g. local `auto` placeholders before the
-    // server catalog arrives) are not tied to a single first-party provider;
-    // treating them as gated on that provider would permanently hide them
-    // when Warp Cloud is disabled. Keep them visible.
-    if llm.provider == LLMProvider::Unknown {
-        return true;
-    }
     is_using_api_key_for_provider(&llm.provider, app)
 }
 
@@ -1064,37 +1057,16 @@ impl LLMPreferences {
     }
 
     fn is_warp_cloud_selection_hidden(&self, id: &LLMId, app: &AppContext) -> bool {
-        if is_warp_cloud_models_enabled(app) {
-            return false;
-        }
-        for catalog in [
-            &UserWorkspaces::as_ref(app)
-                .feature_model_choice_for_team_uid(None)
-                .agent_mode,
-            &UserWorkspaces::as_ref(app)
-                .feature_model_choice_for_team_uid(None)
-                .coding,
-        ] {
-            if let Some(info) = catalog.info_for_id(id) {
-                if info.provider == LLMProvider::Unknown {
-                    continue;
-                }
-                if is_warp_cloud_model(info, self)
-                    && !is_using_api_key_for_provider(&info.provider, app)
-                {
-                    return true;
-                }
-            }
-        }
-        if let Some(info) = self.custom_llm_info_for_id(id) {
-            let _ = info;
-            return false;
-        }
-        if let Some(info) = self.custom_router_llm_info_for_id(id) {
-            let _ = info;
-            return false;
-        }
-        false
+        let models = UserWorkspaces::as_ref(app).feature_model_choice_for_team_uid(None);
+        [
+            Some(&models.agent_mode),
+            Some(&models.coding),
+            models.cli_agent.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|catalog| catalog.info_for_id(id))
+        .any(|info| !is_warp_cloud_model_visible(info, self, app))
     }
 
     fn reconcile_hidden_warp_cloud_preferences(&mut self, ctx: &mut ModelContext<Self>) {
@@ -1109,9 +1081,6 @@ impl LLMPreferences {
             .into_iter()
             .filter(|id| self.is_warp_cloud_selection_hidden(id, ctx))
             .collect();
-        if hidden_ids.is_empty() {
-            // Still check execution profiles even if no pane overrides are hidden.
-        }
         let mut updated_agent_mode = false;
         self.base_llm_for_terminal_view.retain(|_, id| {
             let keep = !hidden_ids.contains(id);
@@ -1123,15 +1092,25 @@ impl LLMPreferences {
                 let Some(profile) = profiles.get_profile_by_id(&profile_id, ctx) else {
                     continue;
                 };
-                if profile
-                    .data()
-                    .base_model
-                    .as_ref()
-                    .is_some_and(|id| self.is_warp_cloud_selection_hidden(id, ctx))
-                {
+                let is_hidden = |id: Option<&LLMId>| {
+                    id.is_some_and(|id| self.is_warp_cloud_selection_hidden(id, ctx))
+                };
+                let data = profile.data();
+                let (base_hidden, coding_hidden, cli_agent_hidden) = (
+                    is_hidden(data.base_model.as_ref()),
+                    is_hidden(data.coding_model.as_ref()),
+                    is_hidden(data.cli_agent_model.as_ref()),
+                );
+                if base_hidden {
                     profiles.set_base_model(&profile_id, None, ctx);
                     profiles.set_context_window_limit(&profile_id, None, ctx);
                     updated_agent_mode = true;
+                }
+                if coding_hidden {
+                    profiles.set_coding_model(&profile_id, None, ctx);
+                }
+                if cli_agent_hidden {
+                    profiles.set_cli_agent_model(&profile_id, None, ctx);
                 }
             }
         });
@@ -1196,6 +1175,7 @@ impl LLMPreferences {
             .coding_model
             .clone()
             .and_then(|id| self.model_info_for_id(&models_by_feature.coding, &id, app))
+            .filter(|info| is_warp_cloud_model_visible(info, self, app))
             .unwrap_or_else(|| self.fallback_llm_info(&models_by_feature.coding, app))
     }
 
@@ -1274,6 +1254,7 @@ impl LLMPreferences {
             .choices
             .iter()
             .filter(|llm| !matches!(llm.disable_reason, Some(DisableReason::AdminDisabled)))
+            .filter(move |llm| is_warp_cloud_model_visible(llm, self, app))
             // Gate cloud/team routers behind the same flag as local routers.
             .filter(move |llm| {
                 routers_enabled || !custom_model_routers::is_cloud_custom_router_id(llm.id.as_str())
@@ -1293,6 +1274,7 @@ impl LLMPreferences {
             .choices
             .iter()
             .filter(|llm| !matches!(llm.disable_reason, Some(DisableReason::AdminDisabled)))
+            .filter(move |llm| is_warp_cloud_model_visible(llm, self, app))
             .chain(self.custom_llm_choices(app))
     }
 
@@ -1322,6 +1304,7 @@ impl LLMPreferences {
             .and_then(|id| {
                 available
                     .info_for_id(&id)
+                    .filter(|info| is_warp_cloud_model_visible(info, self, app))
                     .or_else(|| self.custom_llm_info_for_id_if_enabled(&id, app))
             })
             .unwrap_or_else(|| self.fallback_llm_info(available, app))

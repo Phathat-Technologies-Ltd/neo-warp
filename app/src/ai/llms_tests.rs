@@ -1965,7 +1965,8 @@ fn with_warp_cloud_allowlist_test_context(
                 Ok(ModelsByFeature {
                     agent_mode: catalog(),
                     coding: catalog(),
-                    ..Default::default()
+                    cli_agent: Some(catalog()),
+                    computer_use: None,
                 }),
                 ctx,
             );
@@ -2073,7 +2074,7 @@ fn every_model_is_visible_while_warp_cloud_models_are_enabled() {
 }
 
 #[test]
-fn disabled_warp_cloud_models_keep_only_keyed_providers_unknown_and_custom_models() {
+fn disabled_warp_cloud_models_keep_only_keyed_providers_and_custom_models() {
     with_warp_cloud_allowlist_test_context(true, |app, _, _| {
         set_warp_cloud_models_enabled(app, false);
         app.read(|app| {
@@ -2087,7 +2088,7 @@ fn disabled_warp_cloud_models_keep_only_keyed_providers_unknown_and_custom_model
                 LLMPreferences::as_ref(app),
                 app
             ));
-            assert!(is_warp_cloud_model_visible(
+            assert!(!is_warp_cloud_model_visible(
                 &server_llm("auto", None),
                 LLMPreferences::as_ref(app),
                 app
@@ -2131,7 +2132,7 @@ fn agent_mode_picker_hides_unkeyed_warp_cloud_models_when_disabled() {
         llm_preferences.read(app, |preferences, app| {
             assert_eq!(
                 agent_mode_choice_ids(preferences, app),
-                ["claude", "auto", "custom-config-key"]
+                ["claude", "custom-config-key"]
             );
         });
     });
@@ -2377,6 +2378,61 @@ fn pane_override_updates_resolve_while_warp_cloud_models_are_disabled() {
             assert_eq!(
                 preferences
                     .get_active_base_model(&TeamlessScopeForTest, app, Some(pane))
+                    .id
+                    .as_str(),
+                "claude"
+            );
+        });
+    });
+}
+
+#[test]
+fn coding_and_cli_agent_pickers_hide_unkeyed_warp_cloud_models_when_disabled() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, llm_preferences| {
+        add_custom_endpoint_model(app, "custom-config-key");
+        set_warp_cloud_models_enabled(app, false);
+        llm_preferences.read(app, |preferences, app| {
+            let coding: Vec<_> = preferences
+                .get_coding_llm_choices(&TeamlessScopeForTest, app)
+                .map(|llm| llm.id.to_string())
+                .collect();
+            assert_eq!(coding, ["claude", "custom-config-key"]);
+            let cli_agent: Vec<_> = preferences
+                .get_cli_agent_llm_choices(&TeamlessScopeForTest, app)
+                .map(|llm| llm.id.to_string())
+                .collect();
+            assert_eq!(cli_agent, ["claude", "custom-config-key"]);
+        });
+    });
+}
+
+#[test]
+fn disabling_warp_cloud_models_clears_hidden_coding_and_cli_agent_selections() {
+    with_warp_cloud_allowlist_test_context(true, |app, profiles_model, llm_preferences| {
+        let profile_id = profiles_model.read(app, |profiles, _| profiles.default_profile_id());
+        profiles_model.update(app, |profiles, ctx| {
+            profiles.set_coding_model(&profile_id, Some("gemini".into()), ctx);
+            profiles.set_cli_agent_model(&profile_id, Some("auto".into()), ctx);
+        });
+
+        set_warp_cloud_models_enabled(app, false);
+
+        profiles_model.read(app, |profiles, ctx| {
+            let profile = profiles.default_profile(ctx);
+            assert_eq!(profile.data().coding_model, None);
+            assert_eq!(profile.data().cli_agent_model, None);
+        });
+        llm_preferences.read(app, |preferences, app| {
+            assert_eq!(
+                preferences
+                    .get_active_coding_model(&TeamlessScopeForTest, app, None)
+                    .id
+                    .as_str(),
+                "claude"
+            );
+            assert_eq!(
+                preferences
+                    .get_active_cli_agent_model(&TeamlessScopeForTest, app, None)
                     .id
                     .as_str(),
                 "claude"
