@@ -113,7 +113,9 @@ client_id = "<application-client-id>"
 display_name = "Microsoft"
 ```
 
-The backend needs the same issuer URL and client ID to validate tokens.
+By default Warp runs its sign-in server embedded in the app, so nothing else needs deploying. A
+standalone `selfhost-server` (set `server_url` in `organization.toml`) needs the same issuer URL and
+client ID to validate tokens.
 
 To check the issuer URL, open
 `https://login.microsoftonline.com/{tenant-id}/v2.0/.well-known/openid-configuration` in a browser.

@@ -1,13 +1,18 @@
 //! A self-hosted replacement for the parts of Warp's server that sign users in: it trades an
 //! organization identity provider's ID token for the client's account tokens and answers the
-//! client's user query. State is held in memory.
+//! client's user query. It runs standalone (`selfhost-server`) or embedded in the app
+//! ([`spawn_embedded`]).
 
 pub mod config;
 pub mod graphql;
 pub mod oidc;
 pub mod sessions;
 
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context as _;
 
 use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -28,16 +33,69 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub async fn from_config(config: &ServerConfig) -> anyhow::Result<Self> {
-        Ok(Self {
-            verifier: OidcVerifier::discover(&config.oidc.issuer, &config.oidc.client_id).await?,
+    pub fn from_config(config: &ServerConfig) -> Self {
+        Self {
+            verifier: OidcVerifier::new(&config.oidc.issuer, &config.oidc.client_id),
             sessions: SessionStore::new(
-                config.session.signing_secret.as_deref(),
+                config.session.signing_secret.as_deref().map(str::as_bytes),
                 config.session.max_age(),
             ),
             required_group: config.oidc.required_group.clone(),
-        })
+        }
     }
+}
+
+/// Settings for a server embedded in the app.
+pub struct EmbeddedConfig {
+    pub issuer: String,
+    pub client_id: String,
+    /// Signs the server's tokens; persist it so users stay signed in across app restarts.
+    pub signing_secret: Vec<u8>,
+    pub session_max_age: Duration,
+}
+
+/// Starts the server on its own thread, listening on an OS-assigned `127.0.0.1` port, and
+/// returns that address. The port is bound before returning, so requests made right away queue
+/// until the server is serving.
+pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .context("failed to bind the embedded server")?;
+    listener
+        .set_nonblocking(true)
+        .context("failed to configure the embedded server listener")?;
+    let address = listener.local_addr()?;
+    let state = Arc::new(AppState {
+        verifier: OidcVerifier::new(&config.issuer, &config.client_id),
+        sessions: SessionStore::new(Some(&config.signing_secret), config.session_max_age),
+        required_group: None,
+    });
+    std::thread::Builder::new()
+        .name("embedded-selfhost-server".to_owned())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    log::error!("Couldn't start the embedded server runtime: {error:#}");
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let result = async {
+                    let listener = tokio::net::TcpListener::from_std(listener)?;
+                    axum::serve(listener, router(state)).await
+                }
+                .await;
+                if let Err(error) = result {
+                    log::error!("The embedded server stopped: {error:#}");
+                }
+            });
+        })
+        .context("failed to start the embedded server thread")?;
+    Ok(address)
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -78,15 +136,12 @@ async fn exchange_provider_token(
         return (StatusCode::FORBIDDEN, "not in the required group").into_response();
     }
     log::info!("Signed in {}", claims.email().unwrap_or("<no email>"));
-    let custom_token = state
-        .sessions
-        .sign_in(
-            &claims.iss,
-            &claims.sub,
-            claims.email().map(str::to_owned),
-            claims.name.clone(),
-        )
-        .await;
+    let custom_token = state.sessions.sign_in(
+        &claims.iss,
+        &claims.sub,
+        claims.email().map(str::to_owned),
+        claims.name.clone(),
+    );
     Json(json!({ "custom_token": custom_token })).into_response()
 }
 
@@ -128,7 +183,7 @@ async fn refresh_token(
     if form.grant_type != "refresh_token" {
         return firebase_error(TokenError::InvalidRefreshToken);
     }
-    match state.sessions.refresh(&form.refresh_token).await {
+    match state.sessions.refresh(&form.refresh_token) {
         Ok(IssuedTokens {
             id_token,
             refresh_token,
@@ -163,7 +218,7 @@ async fn graphql(
 ) -> Response {
     let operation = query.op.unwrap_or_default();
     let user = match bearer_token(&headers) {
-        Some(token) => state.sessions.user_for_id_token(token).await,
+        Some(token) => state.sessions.user_for_id_token(token),
         None => None,
     };
     match (operation.as_str(), user) {

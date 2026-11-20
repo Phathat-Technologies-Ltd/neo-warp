@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let state = Arc::new(AppState::from_config(&config).await?);
+    let state = Arc::new(AppState::from_config(&config));
     let listener = tokio::net::TcpListener::bind(&config.listen)
         .await
         .with_context(|| format!("failed to listen on {}", config.listen))?;

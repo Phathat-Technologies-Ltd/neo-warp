@@ -4,7 +4,7 @@ use anyhow::{Context as _, anyhow};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::sync::{OnceCell, RwLock};
 
 /// The ID token claims the server uses.
 #[derive(Clone, Debug, Deserialize)]
@@ -25,14 +25,20 @@ impl ProviderClaims {
     }
 }
 
-/// Verifies ID tokens issued by one OIDC provider for one client.
+/// Verifies ID tokens issued by one OIDC provider for one client. The provider's discovery
+/// document and signing keys are fetched on first use, so creating a verifier needs no network.
 pub struct OidcVerifier {
+    configured_issuer: String,
+    client_id: String,
+    discovered: OnceCell<Discovered>,
+    keys: RwLock<JwkSet>,
+}
+
+struct Discovered {
     /// The `issuer` from the provider's discovery document, which may differ in form from the
     /// configured issuer URL (for example, an Entra domain name versus the tenant ID).
     issuer: String,
-    client_id: String,
     jwks_uri: Option<String>,
-    keys: RwLock<JwkSet>,
 }
 
 #[derive(Deserialize)]
@@ -42,36 +48,48 @@ struct DiscoveryDocument {
 }
 
 impl OidcVerifier {
-    /// Reads the provider's discovery document and signing keys.
-    pub async fn discover(issuer: &str, client_id: &str) -> anyhow::Result<Self> {
-        let url = format!(
-            "{}/.well-known/openid-configuration",
-            issuer.trim_end_matches('/')
-        );
-        let discovery: DiscoveryDocument = reqwest::get(&url)
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .with_context(|| format!("failed to fetch {url}"))?
-            .json()
-            .await
-            .with_context(|| format!("{url} is not an OIDC discovery document"))?;
-        let keys = fetch_keys(&discovery.jwks_uri).await?;
-        Ok(Self {
-            issuer: discovery.issuer,
+    pub fn new(issuer: &str, client_id: &str) -> Self {
+        Self {
+            configured_issuer: issuer.to_owned(),
             client_id: client_id.to_owned(),
-            jwks_uri: Some(discovery.jwks_uri),
-            keys: RwLock::new(keys),
-        })
+            discovered: OnceCell::new(),
+            keys: RwLock::new(JwkSet { keys: Vec::new() }),
+        }
     }
 
-    /// A verifier with fixed keys that never refetches them.
+    /// A verifier with fixed keys that never contacts the provider.
     pub fn with_keys(issuer: &str, client_id: &str, keys: JwkSet) -> Self {
         Self {
-            issuer: issuer.to_owned(),
+            configured_issuer: issuer.to_owned(),
             client_id: client_id.to_owned(),
-            jwks_uri: None,
+            discovered: OnceCell::new_with(Some(Discovered {
+                issuer: issuer.to_owned(),
+                jwks_uri: None,
+            })),
             keys: RwLock::new(keys),
         }
+    }
+
+    async fn discovered(&self) -> anyhow::Result<&Discovered> {
+        self.discovered
+            .get_or_try_init(|| async {
+                let url = format!(
+                    "{}/.well-known/openid-configuration",
+                    self.configured_issuer.trim_end_matches('/')
+                );
+                let document: DiscoveryDocument = reqwest::get(&url)
+                    .await
+                    .and_then(reqwest::Response::error_for_status)
+                    .with_context(|| format!("failed to fetch {url}"))?
+                    .json()
+                    .await
+                    .with_context(|| format!("{url} is not an OIDC discovery document"))?;
+                Ok(Discovered {
+                    issuer: document.issuer,
+                    jwks_uri: Some(document.jwks_uri),
+                })
+            })
+            .await
     }
 
     /// Checks the token's signature, issuer, audience, and lifetime, and returns its claims.
@@ -80,18 +98,20 @@ impl OidcVerifier {
         let kid = header
             .kid
             .ok_or_else(|| anyhow!("the ID token has no key ID"))?;
+        let discovered = self.discovered().await?;
         let key = match self.decoding_key(&kid).await? {
             Some(key) => key,
-            // Providers rotate signing keys; refetch once before rejecting an unknown key ID.
+            // Keys are fetched lazily and providers rotate them; fetch once before rejecting an
+            // unknown key ID.
             None => {
-                self.refresh_keys().await?;
+                self.refresh_keys(discovered).await?;
                 self.decoding_key(&kid)
                     .await?
                     .ok_or_else(|| anyhow!("the ID token is signed with an unknown key"))?
             }
         };
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&[&self.issuer]);
+        validation.set_issuer(&[&discovered.issuer]);
         validation.set_audience(&[&self.client_id]);
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         Ok(
@@ -110,8 +130,8 @@ impl OidcVerifier {
             .transpose()
     }
 
-    async fn refresh_keys(&self) -> anyhow::Result<()> {
-        if let Some(jwks_uri) = &self.jwks_uri {
+    async fn refresh_keys(&self, discovered: &Discovered) -> anyhow::Result<()> {
+        if let Some(jwks_uri) = &discovered.jwks_uri {
             *self.keys.write().await = fetch_keys(jwks_uri).await?;
         }
         Ok(())

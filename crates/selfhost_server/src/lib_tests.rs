@@ -19,7 +19,7 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
     let keys: JwkSet = serde_json::from_str(PROVIDER_JWKS).unwrap();
     Arc::new(AppState {
         verifier: OidcVerifier::with_keys(ISSUER, CLIENT_ID, keys),
-        sessions: SessionStore::new(Some("test-secret"), max_age),
+        sessions: SessionStore::new(Some(b"test-secret"), max_age),
         required_group: required_group.map(str::to_owned),
     })
 }
@@ -174,47 +174,87 @@ async fn user_id_is_stable_for_the_same_provider_identity() {
     assert_eq!(uid(first_user), uid(second_user));
 }
 
+fn refresh_request(token: &str) -> Request<Body> {
+    form_post(
+        "/v1/token",
+        &[("grant_type", "refresh_token"), ("refresh_token", token)],
+    )
+}
+
 #[tokio::test]
-async fn refresh_rotates_the_refresh_token() {
+async fn refresh_issues_fresh_working_tokens() {
     let state = state();
     let (_, refresh_token) = sign_in(&state).await;
-    let refresh = |token: &str| {
-        form_post(
-            "/v1/token",
-            &[("grant_type", "refresh_token"), ("refresh_token", token)],
-        )
-    };
 
-    let (status, body) = send(&state, refresh(&refresh_token)).await;
+    let (status, body) = send(&state, refresh_request(&refresh_token)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["expires_in"], "3600");
-    let next = body["refresh_token"].as_str().unwrap().to_owned();
-    assert_ne!(next, refresh_token);
+    assert_ne!(body["refresh_token"].as_str().unwrap(), refresh_token);
     let (status, _) = send(&state, graphql_post("GetUser", body["id_token"].as_str())).await;
     assert_eq!(status, StatusCode::OK);
-
-    let (status, body) = send(&state, refresh(&refresh_token)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["message"], "INVALID_REFRESH_TOKEN");
 }
 
 #[tokio::test]
 async fn refresh_fails_once_the_sign_in_is_older_than_the_max_age() {
     let state = state_with(None, Duration::ZERO);
     let (_, refresh_token) = sign_in(&state).await;
+    // Token expiry has one-second resolution.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let (status, body) = send(&state, refresh_request(&refresh_token)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["message"], "INVALID_REFRESH_TOKEN");
+}
+
+#[tokio::test]
+async fn sign_ins_survive_a_restart_with_the_same_secret() {
+    let (id_token, refresh_token) = sign_in(&state()).await;
+    let restarted = state();
+    assert_eq!(
+        send(&restarted, graphql_post("GetUser", Some(&id_token)))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&restarted, refresh_request(&refresh_token)).await.0,
+        StatusCode::OK
+    );
+
+    let other_secret = Arc::new(AppState {
+        sessions: SessionStore::new(Some(b"other-secret"), Duration::from_secs(3600)),
+        ..Arc::into_inner(state()).unwrap()
+    });
+    assert_eq!(
+        send(&other_secret, graphql_post("GetUser", Some(&id_token)))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn tokens_only_work_for_their_own_purpose() {
+    let state = state();
+    let (id_token, refresh_token) = sign_in(&state).await;
+    assert_eq!(
+        send(&state, graphql_post("GetUser", Some(&refresh_token)))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, body) = send(&state, refresh_request(&id_token)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["message"], "INVALID_REFRESH_TOKEN");
     let (status, body) = send(
         &state,
         form_post(
-            "/v1/token",
-            &[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", &refresh_token),
-            ],
+            "/v1/accounts:signInWithCustomToken",
+            &[("token", &id_token)],
         ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["message"], "INVALID_REFRESH_TOKEN");
+    assert_eq!(body["error"]["message"], "INVALID_CUSTOM_TOKEN");
 }
 
 #[tokio::test]
@@ -319,4 +359,25 @@ fn email_falls_back_to_the_preferred_username() {
     }))
     .unwrap();
     assert_eq!(claims.email(), Some("ada@example.com"));
+}
+
+#[test]
+fn embedded_server_answers_on_its_reported_port() {
+    let address = spawn_embedded(EmbeddedConfig {
+        issuer: ISSUER.to_owned(),
+        client_id: CLIENT_ID.to_owned(),
+        signing_secret: b"test-secret".to_vec(),
+        session_max_age: Duration::from_secs(3600),
+    })
+    .expect("embedded server should start");
+    assert!(address.ip().is_loopback());
+    let status = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        reqwest::Client::new()
+            .post(format!("http://{address}/graphql/v2?op=GetUser"))
+            .send()
+            .await
+            .expect("embedded server should answer")
+            .status()
+    });
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

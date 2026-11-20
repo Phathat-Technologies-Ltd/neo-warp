@@ -88,6 +88,14 @@ URL and client ID. Without both, the client is unchanged.
 
 ### Backend (phase 1 surface)
 
+**Embedded by default.** Without a `server_url` in `organization.toml`, the app starts the server
+in its own process at launch (`selfhost_server::spawn_embedded`) on an OS-assigned `127.0.0.1`
+port and points its server and token-service URLs there. Tokens are self-contained signed JWTs,
+and the signing secret is persisted in the app's state directory (`selfhost-signing-secret`,
+mode 0600), so users stay signed in across launches up to the 12-hour session limit. Because the
+user controls their own machine, the identity-provider gate is advisory in this mode; a
+standalone server is the deployment that enforces access.
+
 A new Rust binary crate in this workspace (`crates/selfhost_server`), so it shares the proto,
 auth, and GraphQL schema types with the client and builds with the rest of the workspace. It runs
 as its own process.

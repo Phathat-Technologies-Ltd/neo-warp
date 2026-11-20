@@ -15605,6 +15605,7 @@ dependencies = [
  "schemars 1.0.4",
  "secret_redaction",
  "security-framework-sys",
+ "selfhost_server",
  "sentry",
  "sentry-log",
  "serde",
