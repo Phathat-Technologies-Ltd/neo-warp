@@ -8,6 +8,8 @@ mod login_error_modal;
 mod login_failure_notification;
 pub mod login_slide;
 pub mod needs_sso_link_view;
+#[cfg(not(target_family = "wasm"))]
+pub mod organization;
 pub mod paste_auth_token_modal;
 mod user_properties;
 pub use warp_server_auth::{auth_state, credentials, user, user_uid};

@@ -576,6 +576,7 @@ fn self_hosted_token_root_url() -> Option<String> {
         .ok()
         .map(|url| url.trim().to_owned())
         .filter(|url| !url.is_empty())
+        .or_else(|| ChannelState::auth_token_root_url().map(|url| url.into_owned()))
 }
 
 const SELF_HOSTED_TOKEN_ROOT_ENV: &str = "WARP_AUTH_TOKEN_ROOT_URL";

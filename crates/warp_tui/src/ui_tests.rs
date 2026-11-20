@@ -19,9 +19,9 @@ use warpui_core::presenter::tui::TuiPresenter;
 use warpui_core::{App, EntityId, EntityIdMap};
 
 use super::{
-    LoginBrowserOpenFailedParams, LoginFailedParams, LoginWaitingParams, compact_footer_path,
-    conversation_restoring, horizontally_centered, login_browser_open_failed, login_failed,
-    login_waiting, signed_out_welcome,
+    LoginBrowserOpenFailedParams, LoginFailedParams, LoginWaitingParams, SignedOutWelcomeParams,
+    compact_footer_path, conversation_restoring, horizontally_centered, login_browser_open_failed,
+    login_failed, login_waiting, signed_out_welcome,
 };
 use crate::transient_hint::TransientHintTone;
 use crate::zero_state_animation::ZeroStateAnimationConfig;
@@ -225,8 +225,11 @@ fn signed_out_welcome_matches_designed_copy_and_layout() {
                 signed_out_welcome(
                     AnimationClock::starting_at(Duration::ZERO),
                     Arc::new(ZeroStateAnimationConfig::default()),
-                    MouseStateHandle::default(),
-                    MouseStateHandle::default(),
+                    SignedOutWelcomeParams {
+                        login_mouse: MouseStateHandle::default(),
+                        copy_mouse: MouseStateHandle::default(),
+                        login_label: "Log in with Warp",
+                    },
                     app_ctx,
                     |_, _| {},
                     |_, _| {},
@@ -301,8 +304,11 @@ fn signed_out_welcome_uses_figma_brand_colors_in_dark_and_light_themes() {
                     signed_out_welcome(
                         AnimationClock::starting_at(Duration::ZERO),
                         Arc::new(ZeroStateAnimationConfig::default()),
-                        MouseStateHandle::default(),
-                        MouseStateHandle::default(),
+                        SignedOutWelcomeParams {
+                            login_mouse: MouseStateHandle::default(),
+                            copy_mouse: MouseStateHandle::default(),
+                            login_label: "Log in with Warp",
+                        },
                         app_ctx,
                         |_, _| {},
                         |_, _| {},
@@ -499,8 +505,11 @@ fn signed_out_welcome_handles_enter_and_copy_shortcuts() {
             let mut element = signed_out_welcome(
                 AnimationClock::starting_at(Duration::ZERO),
                 Arc::new(ZeroStateAnimationConfig::default()),
-                MouseStateHandle::default(),
-                MouseStateHandle::default(),
+                SignedOutWelcomeParams {
+                    login_mouse: MouseStateHandle::default(),
+                    copy_mouse: MouseStateHandle::default(),
+                    login_label: "Log in with Warp",
+                },
                 app_ctx,
                 move |_, _| login_count_for_enter.set(login_count_for_enter.get() + 1),
                 move |_, _| copy_count_for_key.set(copy_count_for_key.get() + 1),
@@ -542,8 +551,11 @@ fn signed_out_welcome_handles_login_link_click() {
             let mut element = signed_out_welcome(
                 AnimationClock::starting_at(Duration::ZERO),
                 Arc::new(ZeroStateAnimationConfig::default()),
-                MouseStateHandle::default(),
-                MouseStateHandle::default(),
+                SignedOutWelcomeParams {
+                    login_mouse: MouseStateHandle::default(),
+                    copy_mouse: MouseStateHandle::default(),
+                    login_label: "Log in with Warp",
+                },
                 app_ctx,
                 move |_, _| activated_for_click.set(true),
                 |_, _| {},
@@ -751,6 +763,39 @@ fn waiting_login_renders_actual_browser_url_and_requesting_fallback() {
                     );
                 }
             }
+        });
+    });
+}
+
+#[test]
+fn signed_out_welcome_shows_the_configured_sign_in_label() {
+    App::test((), |app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        app.read(|app_ctx| {
+            let mut presenter = TuiPresenter::new();
+            let frame = presenter.present_element(
+                signed_out_welcome(
+                    AnimationClock::starting_at(Duration::ZERO),
+                    Arc::new(ZeroStateAnimationConfig::default()),
+                    SignedOutWelcomeParams {
+                        login_mouse: MouseStateHandle::default(),
+                        copy_mouse: MouseStateHandle::default(),
+                        login_label: "Sign in with Microsoft",
+                    },
+                    app_ctx,
+                    |_, _| {},
+                    |_, _| {},
+                ),
+                TuiRect::new(0, 0, 80, 24),
+                app_ctx,
+            );
+            let lines = frame.buffer.to_lines();
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("Sign in with Microsoft"))
+            );
+            assert!(!lines.iter().any(|line| line.contains("Log in with Warp")));
         });
     });
 }

@@ -1,22 +1,23 @@
 //! Runs a real organization sign-in against the configured identity provider and prints the ID
-//! token's claims, to check an app registration before any backend exists. With
-//! `SELFHOST_SERVER_URL` set, it continues through the self-hosted server the way the client
-//! does: exchange the ID token, redeem the custom token, and fetch the user.
+//! token's claims, to check an app registration before any backend exists. With a server URL
+//! configured, it continues through the self-hosted server the way the client does: exchange the
+//! ID token, redeem the custom token, and fetch the user.
 //!
 //! ```sh
 //! WARP_ORG_SIGN_IN_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0 \
 //! WARP_ORG_SIGN_IN_CLIENT_ID=<client-id> \
-//! SELFHOST_SERVER_URL=http://127.0.0.1:8090 \
+//! WARP_ORG_SERVER_URL=http://127.0.0.1:8090 \
 //! cargo run -p org_sign_in --example try_sign_in
 //! ```
 
 use anyhow::Context as _;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use org_sign_in::{OrganizationSignInConfig, SignInAttempt, discover, exchange_with_backend};
+use org_sign_in::{OrganizationConfig, SignInAttempt, discover, exchange_with_backend};
 
 fn main() -> anyhow::Result<()> {
-    let config = OrganizationSignInConfig::load()?.context(
+    let organization = OrganizationConfig::load(true)?;
+    let config = organization.sign_in.context(
         "set WARP_ORG_SIGN_IN_ISSUER and WARP_ORG_SIGN_IN_CLIENT_ID, or deploy organization.toml",
     )?;
     futures::executor::block_on(async {
@@ -44,7 +45,7 @@ fn main() -> anyhow::Result<()> {
         println!("\nSigned in. ID token claims:");
         println!("{}", serde_json::to_string_pretty(&claims)?);
 
-        if let Ok(server) = std::env::var("SELFHOST_SERVER_URL") {
+        if let Some(server) = &organization.server_url {
             check_server(server.trim_end_matches('/'), &id_token).await?;
         }
         Ok(())

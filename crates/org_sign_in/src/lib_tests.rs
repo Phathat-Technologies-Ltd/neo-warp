@@ -278,43 +278,71 @@ fn write_config_file(contents: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 #[test]
-fn config_file_sign_in_table_is_read() {
+fn config_file_is_read() {
     let (_dir, path) = write_config_file(
         r#"
+server_url = "https://warp.internal.example.com"
+
 [sign_in]
 issuer = "https://login.microsoftonline.com/tenant/v2.0"
 client_id = "client"
 display_name = "Microsoft"
 "#,
     );
-    let config = OrganizationSignInConfig::from_file(&path)
-        .unwrap()
-        .expect("sign-in should be configured");
+    let config = OrganizationConfig::from_file(&path).unwrap();
     assert_eq!(
-        config.issuer,
+        config.server_url.as_deref(),
+        Some("https://warp.internal.example.com")
+    );
+    let sign_in = config.sign_in.expect("sign-in should be configured");
+    assert_eq!(
+        sign_in.issuer,
         "https://login.microsoftonline.com/tenant/v2.0"
     );
-    assert_eq!(config.client_id, "client");
-    assert_eq!(config.button_label(), "Sign in with Microsoft");
-    assert!(config.extra_scopes.is_empty());
-    assert_eq!(config.redirect_port, None);
+    assert_eq!(sign_in.client_id, "client");
+    assert_eq!(sign_in.button_label(), "Sign in with Microsoft");
+    assert!(sign_in.extra_scopes.is_empty());
+    assert_eq!(sign_in.redirect_port, None);
 }
 
 #[test]
 fn missing_config_file_or_table_means_not_configured() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        OrganizationSignInConfig::from_file(&dir.path().join("absent.toml")).unwrap(),
-        None
+        OrganizationConfig::from_file(&dir.path().join("absent.toml")).unwrap(),
+        OrganizationConfig::default()
     );
     let (_dir, path) = write_config_file("# nothing configured\n");
-    assert_eq!(OrganizationSignInConfig::from_file(&path).unwrap(), None);
+    assert_eq!(
+        OrganizationConfig::from_file(&path).unwrap(),
+        OrganizationConfig::default()
+    );
 }
 
 #[test]
-fn incomplete_or_malformed_config_file_is_an_error() {
-    let (_dir, path) = write_config_file("[sign_in]\nissuer = \"https://idp\"\nclient_id = \"\"\n");
-    assert!(OrganizationSignInConfig::from_file(&path).is_err());
-    let (_dir, path) = write_config_file("[sign_in\n");
-    assert!(OrganizationSignInConfig::from_file(&path).is_err());
+fn invalid_config_files_are_errors() {
+    for contents in [
+        "[sign_in]\nissuer = \"https://idp\"\nclient_id = \"\"\n",
+        "[sign_in\n",
+        "server_url = \"warp.internal\"\n",
+    ] {
+        let (_dir, path) = write_config_file(contents);
+        assert!(OrganizationConfig::from_file(&path).is_err(), "{contents}");
+    }
+}
+
+#[test]
+fn environment_configures_the_server_url_and_sign_in() {
+    let config = OrganizationConfig::from_lookup(lookup(&[
+        (SERVER_URL_ENV, "http://127.0.0.1:8090"),
+        (ISSUER_ENV, "https://idp"),
+        (CLIENT_ID_ENV, "client"),
+    ]))
+    .unwrap();
+    assert_eq!(config.server_url.as_deref(), Some("http://127.0.0.1:8090"));
+    assert_eq!(config.sign_in.unwrap().client_id, "client");
+    assert_eq!(
+        OrganizationConfig::from_lookup(lookup(&[])).unwrap(),
+        OrganizationConfig::default()
+    );
 }

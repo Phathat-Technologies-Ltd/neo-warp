@@ -45,7 +45,8 @@ impl ConnectedSelfHostedWorkersModel {
             | AuthManagerEvent::AttemptedLoginGatedFeature { .. }
             | AuthManagerEvent::LoginOverrideDetected(_)
             | AuthManagerEvent::MintCustomTokenFailed(_)
-            | AuthManagerEvent::ReceivedDeviceAuthorizationCode { .. } => {}
+            | AuthManagerEvent::ReceivedDeviceAuthorizationCode { .. }
+            | AuthManagerEvent::ReceivedOrganizationSignInUrl { .. } => {}
         });
 
         ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |me, _, event, ctx| {

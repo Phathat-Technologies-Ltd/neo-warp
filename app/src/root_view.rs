@@ -3665,6 +3665,7 @@ impl RootView {
                     report_error!(err);
                 }
                 UserAuthenticationError::DeviceCodeRequestTimedOut { .. } => {}
+                UserAuthenticationError::OrganizationAccessDenied(_) => {}
                 UserAuthenticationError::InvalidStateParameter => {}
                 UserAuthenticationError::MissingStateParameter => {}
             },

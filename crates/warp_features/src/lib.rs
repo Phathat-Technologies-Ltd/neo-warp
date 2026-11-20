@@ -909,6 +909,10 @@ pub enum FeatureFlag {
     /// Account linking is server-side (iss+client_id+sub), not local tokens.
     ChatGPTSubscription,
 
+    /// Gates signing in through an organization's identity provider against a self-hosted
+    /// server, configured by an IT-deployed `organization.toml`.
+    OrganizationSignIn,
+
     /// Gates Gemini Enterprise (GEAP) BYOLLM, which lets users
     /// route eliglible models to GEAP instead of Warp-managed inference.
     GeminiEnterprise,
@@ -1038,13 +1042,18 @@ static USER_PREFERENCE_MAP: [AtomicTriState; cardinality::<FeatureFlag>()] =
 static FEATURES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Features used in debugging.
-pub const DEBUG_FLAGS: &[FeatureFlag] = &[FeatureFlag::DebugMode, FeatureFlag::RuntimeFeatureFlags];
+pub const DEBUG_FLAGS: &[FeatureFlag] = &[
+    FeatureFlag::DebugMode,
+    FeatureFlag::RuntimeFeatureFlags,
+    FeatureFlag::OrganizationSignIn,
+];
 /// Features enabled only for the WarpLocal developer build.
 pub const LOCAL_FLAGS: &[FeatureFlag] = &[FeatureFlag::LocalClaudeCodexChildHarnesses];
 
 /// Features enabled for the development team.  The expectation is that, over
 /// time, these will move on to PREVIEW_FLAGS before being launched.
 pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
+    FeatureFlag::OrganizationSignIn,
     FeatureFlag::LogExpensiveFramesInSentry,
     FeatureFlag::ToggleBootstrapBlock,
     FeatureFlag::CreatingSharedSessions,

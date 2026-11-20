@@ -21,6 +21,7 @@ const CLIENT_ID_ENV: &str = "WARP_ORG_SIGN_IN_CLIENT_ID";
 const DISPLAY_NAME_ENV: &str = "WARP_ORG_SIGN_IN_DISPLAY_NAME";
 const EXTRA_SCOPES_ENV: &str = "WARP_ORG_SIGN_IN_SCOPES";
 const REDIRECT_PORT_ENV: &str = "WARP_ORG_SIGN_IN_REDIRECT_PORT";
+const SERVER_URL_ENV: &str = "WARP_ORG_SERVER_URL";
 const CONFIG_FILE_ENV: &str = "WARP_ORG_CONFIG_FILE";
 
 const BASE_SCOPES: &str = "openid profile email offline_access";
@@ -45,62 +46,81 @@ pub struct OrganizationSignInConfig {
     pub redirect_port: Option<u16>,
 }
 
-/// The organization config file deployed by IT. Only the `[sign_in]` table is read today.
-#[derive(Debug, Default, Deserialize)]
-struct OrganizationConfigFile {
-    sign_in: Option<OrganizationSignInConfig>,
+/// Organization settings: the self-hosted server and how its users sign in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct OrganizationConfig {
+    /// Root URL of the self-hosted server that replaces Warp's server.
+    #[serde(default)]
+    pub server_url: Option<String>,
+    #[serde(default)]
+    pub sign_in: Option<OrganizationSignInConfig>,
 }
 
-impl OrganizationSignInConfig {
-    /// Loads the config from `WARP_ORG_SIGN_IN_*` environment variables if they are set,
-    /// otherwise from the organization config file. Returns `None` when neither configures
-    /// sign-in.
-    pub fn load() -> anyhow::Result<Option<Self>> {
-        if let Some(config) = Self::from_env()? {
-            return Ok(Some(config));
+impl OrganizationConfig {
+    /// Loads the organization config from the system-wide `organization.toml`, which takes
+    /// admin rights to write. With `allow_overrides` (development builds), `WARP_ORG_*`
+    /// environment variables or a `WARP_ORG_CONFIG_FILE` take precedence; shipped builds ignore
+    /// them so a user can't be talked into redirecting the app.
+    pub fn load(allow_overrides: bool) -> anyhow::Result<Self> {
+        if allow_overrides {
+            let from_env = Self::from_lookup(|key| std::env::var(key).ok())?;
+            if from_env != Self::default() {
+                return Ok(from_env);
+            }
+            if let Some(path) = std::env::var_os(CONFIG_FILE_ENV) {
+                return Self::from_file(Path::new(&path));
+            }
         }
-        let path = std::env::var_os(CONFIG_FILE_ENV)
-            .map(PathBuf::from)
-            .or_else(default_config_file_path);
-        match path {
+        match default_config_file_path() {
             Some(path) => Self::from_file(&path),
-            None => Ok(None),
+            None => Ok(Self::default()),
         }
     }
 
-    /// Reads the `[sign_in]` table of an organization config file. A missing file is not an
-    /// error.
-    pub fn from_file(path: &Path) -> anyhow::Result<Option<Self>> {
+    /// Reads an organization config file. A missing file means nothing is configured.
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let contents = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
             Err(error) => {
                 return Err(
                     anyhow::Error::new(error).context(format!("failed to read {}", path.display()))
                 );
             }
         };
-        let file: OrganizationConfigFile = toml::from_str(&contents)
+        let config: Self = toml::from_str(&contents)
             .with_context(|| format!("{} is not a valid organization config", path.display()))?;
-        match file.sign_in {
-            Some(config)
-                if config.issuer.trim().is_empty() || config.client_id.trim().is_empty() =>
-            {
-                anyhow::bail!(
-                    "{}: [sign_in] needs both `issuer` and `client_id`",
-                    path.display()
-                )
-            }
-            config => Ok(config),
+        if let Some(sign_in) = &config.sign_in
+            && (sign_in.issuer.trim().is_empty() || sign_in.client_id.trim().is_empty())
+        {
+            anyhow::bail!(
+                "{}: [sign_in] needs both `issuer` and `client_id`",
+                path.display()
+            );
         }
+        if let Some(server_url) = &config.server_url
+            && !(server_url.starts_with("https://") || server_url.starts_with("http://"))
+        {
+            anyhow::bail!("{}: `server_url` must be an http(s) URL", path.display());
+        }
+        Ok(config)
     }
 
-    /// Reads the config from `WARP_ORG_SIGN_IN_*` environment variables. Returns `None` unless
-    /// both the issuer and the client ID are set.
-    pub fn from_env() -> anyhow::Result<Option<Self>> {
-        Self::from_lookup(|key| std::env::var(key).ok())
+    fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        Ok(Self {
+            server_url: lookup(SERVER_URL_ENV)
+                .map(|url| url.trim().to_owned())
+                .filter(|url| !url.is_empty()),
+            sign_in: OrganizationSignInConfig::from_lookup(&lookup)?,
+        })
     }
+}
 
+impl OrganizationSignInConfig {
+    /// Reads `WARP_ORG_SIGN_IN_*` values. Returns `None` unless both the issuer and the client
+    /// ID are set.
     fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> anyhow::Result<Option<Self>> {
         let get = |key| lookup(key).filter(|value| !value.trim().is_empty());
         let (Some(issuer), Some(client_id)) = (get(ISSUER_ENV), get(CLIENT_ID_ENV)) else {

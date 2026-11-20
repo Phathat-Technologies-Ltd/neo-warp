@@ -77,6 +77,14 @@ impl TuiLoginModel {
     pub fn phase(&self) -> &TuiLoginPhase {
         &self.phase
     }
+
+    /// The label of the welcome screen's sign-in action.
+    pub fn sign_in_label() -> String {
+        organization_sign_in()
+            .map(|config| config.button_label())
+            .unwrap_or_else(|| "Log in with Warp".to_owned())
+    }
+
     /// Starts or retries device authorization from a signed-out screen.
     pub fn start_device_login(ctx: &mut AppContext) {
         start_tui_device_login(ctx);
@@ -288,6 +296,18 @@ fn handle_auth_manager_event(event: &AuthManagerEvent, ctx: &mut AppContext) {
             );
             TuiLoginModel::open_login_url(&url_to_open, ctx);
         }
+        AuthManagerEvent::ReceivedOrganizationSignInUrl { url } => {
+            let event = TuiLoginModel::handle(ctx)
+                .update(ctx, |model, _| model.telemetry.device_authorization_ready());
+            send_tui_onboarding_event(event, ctx);
+            set_login_phase(
+                ctx,
+                TuiLoginPhase::AwaitingLogin {
+                    browser_url: Some(url.clone()),
+                },
+            );
+            TuiLoginModel::open_login_url(url, ctx);
+        }
         AuthManagerEvent::AuthComplete => {
             set_login_phase(ctx, TuiLoginPhase::LoggedIn);
             TuiOnboardingMarkers::handle(ctx).update(ctx, |markers, ctx| {
@@ -328,10 +348,17 @@ fn handle_auth_manager_event(event: &AuthManagerEvent, ctx: &mut AppContext) {
     }
 }
 
+/// Starts sign-in: through the organization's identity provider when one is configured,
+/// otherwise Warp device authorization.
 fn authorize_device(ctx: &mut AppContext) {
-    AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-        auth_manager.authorize_device(ctx);
+    AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| match organization_sign_in() {
+        Some(config) => auth_manager.authorize_with_organization(config.clone(), ctx),
+        None => auth_manager.authorize_device(ctx),
     });
+}
+
+fn organization_sign_in() -> Option<&'static org_sign_in::OrganizationSignInConfig> {
+    auth::organization::sign_in_config()
 }
 
 fn tui_verification_url(verification_url: &str, user_code: &str) -> String {
@@ -386,12 +413,27 @@ fn start_tui_device_login_with_entrypoint(
         authorize_device(ctx);
     }
 }
-/// Logs out the current TUI user and sends them to Warp web's logged-out flow.
+/// Logs out the current TUI user. Warp accounts continue to Warp web's logged-out flow;
+/// organization sign-in returns to the welcome screen, since the identity provider session
+/// belongs to the organization.
 pub fn log_out_tui(ctx: &mut AppContext) {
     auth::log_out(ctx);
     TuiOnboardingMarkers::handle(ctx).update(ctx, |markers, ctx| {
         markers.reset_for_account_transition(ctx);
     });
+    if organization_sign_in().is_some() {
+        AuthManager::handle(ctx).update(ctx, |auth_manager, _| {
+            auth_manager.cancel_organization_sign_in();
+        });
+        TuiLoginModel::handle(ctx).update(ctx, |model, ctx| {
+            model.phase = TuiLoginPhase::SignedOutWelcome;
+            model.browser_flow = TuiAuthBrowserFlow::DirectDeviceAuthorization;
+            ctx.notify();
+            ctx.emit(TuiLoginEvent::PhaseChanged);
+            ctx.emit(TuiLoginEvent::LoggedOut);
+        });
+        return;
+    }
     set_logged_out_phase(ctx);
     authorize_device(ctx);
 }

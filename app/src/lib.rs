@@ -1087,6 +1087,8 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     // The `run` function already initializes feature flags, but ensure they're initialized here
     // for other entrypoints.
     features::init_feature_flags();
+    #[cfg(not(target_family = "wasm"))]
+    auth::organization::init();
 
     #[cfg(feature = "crash_reporting")]
     if launch_mode.needs_crash_reporting() {

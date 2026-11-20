@@ -171,16 +171,28 @@ pub(crate) fn append_welcome_capability_section(
     column
 }
 
+/// Sign-in controls on the signed-out welcome screen.
+pub(crate) struct SignedOutWelcomeParams<'a> {
+    pub(crate) login_mouse: MouseStateHandle,
+    pub(crate) copy_mouse: MouseStateHandle,
+    /// Label of the sign-in action, e.g. "Log in with Warp" or "Sign in with Microsoft".
+    pub(crate) login_label: &'a str,
+}
+
 /// Signed-out welcome shown before browser device authorization begins.
 pub(crate) fn signed_out_welcome(
     clock: AnimationClock,
     animation_config: Arc<ZeroStateAnimationConfig>,
-    login_mouse: MouseStateHandle,
-    copy_mouse: MouseStateHandle,
+    params: SignedOutWelcomeParams<'_>,
     app: &AppContext,
     on_login: impl FnMut(&mut TuiEventContext, &AppContext) + Clone + 'static,
     on_copy: impl FnMut(&mut TuiEventContext, &AppContext) + Clone + 'static,
 ) -> Box<dyn TuiElement> {
+    let SignedOutWelcomeParams {
+        login_mouse,
+        copy_mouse,
+        login_label,
+    } = params;
     let builder = TuiUiBuilder::from_app(app);
     let primary = builder.primary_text_style();
     let muted = builder.muted_text_style();
@@ -216,7 +228,7 @@ pub(crate) fn signed_out_welcome(
         .child(
             TuiHoverable::new(
                 login_mouse,
-                TuiText::new("Log in with Warp")
+                TuiText::new(login_label)
                     .with_style(login_style)
                     .truncate()
                     .finish(),

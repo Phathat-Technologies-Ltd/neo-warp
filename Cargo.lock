@@ -15574,6 +15574,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "ordered-float 3.9.2",
+ "org_sign_in",
  "os_info",
  "palette 0.6.1",
  "parking_lot",
