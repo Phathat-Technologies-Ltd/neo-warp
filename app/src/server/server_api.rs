@@ -199,6 +199,13 @@ pub enum AIApiError {
         "Grok subscription token could not be refreshed. Please try reconnecting your subscription."
     )]
     GrokSubscriptionTokenRefreshFailed,
+
+    /// Synthesized client-side when Warp Cloud models are turned off and the request would use a
+    /// Warp-hosted model that the allowlist hides.
+    #[error(
+        "Warp Cloud models are turned off and this request has no allowed model. Add an API key or custom endpoint, or turn on Warp Cloud models in Settings > Agents > Warp Agent."
+    )]
+    WarpCloudModelsDisabled,
 }
 
 impl From<http_client::ResponseError> for AIApiError {
@@ -342,7 +349,8 @@ impl AIApiError {
             }
             // A failed Grok token refresh is a credential problem the user must
             // fix by reconnecting, so retrying or resuming won't help.
-            AIApiError::GrokSubscriptionTokenRefreshFailed => false,
+            AIApiError::GrokSubscriptionTokenRefreshFailed
+            | AIApiError::WarpCloudModelsDisabled => false,
             // By default, attempt recovery on error.
             _ => true,
         }
@@ -364,7 +372,8 @@ impl ErrorExt for AIApiError {
             AIApiError::QuotaLimit { .. }
             | AIApiError::ServerOverloaded
             | AIApiError::NoContextFound
-            | AIApiError::GrokSubscriptionTokenRefreshFailed => false,
+            | AIApiError::GrokSubscriptionTokenRefreshFailed
+            | AIApiError::WarpCloudModelsDisabled => false,
         }
     }
 }

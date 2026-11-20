@@ -124,3 +124,15 @@ fn team_uid_header_value_includes_only_resolved_team_scope() {
         None
     );
 }
+
+#[test]
+fn warp_cloud_models_disabled_error_is_terminal_and_not_reported() {
+    let error = AIApiError::WarpCloudModelsDisabled;
+    assert!(!error.is_recoverable());
+    assert!(!error.is_actionable());
+    assert!(
+        error
+            .to_string()
+            .contains("Warp Cloud models are turned off")
+    );
+}

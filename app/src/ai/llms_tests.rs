@@ -2440,3 +2440,45 @@ fn disabling_warp_cloud_models_clears_hidden_coding_and_cli_agent_selections() {
         });
     });
 }
+
+#[test]
+fn requests_are_blocked_only_for_hidden_or_unresolvable_models() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, llm_preferences| {
+        add_custom_endpoint_model(app, "custom-config-key");
+        llm_preferences.read(app, |preferences, app| {
+            assert!(!preferences.is_blocked_by_warp_cloud_setting(&"gemini".into(), app));
+            assert!(!preferences.is_blocked_by_warp_cloud_setting(&"never-heard-of".into(), app));
+        });
+
+        set_warp_cloud_models_enabled(app, false);
+        llm_preferences.read(app, |preferences, app| {
+            for (id, blocked) in [
+                ("claude", false),
+                ("custom-config-key", false),
+                ("gemini", true),
+                ("auto", true),
+                ("never-heard-of", true),
+            ] {
+                assert_eq!(
+                    preferences.is_blocked_by_warp_cloud_setting(&id.into(), app),
+                    blocked,
+                    "{id}"
+                );
+            }
+        });
+    });
+}
+
+#[test]
+fn the_last_resort_fallback_is_blocked_when_nothing_is_allowed() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, llm_preferences| {
+        ApiKeyManager::handle(app).update(app, |manager, ctx| {
+            manager.set_provider_key(LLMProvider::Anthropic, None, ctx);
+        });
+        set_warp_cloud_models_enabled(app, false);
+        llm_preferences.read(app, |preferences, app| {
+            let active = preferences.get_active_base_model(&TeamlessScopeForTest, app, None);
+            assert!(preferences.is_blocked_by_warp_cloud_setting(&active.id, app));
+        });
+    });
+}
