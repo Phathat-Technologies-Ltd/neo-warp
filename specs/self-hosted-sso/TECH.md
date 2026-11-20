@@ -64,6 +64,10 @@ and client ID. Without both, the client is unchanged.
 
 ### Backend (phase 1 surface)
 
+A new Rust binary crate in this workspace (`crates/selfhost_server`), so it shares the proto,
+auth, and GraphQL schema types with the client and builds with the rest of the workspace. It runs
+as its own process.
+
 | Endpoint | Purpose |
 |---|---|
 | `POST /auth/sso/exchange` | Validate the Entra ID token: signature against the tenant JWKS (`/discovery/v2.0/keys`), `iss`, `aud` = client ID, `tid`, `exp`, `nonce`. Create or update the user keyed on `tid` + `oid`. Return a short-lived custom token. |

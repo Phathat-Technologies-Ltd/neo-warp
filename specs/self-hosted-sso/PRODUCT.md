@@ -67,6 +67,9 @@ Set by whoever builds or deploys the client (environment variables first; channe
 
 ## Open questions
 
-- Backend language and repository.
+- Where the backend process runs. It is a Rust binary in this workspace either way. Run on a
+  company server, it enforces access. Run on the user's machine next to the app, Entra still
+  gates sign-in, but any secrets the backend holds (such as model provider keys) are on that
+  machine and readable by the user.
 - Whether the backend should also call Microsoft Graph to re-check group membership on refresh, or
   rely on Entra sign-in plus short token lifetimes.
