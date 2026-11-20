@@ -1896,6 +1896,19 @@ pub(crate) fn initialize_app(
             let allowed = UserWorkspaces::as_ref(ctx).is_byo_api_key_enabled(ctx);
             manager.set_grok_refresh_allowed(allowed, ctx);
         }
+        // Same BYO policy wiring for the Anthropic (Claude) subscription refresher.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            use crate::workspaces::user_workspaces::UserWorkspacesEvent;
+            ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |manager, _, event, ctx| {
+                if matches!(event, UserWorkspacesEvent::TeamsChanged) {
+                    let allowed = UserWorkspaces::as_ref(ctx).is_byo_api_key_enabled(ctx);
+                    manager.set_anthropic_refresh_allowed(allowed, ctx);
+                }
+            });
+            let allowed = UserWorkspaces::as_ref(ctx).is_byo_api_key_enabled(ctx);
+            manager.set_anthropic_refresh_allowed(allowed, ctx);
+        }
         manager
     });
 

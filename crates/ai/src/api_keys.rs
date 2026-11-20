@@ -38,6 +38,7 @@ const LEGACY_ENDPOINT_PREFIX: &str = "legacy-";
 /// Kept separate from [`SECURE_STORAGE_KEY`] because these are OAuth tokens with
 /// a refresh lifecycle, not a user-pasted static key.
 const GROK_SECURE_STORAGE_KEY: &str = "GrokOAuthTokens";
+const ANTHROPIC_SECURE_STORAGE_KEY: &str = "AnthropicOAuthTokens";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiKeyManagerEvent {
@@ -534,6 +535,41 @@ impl GrokTokens {
     }
 }
 
+/// OAuth tokens for a connected Claude/Anthropic subscription (Pro/Max/Team).
+/// Mirrors [`GrokTokens`] — persisted under [`ANTHROPIC_SECURE_STORAGE_KEY`],
+/// refreshed by `crate::anthropic_subscription`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AnthropicTokens {
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<SystemTime>,
+    #[serde(default)]
+    pub connected_at: Option<SystemTime>,
+}
+
+impl AnthropicTokens {
+    pub fn access_token_for_request(&self) -> Option<&str> {
+        (!self.access_token.trim().is_empty()).then_some(self.access_token.as_str())
+    }
+    pub fn needs_refresh(&self, lead_time: Duration) -> bool {
+        match self.expires_at {
+            Some(expires_at) => expires_at <= SystemTime::now() + lead_time,
+            None => false,
+        }
+    }
+    pub fn is_expired(&self) -> bool {
+        self.needs_refresh(Duration::ZERO)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnthropicRefreshOutcome {
+    Refreshed,
+    Failed,
+}
+
 /// Outcome of a Grok OAuth token refresh, delivered to each request blocked
 /// waiting on it so the request can either send with the freshly refreshed
 /// token or surface the failure instead of sending an expired one.
@@ -571,6 +607,7 @@ pub struct ApiKeyManager {
     /// separately from `keys` under [`GROK_SECURE_STORAGE_KEY`];
     /// `crate::grok_subscription` keeps these fresh.
     grok_tokens: Option<GrokTokens>,
+    anthropic_tokens: Option<AnthropicTokens>,
     chatgpt_connection: ChatGPTConnectionStatus,
     /// True while a ChatGPT OAuth attempt is waiting on the browser callback.
     chatgpt_oauth_pending: bool,
@@ -579,6 +616,8 @@ pub struct ApiKeyManager {
     /// via `ApiKeyManager::set_grok_refresh_allowed` (`crate::grok_subscription`).
     #[cfg(not(target_family = "wasm"))]
     pub(crate) grok_refresh_allowed: bool,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) anthropic_refresh_allowed: bool,
     /// Coordinates Grok token refreshes so only one runs at a time (shared by
     /// the proactive refresh timer and the request-time blocking refresh in
     /// `crate::grok_subscription`). `Some` means a refresh is in flight; the
@@ -587,6 +626,8 @@ pub struct ApiKeyManager {
     /// refresh is running. Always cleared when the refresh finishes.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) grok_refresh_waiters: Option<Vec<oneshot::Sender<GrokRefreshOutcome>>>,
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) anthropic_refresh_waiters: Option<Vec<oneshot::Sender<AnthropicRefreshOutcome>>>,
     /// Coordinates request-time GEAP refreshes. Installed by the mint kickoff
     /// itself (see `install_geap_refresh_waiter`) immediately before the state
     /// transitions to `Refreshing`, and taken when the mint completes, so
@@ -605,6 +646,7 @@ pub struct ApiKeyManager {
     pub(crate) geap_credentials_state: GeapCredentialsState,
     secure_storage_write_version: u64,
     grok_secure_storage_write_version: u64,
+    anthropic_secure_storage_write_version: u64,
 }
 
 #[derive(Clone)]
@@ -660,6 +702,7 @@ impl ApiKeyManager {
         let custom_endpoint_keys = Self::load_custom_endpoint_keys_from_secure_storage(ctx);
         let resolved_custom_endpoints = keys.custom_endpoints.clone();
         let grok_tokens = Self::load_grok_tokens_from_secure_storage(ctx);
+        let anthropic_tokens = Self::load_anthropic_tokens_from_secure_storage(ctx);
         Self {
             keys,
             custom_endpoints: CustomEndpointState {
@@ -669,12 +712,17 @@ impl ApiKeyManager {
                 resolved: resolved_custom_endpoints,
             },
             grok_tokens,
+            anthropic_tokens,
             chatgpt_connection: ChatGPTConnectionStatus::Unknown,
             chatgpt_oauth_pending: false,
             #[cfg(not(target_family = "wasm"))]
             grok_refresh_allowed: false,
             #[cfg(not(target_family = "wasm"))]
+            anthropic_refresh_allowed: false,
+            #[cfg(not(target_family = "wasm"))]
             grok_refresh_waiters: None,
+            #[cfg(not(target_family = "wasm"))]
+            anthropic_refresh_waiters: None,
             #[cfg(not(target_family = "wasm"))]
             geap_refresh_waiters: None,
             #[cfg(not(target_family = "wasm"))]
@@ -684,6 +732,7 @@ impl ApiKeyManager {
             geap_credentials_state: GeapCredentialsState::Missing,
             secure_storage_write_version: 0,
             grok_secure_storage_write_version: 0,
+            anthropic_secure_storage_write_version: 0,
         }
     }
 
@@ -856,7 +905,8 @@ impl ApiKeyManager {
 
     /// Returns `true` when the user has any usable BYO credential: a pasted
     /// provider or custom-endpoint key, or a connected Grok or ChatGPT
-    /// subscription.
+    /// subscription. A connected Anthropic subscription doesn't count yet: requests
+    /// have no field to carry its OAuth token until the server API adds one.
     pub fn has_any_key(&self) -> bool {
         self.keys.provider_key_count() > 0
             || self
@@ -945,6 +995,37 @@ impl ApiKeyManager {
         ctx.emit(ApiKeyManagerEvent::ChatGPTConnectFailed(failure));
     }
 
+    pub fn anthropic_tokens(&self) -> Option<&AnthropicTokens> {
+        self.anthropic_tokens.as_ref()
+    }
+    pub fn has_anthropic_subscription(&self) -> bool {
+        self.anthropic_tokens
+            .as_ref()
+            .and_then(AnthropicTokens::access_token_for_request)
+            .is_some()
+    }
+    pub fn set_anthropic_tokens(
+        &mut self,
+        tokens: Option<AnthropicTokens>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self.anthropic_tokens == tokens {
+            return;
+        }
+        let was_connected = self.anthropic_tokens.is_some();
+        let is_connected = tokens.is_some();
+        self.anthropic_tokens = tokens;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_anthropic_tokens_to_secure_storage(ctx);
+        if was_connected != is_connected {
+            send_provider_credential_telemetry(
+                LLMProvider::Anthropic,
+                ProviderCredentialTelemetryKind::Oauth,
+                provider_credential_action(is_connected),
+                ctx,
+            );
+        }
+    }
     pub fn set_grok_tokens(&mut self, tokens: Option<GrokTokens>, ctx: &mut ModelContext<Self>) {
         if self.grok_tokens == tokens {
             return;
@@ -1349,6 +1430,69 @@ impl ApiKeyManager {
         });
     }
 
+    fn load_anthropic_tokens_from_secure_storage(
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<AnthropicTokens> {
+        let json = match ctx
+            .secure_storage()
+            .read_value(ANTHROPIC_SECURE_STORAGE_KEY)
+        {
+            Ok(j) => j,
+            Err(e) => {
+                if !matches!(e, secure_storage::Error::NotFound) {
+                    report_error!(
+                        anyhow::Error::new(e)
+                            .context("Failed to read Anthropic tokens from secure storage")
+                    );
+                }
+                return None;
+            }
+        };
+        match serde_json::from_str(&json) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                report_error!(
+                    anyhow::Error::new(e).context("Failed to deserialize Anthropic tokens")
+                );
+                None
+            }
+        }
+    }
+    fn write_anthropic_tokens_to_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
+        let payload = match self.anthropic_tokens.as_ref().map(serde_json::to_string) {
+            Some(Ok(j)) => Some(j),
+            Some(Err(e)) => {
+                report_error!(
+                    anyhow::Error::new(e).context("Failed to serialize Anthropic tokens")
+                );
+                return;
+            }
+            None => None,
+        };
+        self.anthropic_secure_storage_write_version += 1;
+        let wv = self.anthropic_secure_storage_write_version;
+        ctx.spawn(async move { payload }, move |me, payload, ctx| {
+            if wv != me.anthropic_secure_storage_write_version {
+                return;
+            }
+            let r = match payload {
+                Some(ref j) => ctx
+                    .secure_storage()
+                    .write_value(ANTHROPIC_SECURE_STORAGE_KEY, j),
+                None => ctx
+                    .secure_storage()
+                    .remove_value(ANTHROPIC_SECURE_STORAGE_KEY),
+            };
+            if let Err(e) = r
+                && !matches!(e, secure_storage::Error::NotFound)
+            {
+                report_error!(
+                    anyhow::Error::new(e)
+                        .context("Failed to persist Anthropic tokens to secure storage")
+                );
+            }
+        });
+    }
     fn load_grok_tokens_from_secure_storage(ctx: &mut ModelContext<Self>) -> Option<GrokTokens> {
         let json = match ctx.secure_storage().read_value(GROK_SECURE_STORAGE_KEY) {
             Ok(json) => json,

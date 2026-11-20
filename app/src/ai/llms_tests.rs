@@ -2482,3 +2482,34 @@ fn the_last_resort_fallback_is_blocked_when_nothing_is_allowed() {
         });
     });
 }
+
+#[test]
+fn removing_a_provider_key_clears_its_hidden_selection() {
+    with_warp_cloud_allowlist_test_context(true, |app, profiles_model, llm_preferences| {
+        set_warp_cloud_models_enabled(app, false);
+        let profile_id = profiles_model.read(app, |profiles, _| profiles.default_profile_id());
+        profiles_model.update(app, |profiles, ctx| {
+            profiles.set_base_model(&profile_id, Some("claude".into()), ctx);
+        });
+        let pane = EntityId::new();
+        llm_preferences.update(app, |preferences, ctx| {
+            preferences.update_preferred_agent_mode_llm(
+                &TeamlessScopeForTest,
+                &"claude".into(),
+                pane,
+                ctx,
+            );
+        });
+
+        ApiKeyManager::handle(app).update(app, |manager, ctx| {
+            manager.set_provider_key(LLMProvider::Anthropic, None, ctx);
+        });
+
+        profiles_model.read(app, |profiles, ctx| {
+            assert_eq!(profiles.default_profile(ctx).data().base_model, None);
+        });
+        llm_preferences.read(app, |preferences, _| {
+            assert!(!preferences.base_llm_for_terminal_view.contains_key(&pane));
+        });
+    });
+}
