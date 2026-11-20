@@ -53,17 +53,25 @@ Example issuer URLs: Entra `https://login.microsoftonline.com/{tenant}/v2.0`, Ok
 `https://{org}.okta.com/oauth2/default`, Google `https://accounts.google.com`, Keycloak
 `https://{host}/realms/{realm}`.
 
-**Configuration source.** The settings (issuer URL, client ID, display name, extra scopes,
-redirect port, token-service root URL) form one `OrganizationSignInConfig`. It is read from
-environment variables, then a deployed config file, then the channel config's `server_config`
-(where `server_root_url` already lives), first match wins per field.
+**Configuration source.** The sign-in settings form one `OrganizationSignInConfig`, loaded by
+`OrganizationSignInConfig::load` (`crates/org_sign_in`):
+
+1. `WARP_ORG_SIGN_IN_*` environment variables, when the issuer and client ID are both set.
+2. Otherwise the `[sign_in]` table of the organization config file: `WARP_ORG_CONFIG_FILE`, or
+   the system-wide path IT deploys to (`/Library/Application Support/Warp/organization.toml` on
+   macOS, `%ProgramData%\Warp\organization.toml` on Windows, `/etc/warp/organization.toml` on
+   Linux).
+3. Channel config: later, once the channel-config generator carries these fields.
+
+Sources don't merge field by field; the first source that configures sign-in is used as a whole,
+so a stray environment variable can't silently mix with a deployed file.
 
 **2. Configurable token endpoint**
 
-Add a token-service root URL (env `AUTH_TOKEN_ROOT_URL`, later channel config). When set,
-`FirebaseToken::access_token_url` builds `{root}/v1/token` and
+`WARP_AUTH_TOKEN_ROOT_URL`, read when the `AuthSession` is created. When set,
+`FirebaseToken::self_hosted_access_token_url` builds `{root}/v1/token` and
 `{root}/v1/accounts:signInWithCustomToken` instead of the Google URLs, and the proxy fallback is
-skipped. When unset, behavior is unchanged.
+skipped, since Warp's proxy doesn't know self-hosted users. When unset, behavior is unchanged.
 
 **3. Login UI (TUI)**
 

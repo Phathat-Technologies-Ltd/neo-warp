@@ -4,6 +4,7 @@
 //! a sign-in token at the self-hosted backend.
 
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
@@ -20,6 +21,7 @@ const CLIENT_ID_ENV: &str = "WARP_ORG_SIGN_IN_CLIENT_ID";
 const DISPLAY_NAME_ENV: &str = "WARP_ORG_SIGN_IN_DISPLAY_NAME";
 const EXTRA_SCOPES_ENV: &str = "WARP_ORG_SIGN_IN_SCOPES";
 const REDIRECT_PORT_ENV: &str = "WARP_ORG_SIGN_IN_REDIRECT_PORT";
+const CONFIG_FILE_ENV: &str = "WARP_ORG_CONFIG_FILE";
 
 const BASE_SCOPES: &str = "openid profile email offline_access";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
@@ -43,7 +45,56 @@ pub struct OrganizationSignInConfig {
     pub redirect_port: Option<u16>,
 }
 
+/// The organization config file deployed by IT. Only the `[sign_in]` table is read today.
+#[derive(Debug, Default, Deserialize)]
+struct OrganizationConfigFile {
+    sign_in: Option<OrganizationSignInConfig>,
+}
+
 impl OrganizationSignInConfig {
+    /// Loads the config from `WARP_ORG_SIGN_IN_*` environment variables if they are set,
+    /// otherwise from the organization config file. Returns `None` when neither configures
+    /// sign-in.
+    pub fn load() -> anyhow::Result<Option<Self>> {
+        if let Some(config) = Self::from_env()? {
+            return Ok(Some(config));
+        }
+        let path = std::env::var_os(CONFIG_FILE_ENV)
+            .map(PathBuf::from)
+            .or_else(default_config_file_path);
+        match path {
+            Some(path) => Self::from_file(&path),
+            None => Ok(None),
+        }
+    }
+
+    /// Reads the `[sign_in]` table of an organization config file. A missing file is not an
+    /// error.
+    pub fn from_file(path: &Path) -> anyhow::Result<Option<Self>> {
+        let contents = match std::fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(
+                    anyhow::Error::new(error).context(format!("failed to read {}", path.display()))
+                );
+            }
+        };
+        let file: OrganizationConfigFile = toml::from_str(&contents)
+            .with_context(|| format!("{} is not a valid organization config", path.display()))?;
+        match file.sign_in {
+            Some(config)
+                if config.issuer.trim().is_empty() || config.client_id.trim().is_empty() =>
+            {
+                anyhow::bail!(
+                    "{}: [sign_in] needs both `issuer` and `client_id`",
+                    path.display()
+                )
+            }
+            config => Ok(config),
+        }
+    }
+
     /// Reads the config from `WARP_ORG_SIGN_IN_*` environment variables. Returns `None` unless
     /// both the issuer and the client ID are set.
     pub fn from_env() -> anyhow::Result<Option<Self>> {
@@ -86,6 +137,23 @@ impl OrganizationSignInConfig {
             .chain(self.extra_scopes.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .join(" ")
+    }
+}
+
+/// The system-wide location IT deploys the organization config file to.
+fn default_config_file_path() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        Some(PathBuf::from(
+            "/Library/Application Support/Warp/organization.toml",
+        ))
+    } else if cfg!(target_os = "windows") {
+        std::env::var_os("ProgramData").map(|program_data| {
+            PathBuf::from(program_data)
+                .join("Warp")
+                .join("organization.toml")
+        })
+    } else {
+        Some(PathBuf::from("/etc/warp/organization.toml"))
     }
 }
 

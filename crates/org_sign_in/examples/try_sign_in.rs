@@ -13,8 +13,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use org_sign_in::{OrganizationSignInConfig, SignInAttempt, discover};
 
 fn main() -> anyhow::Result<()> {
-    let config = OrganizationSignInConfig::from_env()?
-        .context("set WARP_ORG_SIGN_IN_ISSUER and WARP_ORG_SIGN_IN_CLIENT_ID")?;
+    let config = OrganizationSignInConfig::load()?.context(
+        "set WARP_ORG_SIGN_IN_ISSUER and WARP_ORG_SIGN_IN_CLIENT_ID, or deploy organization.toml",
+    )?;
     futures::executor::block_on(async {
         let metadata = discover(&config.issuer).await?;
         println!("Provider configuration found:");

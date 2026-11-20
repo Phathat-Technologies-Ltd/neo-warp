@@ -269,3 +269,52 @@ fn backend_refusal_maps_to_access_denied() {
         .expect_err("refused exchange should fail");
     assert!(matches!(error, SignInError::AccessDenied(_)));
 }
+
+fn write_config_file(contents: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("organization.toml");
+    std::fs::write(&path, contents).unwrap();
+    (dir, path)
+}
+
+#[test]
+fn config_file_sign_in_table_is_read() {
+    let (_dir, path) = write_config_file(
+        r#"
+[sign_in]
+issuer = "https://login.microsoftonline.com/tenant/v2.0"
+client_id = "client"
+display_name = "Microsoft"
+"#,
+    );
+    let config = OrganizationSignInConfig::from_file(&path)
+        .unwrap()
+        .expect("sign-in should be configured");
+    assert_eq!(
+        config.issuer,
+        "https://login.microsoftonline.com/tenant/v2.0"
+    );
+    assert_eq!(config.client_id, "client");
+    assert_eq!(config.button_label(), "Sign in with Microsoft");
+    assert!(config.extra_scopes.is_empty());
+    assert_eq!(config.redirect_port, None);
+}
+
+#[test]
+fn missing_config_file_or_table_means_not_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        OrganizationSignInConfig::from_file(&dir.path().join("absent.toml")).unwrap(),
+        None
+    );
+    let (_dir, path) = write_config_file("# nothing configured\n");
+    assert_eq!(OrganizationSignInConfig::from_file(&path).unwrap(), None);
+}
+
+#[test]
+fn incomplete_or_malformed_config_file_is_an_error() {
+    let (_dir, path) = write_config_file("[sign_in]\nissuer = \"https://idp\"\nclient_id = \"\"\n");
+    assert!(OrganizationSignInConfig::from_file(&path).is_err());
+    let (_dir, path) = write_config_file("[sign_in\n");
+    assert!(OrganizationSignInConfig::from_file(&path).is_err());
+}

@@ -102,6 +102,17 @@ WARP_ORG_SIGN_IN_CLIENT_ID=<application-client-id>
 WARP_ORG_SIGN_IN_DISPLAY_NAME=Microsoft
 ```
 
+To deploy to laptops instead, put the same values in the organization config file. Device
+management can push it to `/Library/Application Support/Warp/organization.toml` (macOS),
+`%ProgramData%\Warp\organization.toml` (Windows), or `/etc/warp/organization.toml` (Linux):
+
+```toml
+[sign_in]
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+client_id = "<application-client-id>"
+display_name = "Microsoft"
+```
+
 The backend needs the same issuer URL and client ID to validate tokens.
 
 To check the issuer URL, open

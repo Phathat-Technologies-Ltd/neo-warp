@@ -9896,7 +9896,9 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.17",
+ "toml 0.8.23",
 ]
 
 [[package]]

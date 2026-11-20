@@ -206,6 +206,16 @@ impl FirebaseToken {
         }
     }
 
+    /// Returns the self-hosted token service's URL for trading this long lived token into an
+    /// access token. The service mirrors the Firebase Auth REST endpoints under `token_root`.
+    pub fn self_hosted_access_token_url(&self, token_root: &str) -> String {
+        let token_root = token_root.trim_end_matches('/');
+        match self {
+            FirebaseToken::Refresh(_) => format!("{token_root}/v1/token"),
+            FirebaseToken::Custom(_) => format!("{token_root}/v1/accounts:signInWithCustomToken"),
+        }
+    }
+
     /// Returns the POST body for to include when trading this long lived token into an access token.
     pub fn access_token_request_body(&self) -> Vec<(&str, &str)> {
         match self {
