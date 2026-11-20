@@ -963,6 +963,7 @@ impl From<&Arc<AIApiError>> for RenderableAIError {
                 "Grok subscription token could not be refreshed. Please try reconnecting your subscription.",
                 true,
             ),
+            AIApiError::WarpCloudModelsDisabled => Self::other(value.to_string(), true),
             AIApiError::Deserialization(DeserializationError::Json(_))
             | AIApiError::NoContextFound
             | AIApiError::ErrorStatus(_, _)

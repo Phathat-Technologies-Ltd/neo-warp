@@ -16,6 +16,7 @@ use warpui::{Entity, ModelContext, SingletonEntity};
 use crate::ai::agent::api::{self, ConvertToAPITypeError, generate_multi_agent_output};
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIIdentifiers, CancellationReason};
+use crate::ai::llms::LLMPreferences;
 use crate::network::NetworkStatus;
 use crate::send_telemetry_from_ctx;
 use crate::server::retry_strategies::backoff_after_attempts;
@@ -576,13 +577,28 @@ impl ResponseStream {
         cancellation_rx: oneshot::Receiver<()>,
         ctx: &mut ModelContext<Self>,
     ) {
+        let llm_preferences = LLMPreferences::as_ref(ctx);
+        if [&params.model, &params.coding_model, &params.cli_agent_model]
+            .into_iter()
+            .any(|id| llm_preferences.is_blocked_by_warp_cloud_setting(id, ctx))
+        {
+            // Deferred because `ResponseStream::new` calls this before the stream exists to
+            // receive the error.
+            let _ = ctx.spawn(async {}, move |me, _, ctx| {
+                if me.current_request_id == Some(request_id) {
+                    me.surface_terminal_error(AIApiError::WarpCloudModelsDisabled, request_id, ctx);
+                }
+            });
+            return;
+        }
+
         // The Grok subscription and its OAuth refresh are native-only.
         #[cfg(not(target_family = "wasm"))]
         {
             use ::ai::api_keys::{ApiKeyManager, GeapRefreshOutcome, GrokRefreshOutcome};
             use warpui::r#async::FutureExt as _;
 
-            use crate::ai::llms::{LLMModelHost, LLMPreferences, LLMProvider};
+            use crate::ai::llms::{LLMModelHost, LLMProvider};
             use crate::workspaces::user_workspaces::UserWorkspaces;
 
             // Only touch the Grok token for requests that actually use the Grok
@@ -706,11 +722,25 @@ impl ResponseStream {
     }
 
     /// Emits a terminal, user-visible error for a failed request-time Grok token
-    /// refresh instead of sending the request with an expired token. Mirrors the
-    /// terminal-error emission in [`Self::handle_response_stream_result`].
+    /// refresh instead of sending the request with an expired token.
     #[cfg(not(target_family = "wasm"))]
     fn surface_grok_refresh_failure(&mut self, request_id: Uuid, ctx: &mut ModelContext<Self>) {
-        let error = Arc::new(AIApiError::GrokSubscriptionTokenRefreshFailed);
+        self.surface_terminal_error(
+            AIApiError::GrokSubscriptionTokenRefreshFailed,
+            request_id,
+            ctx,
+        );
+    }
+
+    /// Emits `error` as a terminal, user-visible error for a request that is never sent. Mirrors
+    /// the terminal-error emission in [`Self::handle_response_stream_result`].
+    fn surface_terminal_error(
+        &mut self,
+        error: AIApiError,
+        request_id: Uuid,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let error = Arc::new(error);
         self.error_event_emitted = true;
         self.report_request_failure(
             &error,

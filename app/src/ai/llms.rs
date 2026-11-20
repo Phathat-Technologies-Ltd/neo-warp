@@ -1432,6 +1432,17 @@ impl LLMPreferences {
     /// Returns metadata about an LLM, if the client knows about it.
     /// Falls back to the user's custom-endpoint LLMs when the id isn't a server-known model
     /// id (e.g. when it's a `config_key` UUID).
+    /// Whether sending a request with `id` would reach a Warp Cloud model that the allowlist
+    /// hides. Ids that can't be resolved locally count as blocked, since they may name a hosted
+    /// model.
+    pub fn is_blocked_by_warp_cloud_setting(&self, id: &LLMId, app: &AppContext) -> bool {
+        if is_warp_cloud_models_enabled(app) {
+            return false;
+        }
+        self.get_llm_info(id, app)
+            .is_none_or(|info| !is_warp_cloud_model_visible(info, self, app))
+    }
+
     pub fn get_llm_info<'a>(&'a self, id: &LLMId, app: &'a AppContext) -> Option<&'a LLMInfo> {
         let workspaces = UserWorkspaces::as_ref(app);
         workspaces

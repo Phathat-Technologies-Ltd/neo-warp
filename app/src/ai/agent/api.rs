@@ -394,7 +394,10 @@ impl RequestParams {
                 .is_enabled()
             && (FeatureFlag::LocalComputerUse.is_enabled() || is_ambient_agent);
         let computer_use_supported = computer_use::is_supported_on_current_platform();
-        let computer_use_enabled = computer_use_requested && computer_use_supported;
+        // Computer use only runs on Warp-hosted models, so the Warp Cloud allowlist turns it off.
+        let computer_use_enabled = computer_use_requested
+            && computer_use_supported
+            && crate::ai::llms::is_warp_cloud_models_enabled(app);
         if computer_use_requested
             && !computer_use_supported
             && let Some(task_id) = conversation.ambient_agent_task_id
