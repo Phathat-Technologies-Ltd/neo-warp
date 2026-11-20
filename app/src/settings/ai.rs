@@ -2162,6 +2162,17 @@ define_settings_group!(AISettings, settings: [
         private: true,
     }
 
+    warp_cloud_models_enabled: WarpCloudModelsEnabled {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.warp_agent.other.warp_cloud_models_enabled",
+        description: "Whether Warp Cloud-hosted models appear in the Agent model picker.",
+    }
+
     // Whether Oz should add attribution (co-author line) to commit messages and PRs.
     // This is the user-level preference; it may be overridden by the window's team's
     // `enable_warp_attribution` AdminEnablementSetting (see

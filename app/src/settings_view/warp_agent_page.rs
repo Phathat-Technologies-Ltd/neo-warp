@@ -102,7 +102,7 @@ use crate::settings::{
     PromptSubmissionMode, SharedBlockTitleGenerationEnabled,
     ShouldRenderUseAgentToolbarForUserCommands, ShouldShowOzUpdatesInZeroState, ShowAgentTips,
     ShowConversationHistory, ShowHintText, ThinkingDisplayMode, VOICE_INPUT_LANGUAGES,
-    VoiceInputEnabled, VoiceInputLanguage, VoiceInputToggleKey,
+    VoiceInputEnabled, VoiceInputLanguage, VoiceInputToggleKey, WarpCloudModelsEnabled,
 };
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -576,6 +576,20 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 UserWorkspaces::as_ref(app).is_byo_api_key_enabled(app)
                     || UserWorkspaces::as_ref(app).is_byo_endpoint_enabled(app),
             ),
+        ],
+        app,
+    );
+    ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
+        vec![
+            ToggleSettingActionPair::new(
+                "Warp Cloud models",
+                builder(SettingsAction::WarpAgent(
+                    WarpAgentPageAction::ToggleWarpCloudModelsEnabled,
+                )),
+                &(context.clone() & id!(flags::IS_ANY_AI_ENABLED)),
+                flags::WARP_CLOUD_MODELS_ENABLED_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
         ],
         app,
     );
@@ -2406,6 +2420,7 @@ impl WarpAgentPageView {
 
         #[cfg_attr(not(feature = "local_fs"), allow(unused_mut))]
         let mut other_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
+            Box::new(WarpCloudModelsEnabledWidget::default()),
             Box::new(ShowOzUpdatesInZeroStateWidget::default()),
             Box::new(UseAgentFooterWidget::default()),
             Box::new(AgentToolbarLayoutEditorWidget),
@@ -2596,6 +2611,7 @@ pub enum WarpAgentPageAction {
     ToggleAmpersandHandoff,
     ToggleAutoHandoffOnSleep,
     ToggleShowConversationHistory,
+    ToggleWarpCloudModelsEnabled,
 }
 
 impl TypedActionView for WarpAgentPageView {
@@ -3083,6 +3099,16 @@ impl TypedActionView for WarpAgentPageView {
                     report_if_error!(
                         settings
                             .show_conversation_history
+                            .toggle_and_save_value(ctx)
+                    );
+                });
+                ctx.notify();
+            }
+            WarpAgentPageAction::ToggleWarpCloudModelsEnabled => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(
+                        settings
+                            .warp_cloud_models_enabled
                             .toggle_and_save_value(ctx)
                     );
                 });
@@ -4443,6 +4469,45 @@ impl SettingsWidget for ShowConversationHistoryWidget {
             &view.local_only_icon_tooltip_states,
             app,
         )
+    }
+}
+
+#[derive(Default)]
+struct WarpCloudModelsEnabledWidget {
+    toggle: SwitchStateHandle,
+}
+
+impl SettingsWidget for WarpCloudModelsEnabledWidget {
+    type View = WarpAgentPageView;
+
+    fn search_terms(&self) -> &str {
+        "other warp cloud models allowlist byo api custom inference endpoint disable hide"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        _appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ai_settings = AISettings::as_ref(app);
+        let is_toggleable = ai_settings.is_any_ai_enabled(app);
+        Flex::column()
+            .with_child(render_ai_setting_toggle::<WarpCloudModelsEnabled>(
+                "Warp Cloud models",
+                WarpAgentPageAction::ToggleWarpCloudModelsEnabled,
+                *ai_settings.warp_cloud_models_enabled,
+                is_toggleable,
+                self.toggle.clone(),
+                &view.local_only_icon_tooltip_states,
+                app,
+            ))
+            .with_child(render_ai_setting_description(
+                "When disabled, the Agent model picker shows only BYO API-key and custom-inference models from providers you have configured.",
+                is_toggleable,
+                app,
+            ))
+            .finish()
     }
 }
 

@@ -193,6 +193,42 @@ pub fn is_using_chatgpt_subscription_for_model(
         == Some(ByoKeySource::ChatGPTSubscription)
 }
 
+/// Takes `prefs` rather than reading the `LLMPreferences` singleton so it is safe to call while
+/// `LLMPreferences` is being updated.
+fn is_warp_cloud_model(llm: &LLMInfo, prefs: &LLMPreferences) -> bool {
+    if prefs.custom_llm_info_for_id(&llm.id).is_some() {
+        return false;
+    }
+    if custom_model_routers::is_local_custom_router_id(llm.id.as_str())
+        || custom_model_routers::is_cloud_custom_router_id(llm.id.as_str())
+    {
+        return false;
+    }
+    true
+}
+
+pub fn is_warp_cloud_models_enabled(app: &AppContext) -> bool {
+    !app.has_singleton_model::<crate::settings::AISettings>()
+        || *crate::settings::AISettings::as_ref(app).warp_cloud_models_enabled
+}
+
+fn is_warp_cloud_model_visible(llm: &LLMInfo, prefs: &LLMPreferences, app: &AppContext) -> bool {
+    if is_warp_cloud_models_enabled(app) {
+        return true;
+    }
+    if !is_warp_cloud_model(llm, prefs) {
+        return true;
+    }
+    // Unknown-provider models (e.g. local `auto` placeholders before the
+    // server catalog arrives) are not tied to a single first-party provider;
+    // treating them as gated on that provider would permanently hide them
+    // when Warp Cloud is disabled. Keep them visible.
+    if llm.provider == LLMProvider::Unknown {
+        return true;
+    }
+    is_using_api_key_for_provider(&llm.provider, app)
+}
+
 /// Whether `scope`'s team lets this member reach `llm` at all.
 ///
 /// Only a member's *own* custom endpoints can be withheld this way. Everything else, including
@@ -624,9 +660,17 @@ impl AvailableLLMs {
     /// Disable-aware default: the server default when usable, otherwise the
     /// first usable choice. `None` when no server-provided choice is usable
     /// (e.g. an admin disabled every hosted model).
-    fn usable_default_llm_info(&self, app: &AppContext) -> Option<&LLMInfo> {
-        self.usable_info_for_id(&self.default_id, app)
-            .or_else(|| self.choices.iter().find(|info| is_usable_llm(info, app)))
+    fn usable_default_llm_info(
+        &self,
+        prefs: &LLMPreferences,
+        app: &AppContext,
+    ) -> Option<&LLMInfo> {
+        let is_selectable = |info: &LLMInfo| {
+            is_usable_llm(info, app) && is_warp_cloud_model_visible(info, prefs, app)
+        };
+        self.info_for_id(&self.default_id)
+            .filter(|info| is_selectable(info))
+            .or_else(|| self.choices.iter().find(|info| is_selectable(info)))
     }
 
     fn default_llm_info(&self) -> &LLMInfo {
@@ -864,6 +908,19 @@ impl LLMPreferences {
             },
         );
 
+        ctx.subscribe_to_model(
+            &crate::settings::AISettings::handle(ctx),
+            |me, _, event, ctx| {
+                if matches!(
+                    event,
+                    crate::settings::AISettingsChangedEvent::WarpCloudModelsEnabled { .. }
+                ) {
+                    me.reconcile_hidden_warp_cloud_preferences(ctx);
+                    ctx.emit(LLMPreferencesEvent::UpdatedAvailableLLMs);
+                }
+            },
+        );
+
         // Rebuild custom model routers whenever the local `model_configs/` directory
         // changes, and reconcile any now-stale local selection.
         if FeatureFlag::CustomModelRouters.is_enabled() {
@@ -991,18 +1048,97 @@ impl LLMPreferences {
     }
 
     /// Disable-aware fallback for when the user has no explicit (usable)
-    /// selection: the feature default when usable, else the first usable
-    /// server choice, else the user's first custom-endpoint model, else the
-    /// (possibly disabled) server default as a last resort.
+    /// selection: the feature default when usable and visible under the Warp
+    /// Cloud allowlist, else the first usable/visible server choice, else the
+    /// user's first custom-endpoint model, else the (possibly disabled) server
+    /// default as a last resort.
     fn fallback_llm_info<'a>(
         &'a self,
         available: &'a AvailableLLMs,
         app: &'a AppContext,
     ) -> &'a LLMInfo {
         available
-            .usable_default_llm_info(app)
+            .usable_default_llm_info(self, app)
             .or_else(|| self.custom_llm_choices(app).next())
             .unwrap_or_else(|| available.default_llm_info())
+    }
+
+    fn is_warp_cloud_selection_hidden(&self, id: &LLMId, app: &AppContext) -> bool {
+        if is_warp_cloud_models_enabled(app) {
+            return false;
+        }
+        for catalog in [
+            &UserWorkspaces::as_ref(app)
+                .feature_model_choice_for_team_uid(None)
+                .agent_mode,
+            &UserWorkspaces::as_ref(app)
+                .feature_model_choice_for_team_uid(None)
+                .coding,
+        ] {
+            if let Some(info) = catalog.info_for_id(id) {
+                if info.provider == LLMProvider::Unknown {
+                    continue;
+                }
+                if is_warp_cloud_model(info, self)
+                    && !is_using_api_key_for_provider(&info.provider, app)
+                {
+                    return true;
+                }
+            }
+        }
+        if let Some(info) = self.custom_llm_info_for_id(id) {
+            let _ = info;
+            return false;
+        }
+        if let Some(info) = self.custom_router_llm_info_for_id(id) {
+            let _ = info;
+            return false;
+        }
+        false
+    }
+
+    fn reconcile_hidden_warp_cloud_preferences(&mut self, ctx: &mut ModelContext<Self>) {
+        if is_warp_cloud_models_enabled(ctx) {
+            return;
+        }
+        let hidden_ids: Vec<LLMId> = self
+            .base_llm_for_terminal_view
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|id| self.is_warp_cloud_selection_hidden(id, ctx))
+            .collect();
+        if hidden_ids.is_empty() {
+            // Still check execution profiles even if no pane overrides are hidden.
+        }
+        let mut updated_agent_mode = false;
+        self.base_llm_for_terminal_view.retain(|_, id| {
+            let keep = !hidden_ids.contains(id);
+            updated_agent_mode |= !keep;
+            keep
+        });
+        AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles, ctx| {
+            for profile_id in profiles.get_all_profile_ids() {
+                let Some(profile) = profiles.get_profile_by_id(&profile_id, ctx) else {
+                    continue;
+                };
+                if profile
+                    .data()
+                    .base_model
+                    .as_ref()
+                    .is_some_and(|id| self.is_warp_cloud_selection_hidden(id, ctx))
+                {
+                    profiles.set_base_model(&profile_id, None, ctx);
+                    profiles.set_context_window_limit(&profile_id, None, ctx);
+                    updated_agent_mode = true;
+                }
+            }
+        });
+        if updated_agent_mode {
+            self.trigger_snapshot_save(ctx);
+            ctx.emit(LLMPreferencesEvent::UpdatedActiveAgentModeLLM);
+        }
     }
 
     /// Resolves `id` against `available` (a feature's server-provided model
@@ -1031,6 +1167,7 @@ impl LLMPreferences {
     ) -> Option<&'a LLMInfo> {
         Self::server_info_for_id_router_gated(available, id)
             .filter(|info| is_usable_llm(info, app))
+            .filter(|info| is_warp_cloud_model_visible(info, self, app))
             .or_else(|| self.custom_llm_info_for_id_if_enabled(id, app))
             .or_else(|| self.custom_router_llm_info_for_id_if_enabled(id))
     }
@@ -1100,6 +1237,7 @@ impl LLMPreferences {
             .agent_mode
             .choices
             .iter()
+            .filter(|llm| is_warp_cloud_model_visible(llm, self, app))
             // Gate cloud/team routers behind the same flag as local routers so
             // the entire custom-router feature is controlled by one flag.
             .filter(move |llm| {
@@ -1262,7 +1400,7 @@ impl LLMPreferences {
     ) -> &'a LLMInfo {
         let available = self.get_computer_use_available(scope.team_uid(), app);
         available
-            .usable_default_llm_info(app)
+            .usable_default_llm_info(self, app)
             .unwrap_or_else(|| available.default_llm_info())
     }
 
@@ -1273,7 +1411,7 @@ impl LLMPreferences {
     ) -> &'a LLMInfo {
         let available = self.get_computer_use_available(team_uid, app);
         available
-            .usable_default_llm_info(app)
+            .usable_default_llm_info(self, app)
             .unwrap_or_else(|| available.default_llm_info())
     }
 

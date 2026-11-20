@@ -2,6 +2,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use settings::{Setting as _, ToggleableSetting as _};
+use warp_core::telemetry::testing::MockTelemetryContextProvider;
 use warpui::App;
 
 use super::*;
@@ -17,7 +19,7 @@ use crate::server::server_api::ServerApiProvider;
 use crate::server::server_api::team::MockTeamClient;
 use crate::server::server_api::workspace::MockWorkspaceClient;
 use crate::server::sync_queue::SyncQueue;
-use crate::settings::PrivacySettings;
+use crate::settings::{AISettings, PrivacySettings};
 use crate::terminal::input::models::query_model_picker_choices;
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::workspaces::team::Team;
@@ -1894,5 +1896,491 @@ fn explicit_child_model_pin_preserves_gui_behavior_and_only_emits_for_effective_
             );
         });
         assert_eq!(active_model_events.get(), 1);
+    });
+}
+
+// -- Warp Cloud allowlist tests --
+
+fn provider_llm(id: &str, provider: LLMProvider) -> LLMInfo {
+    LLMInfo {
+        provider,
+        ..server_llm(id, None)
+    }
+}
+
+fn set_warp_cloud_models_enabled(app: &mut App, enabled: bool) {
+    AISettings::handle(app).update(app, |settings, ctx| {
+        settings
+            .warp_cloud_models_enabled
+            .set_value(enabled, ctx)
+            .unwrap();
+    });
+}
+
+/// Builds the singletons `LLMPreferences::new` subscribes to, with an Anthropic key configured, then seeds a catalog with an Anthropic default (keyed), a Google
+/// model (unkeyed), and a provider-less `auto` placeholder.
+fn with_warp_cloud_allowlist_test_context(
+    byo_api_keys_allowed: bool,
+    f: impl FnOnce(
+        &mut App,
+        warpui::ModelHandle<AIExecutionProfilesModel>,
+        warpui::ModelHandle<LLMPreferences>,
+    ) + 'static,
+) {
+    App::test((), |mut app| async move {
+        let _byok = FeatureFlag::SoloUserByok.override_enabled(byo_api_keys_allowed);
+        app.update(MockTelemetryContextProvider::register);
+        initialize_settings_for_tests(&mut app);
+        app.add_singleton_model(|_| ServerApiProvider::new_for_test());
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        app.add_singleton_model(AuthManager::new_for_test);
+        app.add_singleton_model(|_| NetworkStatus::new());
+        app.add_singleton_model(UserWorkspaces::default_mock);
+        app.add_singleton_model(CloudModel::mock);
+        app.add_singleton_model(TeamTesterStatus::mock);
+        app.add_singleton_model(SyncQueue::mock);
+        app.add_singleton_model(UpdateManager::mock);
+        app.add_singleton_model(|_| TemplatableMCPServerManager::default());
+        let profiles_model = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+        let llm_preferences = app.add_singleton_model(LLMPreferences::new);
+
+        ApiKeyManager::handle(&app).update(&mut app, |manager, ctx| {
+            manager.set_provider_key(LLMProvider::Anthropic, Some("test-key".to_string()), ctx);
+        });
+
+        let catalog = || {
+            available(
+                "claude",
+                vec![
+                    provider_llm("claude", LLMProvider::Anthropic),
+                    provider_llm("gemini", LLMProvider::Google),
+                    server_llm("auto", None),
+                ],
+            )
+        };
+        llm_preferences.update(&mut app, |preferences, ctx| {
+            preferences.update_feature_model_choices(
+                Ok(ModelsByFeature {
+                    agent_mode: catalog(),
+                    coding: catalog(),
+                    ..Default::default()
+                }),
+                ctx,
+            );
+        });
+
+        f(&mut app, profiles_model, llm_preferences);
+    });
+}
+
+fn add_custom_endpoint_model(app: &mut App, config_key: &str) {
+    ApiKeyManager::handle(app).update(app, |manager, ctx| {
+        manager.add_custom_endpoint(
+            ai::api_keys::CustomEndpointParams {
+                name: "local".to_string(),
+                url: "https://example.com/v1".to_string(),
+                api_key: "test-key".to_string(),
+                models: vec![(
+                    "custom-model".to_string(),
+                    None,
+                    Some(config_key.to_string()),
+                )],
+                schema: ai::api_keys::CustomEndpointSchema::default(),
+            },
+            ctx,
+        );
+    });
+}
+
+fn agent_mode_choice_ids(preferences: &LLMPreferences, app: &AppContext) -> Vec<String> {
+    preferences
+        .get_base_llm_choices_for_agent_mode(&TeamlessScopeForTest, app)
+        .map(|llm| llm.id.to_string())
+        .collect()
+}
+
+#[test]
+fn warp_cloud_models_setting_defaults_to_enabled() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            assert!(*AISettings::as_ref(ctx).warp_cloud_models_enabled.value());
+            assert!(is_warp_cloud_models_enabled(ctx));
+        });
+    });
+}
+
+#[test]
+fn warp_cloud_models_toggle_flips_the_setting() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .warp_cloud_models_enabled
+                .toggle_and_save_value(ctx)
+                .unwrap();
+        });
+        app.read(|ctx| assert!(!is_warp_cloud_models_enabled(ctx)));
+    });
+}
+
+#[test]
+fn is_warp_cloud_model_excludes_custom_endpoints_and_routers() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, llm_preferences| {
+        add_custom_endpoint_model(app, "custom-config-key");
+        llm_preferences.read(app, |preferences, _| {
+            assert!(is_warp_cloud_model(
+                &provider_llm("claude", LLMProvider::Anthropic),
+                preferences
+            ));
+            assert!(is_warp_cloud_model(&server_llm("auto", None), preferences));
+
+            let custom = preferences
+                .custom_llm_info_for_id(&LLMId::from("custom-config-key"))
+                .expect("custom endpoint model is registered");
+            assert!(!is_warp_cloud_model(custom, preferences));
+            assert!(!is_warp_cloud_model(
+                &server_llm("custom-router:local:mine", None),
+                preferences
+            ));
+            assert!(!is_warp_cloud_model(
+                &server_llm("custom-router:cloud:team", None),
+                preferences
+            ));
+        });
+    });
+}
+
+#[test]
+fn every_model_is_visible_while_warp_cloud_models_are_enabled() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, _| {
+        app.read(|app| {
+            for llm in [
+                provider_llm("claude", LLMProvider::Anthropic),
+                provider_llm("gemini", LLMProvider::Google),
+                server_llm("auto", None),
+            ] {
+                assert!(
+                    is_warp_cloud_model_visible(&llm, LLMPreferences::as_ref(app), app),
+                    "{}",
+                    llm.id
+                );
+            }
+        });
+    });
+}
+
+#[test]
+fn disabled_warp_cloud_models_keep_only_keyed_providers_unknown_and_custom_models() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, _| {
+        set_warp_cloud_models_enabled(app, false);
+        app.read(|app| {
+            assert!(is_warp_cloud_model_visible(
+                &provider_llm("claude", LLMProvider::Anthropic),
+                LLMPreferences::as_ref(app),
+                app
+            ));
+            assert!(!is_warp_cloud_model_visible(
+                &provider_llm("gemini", LLMProvider::Google),
+                LLMPreferences::as_ref(app),
+                app
+            ));
+            assert!(is_warp_cloud_model_visible(
+                &server_llm("auto", None),
+                LLMPreferences::as_ref(app),
+                app
+            ));
+            assert!(is_warp_cloud_model_visible(
+                &provider_llm("custom-router:local:mine", LLMProvider::Google),
+                LLMPreferences::as_ref(app),
+                app
+            ));
+        });
+    });
+}
+
+#[test]
+fn provider_keys_do_not_count_when_byo_api_keys_are_not_allowed() {
+    with_warp_cloud_allowlist_test_context(false, |app, _, _| {
+        set_warp_cloud_models_enabled(app, false);
+        app.read(|app| {
+            assert!(!is_warp_cloud_model_visible(
+                &provider_llm("claude", LLMProvider::Anthropic),
+                LLMPreferences::as_ref(app),
+                app
+            ));
+        });
+    });
+}
+
+#[test]
+fn agent_mode_picker_hides_unkeyed_warp_cloud_models_when_disabled() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, llm_preferences| {
+        add_custom_endpoint_model(app, "custom-config-key");
+
+        llm_preferences.read(app, |preferences, app| {
+            assert_eq!(
+                agent_mode_choice_ids(preferences, app),
+                ["claude", "gemini", "auto", "custom-config-key"]
+            );
+        });
+
+        set_warp_cloud_models_enabled(app, false);
+        llm_preferences.read(app, |preferences, app| {
+            assert_eq!(
+                agent_mode_choice_ids(preferences, app),
+                ["claude", "auto", "custom-config-key"]
+            );
+        });
+    });
+}
+
+#[test]
+fn hidden_profile_selection_falls_back_to_a_visible_model() {
+    with_warp_cloud_allowlist_test_context(true, |app, profiles_model, llm_preferences| {
+        let profile_id = profiles_model.read(app, |profiles, _| profiles.default_profile_id());
+        profiles_model.update(app, |profiles, ctx| {
+            profiles.set_base_model(&profile_id, Some("gemini".into()), ctx);
+        });
+        set_warp_cloud_models_enabled(app, false);
+        llm_preferences.read(app, |preferences, app| {
+            let models = UserWorkspaces::as_ref(app).feature_model_choice_for_team_uid(None);
+            assert!(
+                preferences
+                    .usable_model_info_for_id(&models.agent_mode, &"gemini".into(), app)
+                    .is_none()
+            );
+            assert_eq!(
+                preferences
+                    .get_active_base_model(&TeamlessScopeForTest, app, None)
+                    .id
+                    .as_str(),
+                "claude"
+            );
+        });
+    });
+}
+
+#[test]
+fn fallback_skips_a_hidden_default() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, llm_preferences| {
+        let catalog = || {
+            available(
+                "gemini",
+                vec![
+                    provider_llm("gemini", LLMProvider::Google),
+                    provider_llm("claude", LLMProvider::Anthropic),
+                ],
+            )
+        };
+        llm_preferences.update(app, |preferences, ctx| {
+            preferences.update_feature_model_choices(
+                Ok(ModelsByFeature {
+                    agent_mode: catalog(),
+                    coding: catalog(),
+                    ..Default::default()
+                }),
+                ctx,
+            );
+        });
+        set_warp_cloud_models_enabled(app, false);
+
+        llm_preferences.read(app, |preferences, app| {
+            assert_eq!(
+                preferences
+                    .get_active_base_model(&TeamlessScopeForTest, app, None)
+                    .id
+                    .as_str(),
+                "claude"
+            );
+        });
+    });
+}
+
+#[test]
+fn fallback_uses_a_custom_endpoint_when_every_hosted_model_is_hidden() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, llm_preferences| {
+        add_custom_endpoint_model(app, "custom-config-key");
+        llm_preferences.update(app, |preferences, ctx| {
+            preferences.update_feature_model_choices(
+                Ok(ModelsByFeature {
+                    agent_mode: available(
+                        "gemini",
+                        vec![provider_llm("gemini", LLMProvider::Google)],
+                    ),
+                    ..Default::default()
+                }),
+                ctx,
+            );
+        });
+        set_warp_cloud_models_enabled(app, false);
+
+        llm_preferences.read(app, |preferences, app| {
+            assert_eq!(
+                preferences
+                    .get_active_base_model(&TeamlessScopeForTest, app, None)
+                    .id
+                    .as_str(),
+                "custom-config-key"
+            );
+        });
+    });
+}
+
+#[test]
+fn disabling_warp_cloud_models_clears_hidden_selections_and_keeps_visible_ones() {
+    with_warp_cloud_allowlist_test_context(true, |app, profiles_model, llm_preferences| {
+        let profile_id = profiles_model.read(app, |profiles, _| profiles.default_profile_id());
+        profiles_model.update(app, |profiles, ctx| {
+            profiles.set_base_model(&profile_id, Some("gemini".into()), ctx);
+            profiles.set_context_window_limit(&profile_id, Some(200_000), ctx);
+        });
+        let hidden_pane = EntityId::new();
+        let visible_pane = EntityId::new();
+        llm_preferences.update(app, |preferences, ctx| {
+            preferences.update_preferred_agent_mode_llm(
+                &TeamlessScopeForTest,
+                &"gemini".into(),
+                hidden_pane,
+                ctx,
+            );
+            preferences.update_preferred_agent_mode_llm(
+                &TeamlessScopeForTest,
+                &"claude".into(),
+                visible_pane,
+                ctx,
+            );
+        });
+
+        let events = Rc::new(Cell::new((0, 0)));
+        let events_for_subscription = events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&llm_preferences, move |_, event, _| {
+                let (active, available) = events_for_subscription.get();
+                if matches!(event, LLMPreferencesEvent::UpdatedActiveAgentModeLLM) {
+                    events_for_subscription.set((active + 1, available));
+                } else if matches!(event, LLMPreferencesEvent::UpdatedAvailableLLMs) {
+                    events_for_subscription.set((active, available + 1));
+                }
+            });
+        });
+
+        set_warp_cloud_models_enabled(app, false);
+
+        assert_eq!(events.get(), (1, 1));
+        profiles_model.read(app, |profiles, ctx| {
+            let profile = profiles.default_profile(ctx);
+            assert_eq!(profile.data().base_model, None);
+            assert_eq!(profile.data().context_window_limit, None);
+        });
+        llm_preferences.read(app, |preferences, _| {
+            assert!(
+                !preferences
+                    .base_llm_for_terminal_view
+                    .contains_key(&hidden_pane)
+            );
+            assert_eq!(
+                preferences
+                    .base_llm_for_terminal_view
+                    .get(&visible_pane)
+                    .map(LLMId::as_str),
+                Some("claude")
+            );
+        });
+    });
+}
+
+#[test]
+fn reenabling_warp_cloud_models_does_not_clear_selections() {
+    with_warp_cloud_allowlist_test_context(true, |app, profiles_model, llm_preferences| {
+        set_warp_cloud_models_enabled(app, false);
+        let profile_id = profiles_model.read(app, |profiles, _| profiles.default_profile_id());
+        profiles_model.update(app, |profiles, ctx| {
+            profiles.set_base_model(&profile_id, Some("gemini".into()), ctx);
+        });
+
+        set_warp_cloud_models_enabled(app, true);
+
+        profiles_model.read(app, |profiles, ctx| {
+            assert_eq!(
+                profiles
+                    .default_profile(ctx)
+                    .data()
+                    .base_model
+                    .as_ref()
+                    .map(LLMId::as_str),
+                Some("gemini")
+            );
+        });
+        llm_preferences.read(app, |preferences, app| {
+            assert_eq!(
+                preferences
+                    .get_active_base_model(&TeamlessScopeForTest, app, None)
+                    .id
+                    .as_str(),
+                "gemini"
+            );
+        });
+    });
+}
+
+#[test]
+fn disabling_warp_cloud_models_keeps_custom_endpoint_selections() {
+    with_warp_cloud_allowlist_test_context(true, |app, profiles_model, llm_preferences| {
+        add_custom_endpoint_model(app, "custom-config-key");
+        let profile_id = profiles_model.read(app, |profiles, _| profiles.default_profile_id());
+        profiles_model.update(app, |profiles, ctx| {
+            profiles.set_base_model(&profile_id, Some("custom-config-key".into()), ctx);
+        });
+
+        set_warp_cloud_models_enabled(app, false);
+
+        profiles_model.read(app, |profiles, ctx| {
+            assert_eq!(
+                profiles
+                    .default_profile(ctx)
+                    .data()
+                    .base_model
+                    .as_ref()
+                    .map(LLMId::as_str),
+                Some("custom-config-key")
+            );
+        });
+        llm_preferences.read(app, |preferences, app| {
+            assert_eq!(
+                preferences
+                    .get_active_base_model(&TeamlessScopeForTest, app, None)
+                    .id
+                    .as_str(),
+                "custom-config-key"
+            );
+        });
+    });
+}
+
+#[test]
+fn pane_override_updates_resolve_while_warp_cloud_models_are_disabled() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, llm_preferences| {
+        set_warp_cloud_models_enabled(app, false);
+        let pane = EntityId::new();
+        llm_preferences.update(app, |preferences, ctx| {
+            preferences.update_preferred_agent_mode_llm(
+                &TeamlessScopeForTest,
+                &"gemini".into(),
+                pane,
+                ctx,
+            );
+        });
+        llm_preferences.read(app, |preferences, app| {
+            assert_eq!(
+                preferences
+                    .get_active_base_model(&TeamlessScopeForTest, app, Some(pane))
+                    .id
+                    .as_str(),
+                "claude"
+            );
+        });
     });
 }

@@ -1,6 +1,7 @@
 use super::{
-    AgentAttributionToggleState, GrokSubscriptionButtonAction,
-    derive_agent_attribution_toggle_state, grok_subscription_button_action,
+    AgentAttributionToggleState, GrokSubscriptionButtonAction, SettingsWidget,
+    WarpCloudModelsEnabledWidget, derive_agent_attribution_toggle_state,
+    grok_subscription_button_action,
 };
 use crate::workspaces::workspace::AdminEnablementSetting;
 
@@ -122,4 +123,14 @@ fn grok_button_action_reflects_tokens_and_attempt_phase() {
         grok_subscription_button_action(true, Some(true)),
         GrokSubscriptionButtonAction::Disconnect
     );
+}
+
+#[test]
+fn warp_cloud_models_widget_is_found_by_allowlist_searches() {
+    let terms = WarpCloudModelsEnabledWidget::default()
+        .search_terms()
+        .to_owned();
+    for query in ["warp cloud", "allowlist", "byo", "custom inference"] {
+        assert!(terms.contains(query), "{query}");
+    }
 }
