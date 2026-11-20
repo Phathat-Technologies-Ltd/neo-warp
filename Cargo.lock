@@ -350,6 +350,7 @@ dependencies = [
  "log",
  "nix 0.26.4",
  "notify-debouncer-full",
+ "oauth_loopback",
  "persistence",
  "priority-queue",
  "prost",
@@ -9171,6 +9172,19 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.63",
  "url",
+]
+
+[[package]]
+name = "oauth_loopback"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "futures",
+ "instant",
+ "serde_urlencoded",
+ "serial_test",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
