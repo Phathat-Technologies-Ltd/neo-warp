@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# Cross-compiles neo-warp for Linux and packages the builds its SSH extension installs on remote
+# hosts, as target/neo-warp/remote-server/remote-server-linux-<arch>.tar.gz. package-app bundles
+# them into neo-warp.app.
+#
+# Usage:
+#   script/neo-warp/build-remote-server <version> [aarch64] [x86_64]
+#
+# Needs rustup with the project's toolchain and the <arch>-unknown-linux-musl targets, cargo-zigbuild,
+# and zig. Set NEO_WARP_RUSTUP_HOME / NEO_WARP_CARGO_HOME to use a rustup install outside PATH.
+
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "Usage: $0 <version> [aarch64] [x86_64]" >&2
+  exit 1
+fi
+VERSION="$1"
+shift
+ARCHES=("$@")
+if [ ${#ARCHES[@]} -eq 0 ]; then
+  ARCHES=(aarch64 x86_64)
+fi
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+if [ -n "${NEO_WARP_CARGO_HOME:-}" ]; then
+  export CARGO_HOME="$NEO_WARP_CARGO_HOME" RUSTUP_HOME="${NEO_WARP_RUSTUP_HOME:?}"
+  export PATH="$CARGO_HOME/bin:$PATH"
+fi
+TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+
+export CARGO_TARGET_DIR="$REPO_ROOT/target/linux-remote"
+export CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_PROFILE_RELEASE_DEBUG=0
+export GIT_RELEASE_TAG="neo-warp-v$VERSION"
+out="$REPO_ROOT/target/neo-warp/remote-server"
+mkdir -p "$out"
+
+for arch in "${ARCHES[@]}"; do
+  case "$arch" in
+    aarch64 | x86_64) ;;
+    *) echo "Error: unsupported architecture $arch" >&2; exit 1 ;;
+  esac
+  target="$arch-unknown-linux-musl"
+  echo "Building neo-warp for $target"
+  cargo "+$TOOLCHAIN" zigbuild -p warp --bin neo-warp --target "$target" --release \
+    --features release_bundle,standalone,remote_codebase_indexing
+
+  stage="$(mktemp -d)"
+  # The remote install script looks for an executable named oz* next to a resources/ tree.
+  cp "$CARGO_TARGET_DIR/$target/release/neo-warp" "$stage/oz"
+  SKIP_SETTINGS_SCHEMA=1 SKIP_ANT_CLI=1 \
+    script/prepare_bundled_resources "$stage/resources" oss
+  tar -czf "$out/remote-server-linux-$arch.tar.gz" -C "$stage" oz resources
+  rm -rf "$stage"
+  echo "Packaged $out/remote-server-linux-$arch.tar.gz"
+done

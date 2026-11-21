@@ -45,9 +45,9 @@ pub(crate) fn init() {
         eprintln!("Error: invalid organization server URL {server_url}: {error:#}");
         log::error!("Invalid organization server URL {server_url}: {error:#}");
     }
-    if config.sign_in.is_some() {
+    if config.sign_in.is_some() && !(config.server_url.is_none() && bundled_remote_server_builds().is_some()) {
         // The SSH extension installs a Linux build of the app on the remote host, downloaded from
-        // the server, and organization servers don't host one.
+        // the server; only the embedded server, from builds bundled with the app, offers them.
         FeatureFlag::SshRemoteServer.set_enabled(false);
     }
     let _ = ORGANIZATION_CONFIG.set(config);
@@ -65,6 +65,7 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
         client_id: sign_in.client_id.clone(),
         signing_secret,
         session_max_age: EMBEDDED_SESSION_MAX_AGE,
+        remote_server_artifacts: bundled_remote_server_builds(),
     }) {
         Ok(address) => Some(format!("http://{address}")),
         Err(error) => {
@@ -73,6 +74,13 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
             None
         }
     }
+}
+
+/// The directory of Linux builds bundled with the app for its SSH extension, if any.
+fn bundled_remote_server_builds() -> Option<PathBuf> {
+    warp_core::paths::bundled_resources_dir()
+        .map(|dir| dir.join("remote-server"))
+        .filter(|dir| dir.is_dir())
 }
 
 /// Reads the embedded server's token-signing secret, creating it on first use. Keeping it across

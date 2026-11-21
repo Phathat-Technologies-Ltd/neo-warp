@@ -29,6 +29,13 @@ case "$(uname -m)" in
   *) echo "Error: unsupported architecture $(uname -m)" >&2; exit 1 ;;
 esac
 
+# Bundle the Linux builds for the SSH extension when script/neo-warp/build-remote-server made them.
+if ls "$REPO_ROOT"/target/neo-warp/remote-server/remote-server-linux-*.tar.gz >/dev/null 2>&1; then
+  export REMOTE_SERVER_BUILDS_DIR="$REPO_ROOT/target/neo-warp/remote-server"
+else
+  echo "Warning: no Linux remote-server builds; the SSH extension will be off (see build-remote-server)"
+fi
+
 # The bundle script's last step, a disk image, needs create-dmg; neo-warp ships a zip instead, so
 # a failure there is fine as long as the app itself is complete (checked below).
 GIT_RELEASE_TAG="neo-warp-v$VERSION" \

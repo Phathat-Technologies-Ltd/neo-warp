@@ -10,6 +10,7 @@ pub mod oidc;
 pub mod sessions;
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,7 @@ use anyhow::Context as _;
 use axum::extract::{DefaultBodyLimit, Form, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
@@ -32,6 +33,8 @@ pub struct AppState {
     pub verifier: OidcVerifier,
     pub sessions: SessionStore,
     pub required_group: Option<String>,
+    /// Directory of the Linux builds the app installs on SSH hosts, if this server offers them.
+    pub remote_server_artifacts: Option<PathBuf>,
 }
 
 impl AppState {
@@ -43,6 +46,7 @@ impl AppState {
                 config.session.max_age(),
             ),
             required_group: config.oidc.required_group.clone(),
+            remote_server_artifacts: config.remote_server_artifacts.clone(),
         }
     }
 }
@@ -54,6 +58,9 @@ pub struct EmbeddedConfig {
     /// Signs the server's tokens; persist it so users stay signed in across app restarts.
     pub signing_secret: Vec<u8>,
     pub session_max_age: Duration,
+    /// Directory of the Linux builds the app installs on SSH hosts (`remote-server-linux-<arch>
+    /// .tar.gz`).
+    pub remote_server_artifacts: Option<PathBuf>,
 }
 
 /// Starts the server on its own thread, listening on an OS-assigned `127.0.0.1` port, and
@@ -70,6 +77,7 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         verifier: OidcVerifier::new(&config.issuer, &config.client_id),
         sessions: SessionStore::new(Some(&config.signing_secret), config.session_max_age),
         required_group: None,
+        remote_server_artifacts: config.remote_server_artifacts,
     });
     std::thread::Builder::new()
         .name("embedded-selfhost-server".to_owned())
@@ -117,10 +125,50 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/graphql/v2", post(graphql))
         .route("/ai/multi-agent", post(agent::multi_agent))
         .route("/ai/passive-suggestions", post(agent::passive_suggestions))
+        .route("/download/cli", get(download_remote_server))
         // Agent requests carry the whole conversation, tool output included, so they outgrow
         // axum's 2 MB default.
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct DownloadQuery {
+    os: String,
+    arch: String,
+}
+
+/// Serves the Linux build of the app that its SSH extension installs on remote hosts. The
+/// artifacts are public builds of the app, so no sign-in is needed.
+async fn download_remote_server(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<DownloadQuery>,
+) -> Response {
+    let Some(dir) = &state.remote_server_artifacts else {
+        return (StatusCode::NOT_FOUND, "This server has no remote-server builds").into_response();
+    };
+    let Some(file_name) = remote_server_artifact_name(&query.os, &query.arch) else {
+        return (StatusCode::NOT_FOUND, "No remote-server build for this platform").into_response();
+    };
+    match tokio::fs::read(dir.join(file_name)).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "application/gzip")], bytes).into_response(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (StatusCode::NOT_FOUND, "No remote-server build for this platform").into_response()
+        }
+        Err(error) => {
+            log::error!("Couldn't read the remote-server build {file_name}: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// The artifact file for a platform, from a fixed set so request values never become paths.
+fn remote_server_artifact_name(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux", "x86_64") => Some("remote-server-linux-x86_64.tar.gz"),
+        ("linux", "aarch64") => Some("remote-server-linux-aarch64.tar.gz"),
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
