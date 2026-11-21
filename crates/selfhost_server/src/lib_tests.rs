@@ -381,3 +381,28 @@ fn embedded_server_answers_on_its_reported_port() {
     });
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn model_catalog_lists_claude_models_with_opus_as_the_default() {
+    let state = state();
+    let (id_token, _) = sign_in(&state).await;
+    let (_, body) = send(&state, graphql_post("GetUser", Some(&id_token))).await;
+    let llms = &body["data"]["user"]["user"]["llms"];
+    for feature in [
+        "agentMode",
+        "planning",
+        "coding",
+        "cliAgent",
+        "computerUseAgent",
+    ] {
+        let models = &llms[feature];
+        assert_eq!(models["defaultId"], "claude-opus-5-5", "{feature}");
+        let choices = models["choices"].as_array().unwrap();
+        assert!(choices.iter().all(|model| model["provider"] == "ANTHROPIC"));
+        assert!(
+            choices
+                .iter()
+                .any(|model| model["id"] == "claude-sonnet-5-5")
+        );
+    }
+}

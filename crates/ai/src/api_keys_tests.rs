@@ -180,6 +180,7 @@ fn make_manager_with_grok(keys: ApiKeys, grok_tokens: Option<GrokTokens>) -> Api
         },
         grok_tokens,
         anthropic_tokens: None,
+        send_anthropic_oauth_as_api_key: false,
         chatgpt_connection: ChatGPTConnectionStatus::Unknown,
         chatgpt_oauth_pending: false,
         #[cfg(not(target_family = "wasm"))]
@@ -1456,4 +1457,27 @@ fn grok_expired_refresh_token_ignores_in_flight_refresh() {
         mgr.grok_expired_refresh_token(true),
         Some("refresh".to_string())
     );
+}
+
+fn anthropic_login_tokens() -> AnthropicTokens {
+    AnthropicTokens {
+        access_token: "sk-ant-oat01-login".to_owned(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn anthropic_login_is_sent_as_the_key_only_when_enabled_and_no_key_is_pasted() {
+    let mut mgr = make_manager(ApiKeys::default());
+    mgr.anthropic_tokens = Some(anthropic_login_tokens());
+    assert!(mgr.api_keys_for_request(true, false, None).is_none());
+
+    mgr.set_send_anthropic_oauth_as_api_key(true);
+    let keys = mgr.api_keys_for_request(true, false, None).unwrap();
+    assert_eq!(keys.anthropic, "sk-ant-oat01-login");
+    assert!(mgr.api_keys_for_request(false, false, None).is_none());
+
+    mgr.keys.anthropic = Some("sk-ant-pasted".to_owned());
+    let keys = mgr.api_keys_for_request(true, false, None).unwrap();
+    assert_eq!(keys.anthropic, "sk-ant-pasted");
 }

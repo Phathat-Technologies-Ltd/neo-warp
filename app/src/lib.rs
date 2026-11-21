@@ -1881,6 +1881,7 @@ pub(crate) fn initialize_app(
         if FeatureFlag::GeminiEnterprise.is_enabled() {
             manager.subscribe_to_geap_settings_changes(ctx);
         }
+        manager.set_send_anthropic_oauth_as_api_key(auth::is_organization_sign_in());
         // The Grok subscription refresher (`ai::grok_subscription`) has no
         // visibility into workspace policy, so wire the BYO API key policy in
         // here. The initial value resumes proactive refresh of any tokens

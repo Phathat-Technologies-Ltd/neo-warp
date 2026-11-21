@@ -111,7 +111,6 @@ fn apply_server_url(server_url: &str) -> Result<(), url::ParseError> {
 
 /// The organization sign-in settings, when this build signs users in through their organization
 /// instead of a Warp account.
-#[cfg_attr(not(feature = "tui"), allow(dead_code))]
 pub fn sign_in_config() -> Option<&'static OrganizationSignInConfig> {
     ORGANIZATION_CONFIG.get()?.sign_in.as_ref()
 }

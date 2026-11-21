@@ -272,6 +272,19 @@ pub fn log_out_and_open_web(app: &mut AppContext) {
 }
 
 // Log out the user, clears workspace state, stops running processes, and deletes database.
+/// Whether users sign in through their organization's identity provider instead of a Warp
+/// account.
+pub fn is_organization_sign_in() -> bool {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        organization::sign_in_config().is_some()
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        false
+    }
+}
+
 pub fn log_out(app: &mut AppContext) {
     send_telemetry_sync_from_app_ctx!(TelemetryEvent::LogOut, app);
 

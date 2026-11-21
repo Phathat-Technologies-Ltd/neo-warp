@@ -1047,14 +1047,19 @@ fn anthropic_connected_suffix(ctx: &AppContext) -> String {
     let Some(tokens) = manager.anthropic_tokens() else {
         return "Not connected".to_owned();
     };
-    // Requests have no field to carry the OAuth token yet, so a subscription alone can't run
-    // Claude models.
+    // Warp's server has no request field for the OAuth token, so only a self-hosted server can run
+    // Claude models with the login alone.
+    let caveat = if manager.sends_anthropic_oauth_as_api_key() {
+        ""
+    } else {
+        ", not yet used for requests"
+    };
     match tokens.connected_at {
         Some(connected_at) => format!(
-            "Connected on {}, not yet used for requests",
+            "Connected on {}{caveat}",
             chrono::DateTime::<chrono::Local>::from(connected_at).format("%m/%d/%Y at %-I:%M%P")
         ),
-        None => "Connected, not yet used for requests".to_owned(),
+        None => format!("Connected{caveat}"),
     }
 }
 fn open_anthropic_selector_impl(list: &mut TuiInlineMenuListState<AnthropicSelectorRow>) {
