@@ -60,7 +60,7 @@ cp LICENSE-AGPL LICENSE-MIT "$stage/"
 
 archive="$REPO_ROOT/target/neo-warp/$name.zip"
 rm -f "$archive"
-ditto -c -k --keepParent "$stage" "$archive"
+ditto -c -k --norsrc --noextattr --keepParent "$stage" "$archive"
 (cd "$REPO_ROOT/target/neo-warp" && shasum -a 256 "$name.zip" > "$name.zip.sha256")
 echo "Packaged $archive"
 cat "$archive.sha256"
