@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# Builds the neo-warp macOS desktop app and packages it for distribution.
+#
+# Usage:
+#   script/neo-warp/package-app <version>
+#
+# Produces target/neo-warp/neo-warp-<version>-macos-<arch>-app.zip containing neo-warp.app (with
+# Anthropic's ant CLI in Contents/Resources/bin), plus organization.toml.example, the admin guides,
+# and the licenses.
+#
+# Without signing credentials the app is ad-hoc signed, so macOS asks users to approve it on first
+# launch and asks for keychain access after each upgrade. Pass a Developer ID through the bundle
+# script's signing environment for distribution.
+
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <version>" >&2
+  exit 1
+fi
+VERSION="$1"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+case "$(uname -m)" in
+  arm64 | aarch64) arch="arm64"; target="aarch64-apple-darwin" ;;
+  x86_64) arch="amd64"; target="x86_64-apple-darwin" ;;
+  *) echo "Error: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+esac
+
+GIT_RELEASE_TAG="neo-warp-v$VERSION" \
+  script/macos/bundle --channel neo-warp --nouniversal --selfsign
+
+app="target/$target/release-lto/bundle/osx/neo-warp.app"
+if [ ! -x "$app/Contents/MacOS/neo-warp" ] || [ ! -x "$app/Contents/Resources/bin/ant" ]; then
+  echo "Error: $app is missing the app binary or the bundled ant CLI" >&2
+  exit 1
+fi
+
+name="neo-warp-$VERSION-macos-$arch-app"
+stage="$REPO_ROOT/target/neo-warp/$name"
+rm -rf "$stage"
+mkdir -p "$stage/docs"
+ditto "$app" "$stage/neo-warp.app"
+cp crates/org_sign_in/organization.toml.example "$stage/"
+cp docs/self-hosted/*.md "$stage/docs/"
+cp LICENSE-AGPL LICENSE-MIT "$stage/"
+
+archive="$REPO_ROOT/target/neo-warp/$name.zip"
+rm -f "$archive"
+ditto -c -k --keepParent "$stage" "$archive"
+(cd "$REPO_ROOT/target/neo-warp" && shasum -a 256 "$name.zip" > "$name.zip.sha256")
+echo "Packaged $archive"
+cat "$archive.sha256"

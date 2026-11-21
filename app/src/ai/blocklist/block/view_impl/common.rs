@@ -3572,7 +3572,9 @@ pub(crate) fn render_debug_footer<V: View>(
             .is_some_and(|workspace| {
                 workspace.billing_metadata.customer_type == CustomerType::Enterprise
             });
-    let submit_button = if !is_dogfood && !is_enterprise_user {
+    // Feedback goes to Warp, which organization builds don't involve.
+    let is_organization = crate::auth::is_organization_sign_in();
+    let submit_button = if !is_dogfood && !is_enterprise_user && !is_organization {
         let submit_button_style = UiComponentStyles {
             font_color: Some(
                 appearance
