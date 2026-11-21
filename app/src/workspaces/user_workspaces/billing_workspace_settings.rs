@@ -173,6 +173,10 @@ impl UserWorkspaces {
         {
             return false;
         }
+        // Organization sign-in has no Warp billing: users always bring their own credentials.
+        if crate::auth::is_organization_sign_in() {
+            return true;
+        }
         self.current_workspace()
             .map(|workspace| workspace.billing_metadata.is_byo_api_key_enabled())
             .unwrap_or(FeatureFlag::SoloUserByok.is_enabled())

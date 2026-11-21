@@ -3,6 +3,7 @@
 //! client's user query. It runs standalone (`selfhost-server`) or embedded in the app
 //! ([`spawn_embedded`]).
 
+pub mod agent;
 pub mod config;
 pub mod graphql;
 pub mod oidc;
@@ -72,8 +73,12 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
     std::thread::Builder::new()
         .name("embedded-selfhost-server".to_owned())
         .spawn(move || {
+            // Agent turns mostly wait on the model API, so a few workers serve many sessions;
+            // more cores still help when several turns stream at once.
+            let workers =
+                std::thread::available_parallelism().map_or(2, |cores| cores.get().clamp(2, 8));
             let runtime = match tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
+                .worker_threads(workers)
                 .enable_all()
                 .build()
             {
@@ -107,6 +112,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/token", post(refresh_token))
         .route("/graphql/v2", post(graphql))
+        .route("/ai/multi-agent", post(agent::multi_agent))
+        .route("/ai/passive-suggestions", post(agent::passive_suggestions))
         .with_state(state)
 }
 
@@ -231,7 +238,7 @@ async fn graphql(
     }
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
         .to_str()

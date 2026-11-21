@@ -10,6 +10,19 @@ name = "selfhost-server"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+# goose's agent loop and Anthropic provider, pinned to one commit: the oi-kit crates are alpha.
+oi-kit-agent = { git = "https://github.com/block/goose", rev = "36b29113aff691e1a46a21a5c25900824caf9949" }
+oi-kit-provider-types = { git = "https://github.com/block/goose", rev = "36b29113aff691e1a46a21a5c25900824caf9949" }
+oi-kit-providers = { git = "https://github.com/block/goose", rev = "36b29113aff691e1a46a21a5c25900824caf9949", features = ["rustls-tls"] }
+prost.workspace = true
+prost-types.workspace = true
+rmcp.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+warp_multi_agent_api.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 base64.workspace = true
