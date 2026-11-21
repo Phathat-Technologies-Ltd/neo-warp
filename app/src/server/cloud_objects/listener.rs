@@ -233,6 +233,10 @@ impl Listener {
     }
 
     fn start_listener(&mut self, ctx: &mut ModelContext<Self>) {
+        // Organization servers have no Warp Drive updates to stream.
+        if crate::auth::is_organization_sign_in() {
+            return;
+        }
         if !self.should_subscribe_to_updates {
             self.should_subscribe_to_updates = true;
             self.get_warp_drive_updates(ctx);

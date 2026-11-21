@@ -115,7 +115,7 @@ fn view_logs_command_is_registered_only_for_tui_mode() {
 }
 
 #[test]
-fn api_keys_command_is_tui_only_and_has_no_arguments() {
+fn api_keys_command_is_on_both_surfaces_and_has_no_arguments() {
     let command = all_commands(settings::SettingsMode::Tui)
         .into_iter()
         .find(|command| command.kind == SlashCommandKind::ApiKeys)
@@ -128,7 +128,7 @@ fn api_keys_command_is_tui_only_and_has_no_arguments() {
     assert!(
         all_commands(settings::SettingsMode::Gui)
             .iter()
-            .all(|command| command.kind != SlashCommandKind::ApiKeys)
+            .any(|command| command.kind == SlashCommandKind::ApiKeys)
     );
     assert!(
         all_commands(settings::SettingsMode::Tui)

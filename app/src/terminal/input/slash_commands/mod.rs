@@ -70,6 +70,7 @@ use crate::ui_components::color_dot;
 use crate::view_components::DismissibleToast;
 use crate::workflows::command_parser::compute_workflow_display_data;
 use crate::workflows::{WorkflowSelectionSource, WorkflowSource, WorkflowType};
+use crate::settings_view::SettingsSection;
 use crate::workspace::{ForkedConversationDestination, ToastStack, WorkspaceAction};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,6 +490,12 @@ impl Input {
         match command.kind {
             SlashCommandKind::AddMcp => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenAddMCPPane);
+            }
+            SlashCommandKind::ApiKeys => {
+                ctx.dispatch_typed_action(&WorkspaceAction::ShowSettingsPageWithSearch {
+                    search_query: "API keys".to_owned(),
+                    section: Some(SettingsSection::WarpAgent),
+                });
             }
             SlashCommandKind::AddPrompt => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenAddPromptPane);
@@ -1335,7 +1342,6 @@ impl Input {
             SlashCommandKind::AutoApprove
             | SlashCommandKind::Statusline
             | SlashCommandKind::ResetStatusline
-            | SlashCommandKind::ApiKeys
             | SlashCommandKind::ConnectGrok
             | SlashCommandKind::Upgrade
             | SlashCommandKind::ManageBilling

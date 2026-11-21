@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 
-use axum::extract::{Form, Query, State};
+use axum::extract::{DefaultBodyLimit, Form, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
@@ -104,6 +104,8 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
     Ok(address)
 }
 
+const MAX_REQUEST_BYTES: usize = 256 * 1024 * 1024;
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/auth/sso/exchange", post(exchange_provider_token))
@@ -115,6 +117,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/graphql/v2", post(graphql))
         .route("/ai/multi-agent", post(agent::multi_agent))
         .route("/ai/passive-suggestions", post(agent::passive_suggestions))
+        // Agent requests carry the whole conversation, tool output included, so they outgrow
+        // axum's 2 MB default.
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(state)
 }
 

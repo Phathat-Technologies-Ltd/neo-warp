@@ -441,6 +441,51 @@ async fn tui_onboarding_markers_read_as_already_shown() {
 }
 
 #[tokio::test]
+async fn ai_credits_are_always_available() {
+    use warp_graphql::queries::get_ai_credit_availability::{GetAICreditAvailability, UserResult};
+    let data: GetAICreditAvailability = signed_in_query("GetAICreditAvailability").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetAICreditAvailability should return a UserOutput");
+    };
+    assert!(output.user.ai_credit_availability.available);
+}
+
+#[tokio::test]
+async fn there_are_no_teams_to_discover() {
+    use warp_graphql::queries::get_discoverable_teams::{GetDiscoverableTeams, UserResult};
+    let data: GetDiscoverableTeams = signed_in_query("GetDiscoverableTeams").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetDiscoverableTeams should return a UserOutput");
+    };
+    assert!(output.user.discoverable_teams.is_empty());
+    assert!(output.user.discoverable_workspaces.is_empty());
+}
+
+#[tokio::test]
+async fn conversation_usage_is_empty() {
+    use warp_graphql::queries::get_conversation_usage::{GetConversationUsage, UserResult};
+    let data: GetConversationUsage = signed_in_query("GetConversationUsage").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetConversationUsage should return a UserOutput");
+    };
+    assert!(output.user.conversation_usage.is_empty());
+}
+
+#[tokio::test]
+async fn there_are_no_cloud_environments() {
+    use warp_graphql::queries::get_cloud_environments::{
+        GetCloudEnvironmentsQuery, GetCloudEnvironmentsResult,
+    };
+    let data: GetCloudEnvironmentsQuery = signed_in_query("GetCloudEnvironmentsQuery").await;
+    let GetCloudEnvironmentsResult::GetCloudEnvironmentsOutput(output) =
+        data.get_cloud_environments
+    else {
+        panic!("GetCloudEnvironmentsQuery should return a GetCloudEnvironmentsOutput");
+    };
+    assert!(output.cloud_environments.is_empty());
+}
+
+#[tokio::test]
 async fn signed_in_operations_require_a_valid_server_token() {
     let state = state();
     assert_eq!(

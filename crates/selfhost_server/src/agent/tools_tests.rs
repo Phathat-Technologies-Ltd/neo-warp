@@ -128,3 +128,18 @@ fn recursive_globs_also_match_the_top_level() {
         vec!["**/*", "*", "**/*.rs", "*.rs", "src/*.toml"]
     );
 }
+
+#[test]
+fn long_results_keep_their_start_and_end() {
+    let text = format!("{}{}", "a".repeat(80_000), "é".repeat(60_000));
+    let truncated = truncate_middle(text, 1000);
+    assert!(truncated.len() < 1100);
+    assert!(truncated.starts_with("aaa"));
+    assert!(truncated.ends_with("é"));
+    assert!(truncated.contains("bytes of output omitted"));
+}
+
+#[test]
+fn short_results_are_unchanged() {
+    assert_eq!(truncate_middle("ok".to_owned(), 1000), "ok");
+}

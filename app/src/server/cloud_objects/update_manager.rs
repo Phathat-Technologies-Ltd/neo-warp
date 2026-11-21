@@ -38,7 +38,7 @@ use crate::ai::execution_profiles::{AIExecutionProfile, CloudAIExecutionProfileM
 use crate::ai::facts::{AIFact, CloudAIFactModel};
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::templatable::{CloudTemplatableMCPServerModel, TemplatableMCPServer};
-use crate::auth::AuthStateProvider;
+use crate::auth::{self, AuthStateProvider};
 use crate::auth::auth_manager::AuthManager;
 use crate::cloud_object::model::actions::{
     ObjectAction, ObjectActionHistory, ObjectActionType, ObjectActions,
@@ -1068,7 +1068,10 @@ impl UpdateManager {
         self.save_to_db(sqlite_events);
 
         // Sequentially start dequeueing the sync queue after we pull updates from the server.
-        SyncQueue::handle(ctx).update(ctx, |queue, ctx| queue.start_dequeueing(ctx));
+        // Organization servers don't store Warp Drive objects, so they stay on this machine.
+        if !auth::is_organization_sign_in() {
+            SyncQueue::handle(ctx).update(ctx, |queue, ctx| queue.start_dequeueing(ctx));
+        }
 
         self.has_initial_load.set();
 

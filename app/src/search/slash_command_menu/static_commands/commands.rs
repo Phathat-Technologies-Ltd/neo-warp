@@ -122,7 +122,9 @@ pub const API_KEYS: StaticCommand = StaticCommand {
     name: "/api-keys",
     description: "View and manage API keys",
     kind: SlashCommandKind::ApiKeys,
-    supported_surfaces: SlashCommandSurfaces::TuiOnly,
+    supported_surfaces: SlashCommandSurfaces::GuiAndTui {
+        icon_path: "bundled/svg/key.svg",
+    },
     availability: Availability::AI_ENABLED,
     auto_enter_ai_mode: false,
     argument: None,
