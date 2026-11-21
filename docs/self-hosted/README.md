@@ -40,8 +40,14 @@ Nothing connects to Warp's servers. To allowlist neo-warp on a firewall, allow:
 
    Writing there takes admin rights, which is the point: users can't point the app at another
    server or identity provider. Device management (MDM) can deploy it.
-3. Distribute the release archive. Users run `neo-warp` from the extracted folder; keep the
-   `resources/` folder next to the binary.
+3. Distribute a release:
+   - **Desktop app (macOS):** `neo-warp-<version>-macos-<arch>-app.zip` contains `neo-warp.app`;
+     users move it to Applications. Build it with `script/neo-warp/package-app <version>`.
+   - **Terminal app:** `neo-warp-<version>-<os>-<arch>.tar.gz`; users run `neo-warp` from the
+     extracted folder, keeping the `resources/` folder next to the binary. Build it with
+     `script/neo-warp/package <version>`.
+
+   Both keep their data apart from any Warp installation (macOS: `~/.warp-oss-neo-warp`).
 
    Sign macOS builds (`CODESIGN_IDENTITY=... script/neo-warp/package <version>`). macOS ties
    keychain access to the app's signature, so each unsigned build asks every user for their
@@ -52,9 +58,11 @@ Their current sign-in ends within 12 hours at most, and they can't sign in again
 
 ## Use (people in the organization)
 
-1. Run `neo-warp` and choose **Sign in with Microsoft** (or your provider's name). Approve in the
+1. Open neo-warp and choose **Sign in with Microsoft** (or your provider's name). Approve in the
    browser.
-2. Type `/api-keys`, choose **Anthropic**, and connect Claude:
+2. Type `/api-keys` and connect Claude. In the desktop app this opens Settings, where
+   **Continue with Claude** signs in to an Anthropic Console organization and the Anthropic field
+   takes an API key. In the terminal app, choose **Anthropic**, then:
    - **Connect with Claude: Console** for an Anthropic Console (API) organization.
    - **Connect with Claude: Claude Code** for a Claude Pro, Max, or Team subscription (not yet
      verified end to end in 0.1.0; prefer Console or an API key).
@@ -78,7 +86,9 @@ The model picker lists Claude Opus 5.5 (default), Sonnet 5.5, Haiku 5.5, and Fab
 
 ## Current limits (0.1.0)
 
-- Terminal (TUI) app only; the desktop GUI isn't covered yet.
+- The desktop app is macOS only so far; the terminal app runs on macOS and Linux.
+- In the desktop app, Claude logins use Console accounts; the Claude Code subscription login is
+  terminal-only.
 - Claude models only.
 - No cloud agents, Warp Drive, shared sessions, or other features that need Warp's service.
 - Agent tools: shell commands, read/edit/write files, grep, and find files. MCP tools, plans,
