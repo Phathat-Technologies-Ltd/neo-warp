@@ -202,6 +202,8 @@ pub struct AuthSession {
     oauth_client: OAuth2Client,
     refresh_lock: AsyncMutex<()>,
     refresh_state: Mutex<RefreshState>,
+    /// Root URL of a self-hosted token service that replaces Firebase's token endpoints.
+    self_hosted_token_root: Option<String>,
     #[cfg(test)]
     refresh_urls: Option<(String, String)>,
     #[cfg(test)]
@@ -223,6 +225,7 @@ impl AuthSession {
             oauth_client: Self::create_oauth_client(),
             refresh_lock: AsyncMutex::new(()),
             refresh_state: Mutex::new(RefreshState::default()),
+            self_hosted_token_root: self_hosted_token_root_url(),
             #[cfg(test)]
             refresh_urls: None,
             #[cfg(test)]
@@ -455,12 +458,27 @@ impl AuthSession {
     fn fetch_auth_tokens(&self, token: FirebaseToken) -> BoxFuture<'static, TokenRefreshResult> {
         let client = self.client.clone();
         let firebase_api_key = ChannelState::firebase_api_key();
-        let direct_url = token.access_token_url(&firebase_api_key);
+        let self_hosted_token_root = self.self_hosted_token_root.clone();
+        let direct_url = match &self_hosted_token_root {
+            Some(token_root) => token.self_hosted_access_token_url(token_root),
+            None => token.access_token_url(&firebase_api_key),
+        };
         let proxy_url = token.proxy_url(&ChannelState::server_root_url(), &firebase_api_key);
         #[cfg(test)]
         let (direct_url, proxy_url) = self.refresh_urls.clone().unwrap_or((direct_url, proxy_url));
         Box::pin(async move {
             let request_body = token.access_token_request_body();
+            // The self-hosted token service is the only authority; falling back to Warp's proxy
+            // would send the user's token to a server that doesn't know them.
+            if self_hosted_token_root.is_some() {
+                return Self::fetch_access_token(
+                    client
+                        .post(&direct_url)
+                        .form(&request_body)
+                        .timeout(FETCH_ACCESS_TOKEN_TIMEOUT),
+                )
+                .await;
+            }
             let direct_result = Self::fetch_access_token(
                 client
                     .post(&direct_url)
@@ -552,6 +570,16 @@ impl AuthSession {
         })
     }
 }
+
+fn self_hosted_token_root_url() -> Option<String> {
+    std::env::var(SELF_HOSTED_TOKEN_ROOT_ENV)
+        .ok()
+        .map(|url| url.trim().to_owned())
+        .filter(|url| !url.is_empty())
+        .or_else(|| ChannelState::auth_token_root_url().map(|url| url.into_owned()))
+}
+
+const SELF_HOSTED_TOKEN_ROOT_ENV: &str = "WARP_AUTH_TOKEN_ROOT_URL";
 
 #[cfg(test)]
 #[path = "session_tests.rs"]

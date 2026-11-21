@@ -113,6 +113,7 @@ pub(super) enum AuthenticationFailureReason {
     InvalidState,
     MissingState,
     DeviceCodeRequestTimeout,
+    OrganizationAccessDenied,
     Unexpected,
 }
 
@@ -126,6 +127,7 @@ impl AuthenticationFailureReason {
             UserAuthenticationError::DeviceCodeRequestTimedOut { .. } => {
                 Self::DeviceCodeRequestTimeout
             }
+            UserAuthenticationError::OrganizationAccessDenied(_) => Self::OrganizationAccessDenied,
             UserAuthenticationError::Unexpected(_) => Self::Unexpected,
         }
     }
@@ -137,6 +139,7 @@ impl AuthenticationFailureReason {
             Self::InvalidState => "invalid_state",
             Self::MissingState => "missing_state",
             Self::DeviceCodeRequestTimeout => "device_code_request_timeout",
+            Self::OrganizationAccessDenied => "organization_access_denied",
             Self::Unexpected => "unexpected",
         }
     }

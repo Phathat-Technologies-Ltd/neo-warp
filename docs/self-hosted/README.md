@@ -1,0 +1,96 @@
+# neo-warp
+
+neo-warp is a terminal with a built-in coding agent for organizations that don't want a vendor's
+server between their people and their tools. It is built from Warp's open-source client and runs
+without Warp's service:
+
+- **Sign-in** goes through your own identity provider (any OpenID Connect provider; Microsoft
+  Entra ID is tested). There are no Warp accounts.
+- **The agent** runs inside the app. It is goose's agent loop (`oi-kit-agent`), driving Warp's
+  terminal tools: shell commands, reading, editing, and searching files.
+- **Models** are Claude, called directly at Anthropic with each user's own credential: a Claude
+  Console login, a Claude Code subscription login, or an Anthropic API key.
+
+## How it connects
+
+```
+neo-warp (on the user's machine)
+ ├─ sign-in ──────────────► your identity provider (e.g. login.microsoftonline.com)
+ ├─ embedded server (127.0.0.1, in-process): sessions, model list, agent loop
+ │    └─ model calls ─────► api.anthropic.com
+ └─ Claude login (once) ──► Anthropic sign-in pages, through the bundled `ant` CLI
+```
+
+Nothing connects to Warp's servers. To allowlist neo-warp on a firewall, allow:
+
+| Host | Used for |
+|---|---|
+| Your identity provider's issuer host (Entra: `login.microsoftonline.com`) | Sign-in |
+| `api.anthropic.com` | Model calls, token refresh |
+| `platform.claude.com`, `claude.ai` | The one-time Claude login in the browser |
+
+## Install (admin)
+
+1. Register neo-warp with your identity provider. For Entra, follow [entra-setup.md](entra-setup.md).
+2. Copy `organization.toml.example` to the system-wide location and fill in your issuer URL and
+   client ID:
+   - macOS: `/Library/Application Support/Warp/organization.toml`
+   - Linux: `/etc/warp/organization.toml`
+   - Windows: `%ProgramData%\Warp\organization.toml`
+
+   Writing there takes admin rights, which is the point: users can't point the app at another
+   server or identity provider. Device management (MDM) can deploy it.
+3. Distribute the release archive. Users run `neo-warp` from the extracted folder; keep the
+   `resources/` folder next to the binary.
+
+   Sign macOS builds (`CODESIGN_IDENTITY=... script/neo-warp/package <version>`). macOS ties
+   keychain access to the app's signature, so each unsigned build asks every user for their
+   password before it can read their saved sign-in and Claude login.
+
+To revoke someone's access, remove them (or their group assignment) in your identity provider.
+Their current sign-in ends within 12 hours at most, and they can't sign in again.
+
+## Use (people in the organization)
+
+1. Run `neo-warp` and choose **Sign in with Microsoft** (or your provider's name). Approve in the
+   browser.
+2. Type `/api-keys`, choose **Anthropic**, and connect Claude:
+   - **Connect with Claude: Console** for an Anthropic Console (API) organization.
+   - **Connect with Claude: Claude Code** for a Claude Pro, Max, or Team subscription (not yet
+     verified end to end in 0.1.0; prefer Console or an API key).
+   - **Pasted API Key** for an `sk-ant-...` key your organization gave you.
+3. Press Esc and ask the agent something. It asks before running commands that change things.
+
+The model picker lists Claude Opus 5.5 (default), Sonnet 5.5, Haiku 5.5, and Fable 5.2.
+
+## Security model
+
+- Sign-in tokens are validated against your identity provider's signing keys (issuer, audience,
+  expiry, and a nonce tied to the sign-in attempt). The embedded server signs its own session
+  tokens with a per-installation secret stored in the app's data directory (mode 0600). Sessions
+  last at most 12 hours before the identity provider is asked again.
+- Claude credentials stay on the user's machine (the OS keychain, and for Console logins, the
+  bundled `ant` CLI's private config directory) and go only to Anthropic.
+- Because the agent server runs on the user's own machine, the identity-provider check is
+  enforced by the app, not by a server you control. A user who rebuilds the app could skip it,
+  but would gain nothing beyond their own Claude credentials. For centrally enforced access, run
+  the standalone `selfhost-server` and set `server_url`.
+
+## Current limits (0.1.0)
+
+- Terminal (TUI) app only; the desktop GUI isn't covered yet.
+- Claude models only.
+- No cloud agents, Warp Drive, shared sessions, or other features that need Warp's service.
+- Agent tools: shell commands, read/edit/write files, grep, and find files. MCP tools, plans,
+  and subagents aren't wired to the agent yet.
+- Sign-in needs a browser on the same machine; there's no device-code flow for SSH sessions yet.
+
+## Licenses
+
+neo-warp is AGPL-3.0 (its UI framework is MIT), as Warp's client code is. Distributing a modified
+build obliges you to offer its source to its users. It bundles goose's agent crates (Apache-2.0)
+and Anthropic's `ant` CLI (Apache-2.0, licenses in `resources/bin/ant-licenses`). Third-party
+Rust dependencies are listed in `resources/THIRD_PARTY_LICENSES.txt`.
+
+"Warp" is a trademark of Denver Technologies, Inc.; the AGPL grants no trademark rights. Check the
+name before distributing outside your organization.

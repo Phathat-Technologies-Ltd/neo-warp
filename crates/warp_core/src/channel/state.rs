@@ -32,6 +32,9 @@ pub struct ChannelState {
     additional_features: HashSet<FeatureFlag>,
 
     config: ChannelConfig,
+
+    /// Root URL of a self-hosted token service that replaces Firebase's token endpoints.
+    auth_token_root_url: Option<Cow<'static, str>>,
 }
 
 impl ChannelState {
@@ -51,6 +54,7 @@ impl ChannelState {
                 crash_reporting_config: None,
                 mcp_static_config: None,
             },
+            auth_token_root_url: None,
         }
     }
 
@@ -69,6 +73,7 @@ impl ChannelState {
             channel,
             additional_features: Default::default(),
             config,
+            auth_token_root_url: None,
         }
     }
 
@@ -96,6 +101,20 @@ impl ChannelState {
         channel_state.config.server_config.server_root_url = url;
         channel_state.config.server_config.iap_config = None;
         Ok(())
+    }
+
+    /// Sends Firebase-style token exchange and refresh to a self-hosted token service at `url`.
+    pub fn override_auth_token_root_url(
+        url: impl Into<Cow<'static, str>>,
+    ) -> Result<(), ParseError> {
+        let url = url.into();
+        Url::parse(&url)?;
+        CHANNEL_STATE.lock().auth_token_root_url = Some(url);
+        Ok(())
+    }
+
+    pub fn auth_token_root_url() -> Option<Cow<'static, str>> {
+        CHANNEL_STATE.lock().auth_token_root_url.clone()
     }
 
     pub fn override_ws_server_url(url: impl Into<Cow<'static, str>>) -> Result<(), ParseError> {

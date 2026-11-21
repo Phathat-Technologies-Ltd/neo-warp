@@ -802,3 +802,78 @@ fn refresh_result_does_not_overwrite_replaced_credentials() {
     assert!(event_receiver.try_recv().is_err());
     direct_request.assert();
 }
+
+#[test]
+fn self_hosted_token_service_failure_does_not_fall_back_to_the_proxy() {
+    let (token_root, direct_request, proxy_request) = {
+        let mut server = ChannelState::mock_server();
+        let direct_request = server
+            .mock("POST", "/self-hosted/v1/token")
+            .match_body(Matcher::UrlEncoded(
+                "refresh_token".to_string(),
+                "refresh-token".to_string(),
+            ))
+            .with_status(503)
+            .with_body("unavailable")
+            .expect(1)
+            .create();
+        let proxy_request = server
+            .mock("POST", Matcher::Regex("^/proxy/token".to_string()))
+            .with_status(200)
+            .with_body(successful_refresh_response("proxy-id", "proxy-refresh"))
+            .expect(0)
+            .create();
+        (
+            format!("{}/self-hosted", server.url()),
+            direct_request,
+            proxy_request,
+        )
+    };
+    let auth_state = Arc::new(AuthState::new_logged_out_for_test());
+    auth_state.set_credentials(Some(expired_firebase_credentials("refresh-token")));
+    let (mut session, _) = session_with_state(auth_state);
+    session.self_hosted_token_root = Some(token_root);
+
+    assert!(block_on(session.get_or_refresh_access_token()).is_err());
+    direct_request.assert();
+    proxy_request.assert();
+}
+
+#[test]
+fn self_hosted_token_service_refreshes_tokens() {
+    let (token_root, request) = {
+        let mut server = ChannelState::mock_server();
+        let request = server
+            .mock("POST", "/self-hosted-ok/v1/token")
+            .with_status(200)
+            .with_body(successful_refresh_response(
+                "self-hosted-id",
+                "next-refresh",
+            ))
+            .expect(1)
+            .create();
+        (format!("{}/self-hosted-ok/", server.url()), request)
+    };
+    let auth_state = Arc::new(AuthState::new_logged_out_for_test());
+    auth_state.set_credentials(Some(expired_firebase_credentials("refresh-token")));
+    let (mut session, _) = session_with_state(auth_state);
+    session.self_hosted_token_root = Some(token_root);
+
+    let token = block_on(session.get_or_refresh_access_token()).unwrap();
+
+    assert!(matches!(token, AuthToken::Firebase(token) if token == "self-hosted-id"));
+    request.assert();
+}
+
+#[test]
+fn self_hosted_urls_mirror_the_firebase_endpoints() {
+    let root = "https://auth.example.com/";
+    assert_eq!(
+        FirebaseToken::Refresh(RefreshToken::new("r")).self_hosted_access_token_url(root),
+        "https://auth.example.com/v1/token"
+    );
+    assert_eq!(
+        FirebaseToken::Custom("c".to_string()).self_hosted_access_token_url(root),
+        "https://auth.example.com/v1/accounts:signInWithCustomToken"
+    );
+}

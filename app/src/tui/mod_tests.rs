@@ -450,3 +450,40 @@ fn emits_logged_out_event_and_resets_login_details() {
         });
     });
 }
+
+#[test]
+fn organization_sign_in_url_waits_for_login_and_opens_the_browser() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| {
+            login_model(TuiLoginPhase::AwaitingLogin { browser_url: None })
+        });
+        let url = "https://login.example/authorize?client_id=c".to_owned();
+        let opened_url = Rc::new(std::cell::RefCell::new(None));
+        let opened_url_for_callback = opened_url.clone();
+        app.update(|ctx| {
+            ctx.set_before_open_url(move |url, _| {
+                opened_url_for_callback.replace(Some(url.to_owned()));
+                url.to_owned()
+            });
+            handle_auth_manager_event(
+                &AuthManagerEvent::ReceivedOrganizationSignInUrl { url: url.clone() },
+                ctx,
+            );
+        });
+
+        assert_eq!(opened_url.borrow().as_deref(), Some(url.as_str()));
+        app.read(|ctx| {
+            assert!(matches!(
+                TuiLoginModel::as_ref(ctx).phase(),
+                TuiLoginPhase::AwaitingLogin {
+                    browser_url: Some(browser_url),
+                } if browser_url == &url
+            ));
+        });
+    });
+}
+
+#[test]
+fn sign_in_label_defaults_to_warp_without_an_organization() {
+    assert_eq!(TuiLoginModel::sign_in_label(), "Log in with Warp");
+}

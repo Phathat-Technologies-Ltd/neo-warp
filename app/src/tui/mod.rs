@@ -28,6 +28,7 @@ use crate::ai::mcp::FileBasedMCPManager;
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::auth::auth_state::AuthState;
 use crate::auth::{self, AuthStateProvider};
+use crate::server::server_api::auth::UserAuthenticationError;
 use crate::tui_onboarding_markers::TuiOnboardingMarkers;
 
 /// Login state of the headless TUI, observed by the `warp_tui` root view to
@@ -77,6 +78,38 @@ impl TuiLoginModel {
     pub fn phase(&self) -> &TuiLoginPhase {
         &self.phase
     }
+
+    /// Whether this build signs users in through their organization (neo-warp) instead of a
+    /// Warp account.
+    pub fn is_organization_sign_in() -> bool {
+        organization_sign_in().is_some()
+    }
+
+    /// The product name shown to users.
+    pub fn product_name() -> &'static str {
+        if Self::is_organization_sign_in() {
+            ORGANIZATION_PRODUCT_NAME
+        } else {
+            "Warp"
+        }
+    }
+
+    /// The name of this terminal front end shown to users.
+    pub fn cli_name() -> &'static str {
+        if Self::is_organization_sign_in() {
+            ORGANIZATION_PRODUCT_NAME
+        } else {
+            "Warp Agent CLI"
+        }
+    }
+
+    /// The label of the welcome screen's sign-in action.
+    pub fn sign_in_label() -> String {
+        organization_sign_in()
+            .map(|config| config.button_label())
+            .unwrap_or_else(|| "Log in with Warp".to_owned())
+    }
+
     /// Starts or retries device authorization from a signed-out screen.
     pub fn start_device_login(ctx: &mut AppContext) {
         start_tui_device_login(ctx);
@@ -288,6 +321,29 @@ fn handle_auth_manager_event(event: &AuthManagerEvent, ctx: &mut AppContext) {
             );
             TuiLoginModel::open_login_url(&url_to_open, ctx);
         }
+        AuthManagerEvent::ReceivedOrganizationSignInUrl { url } => {
+            let event = TuiLoginModel::handle(ctx)
+                .update(ctx, |model, _| model.telemetry.device_authorization_ready());
+            send_tui_onboarding_event(event, ctx);
+            set_login_phase(
+                ctx,
+                TuiLoginPhase::AwaitingLogin {
+                    browser_url: Some(url.clone()),
+                },
+            );
+            TuiLoginModel::open_login_url(url, ctx);
+        }
+        AuthManagerEvent::NeedsReauth if organization_sign_in().is_some() => {
+            // The organization session outlived its limit (or the user was removed), so the
+            // stored identity is stale; ask for a fresh sign-in instead of showing it.
+            auth::log_out(ctx);
+            return_to_organization_sign_in(
+                TuiLoginPhase::Failed {
+                    message: SIGN_IN_EXPIRED_MESSAGE.to_owned(),
+                },
+                ctx,
+            );
+        }
         AuthManagerEvent::AuthComplete => {
             set_login_phase(ctx, TuiLoginPhase::LoggedIn);
             TuiOnboardingMarkers::handle(ctx).update(ctx, |markers, ctx| {
@@ -320,7 +376,7 @@ fn handle_auth_manager_event(event: &AuthManagerEvent, ctx: &mut AppContext) {
             set_login_phase(
                 ctx,
                 TuiLoginPhase::Failed {
-                    message: format!("{err:#}"),
+                    message: login_failure_message(err),
                 },
             );
         }
@@ -328,10 +384,17 @@ fn handle_auth_manager_event(event: &AuthManagerEvent, ctx: &mut AppContext) {
     }
 }
 
+/// Starts sign-in: through the organization's identity provider when one is configured,
+/// otherwise Warp device authorization.
 fn authorize_device(ctx: &mut AppContext) {
-    AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-        auth_manager.authorize_device(ctx);
+    AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| match organization_sign_in() {
+        Some(config) => auth_manager.authorize_with_organization(config.clone(), ctx),
+        None => auth_manager.authorize_device(ctx),
     });
+}
+
+fn organization_sign_in() -> Option<&'static org_sign_in::OrganizationSignInConfig> {
+    auth::organization::sign_in_config()
 }
 
 fn tui_verification_url(verification_url: &str, user_code: &str) -> String {
@@ -386,14 +449,57 @@ fn start_tui_device_login_with_entrypoint(
         authorize_device(ctx);
     }
 }
-/// Logs out the current TUI user and sends them to Warp web's logged-out flow.
+/// Logs out the current TUI user. Warp accounts continue to Warp web's logged-out flow;
+/// organization sign-in returns to the welcome screen, since the identity provider session
+/// belongs to the organization.
 pub fn log_out_tui(ctx: &mut AppContext) {
     auth::log_out(ctx);
     TuiOnboardingMarkers::handle(ctx).update(ctx, |markers, ctx| {
         markers.reset_for_account_transition(ctx);
     });
+    if organization_sign_in().is_some() {
+        return_to_organization_sign_in(TuiLoginPhase::SignedOutWelcome, ctx);
+        return;
+    }
     set_logged_out_phase(ctx);
     authorize_device(ctx);
+}
+
+const ORGANIZATION_PRODUCT_NAME: &str = "neo-warp";
+const SIGN_IN_EXPIRED_MESSAGE: &str = "Your sign-in expired. Sign in again to continue.";
+
+fn login_failure_message(err: &UserAuthenticationError) -> String {
+    match err {
+        // A refused refresh means the organization session ended, not a broken login.
+        UserAuthenticationError::DeniedAccessToken(_)
+        | UserAuthenticationError::UserAccountDisabled(_)
+            if organization_sign_in().is_some() =>
+        {
+            SIGN_IN_EXPIRED_MESSAGE.to_owned()
+        }
+        UserAuthenticationError::DeniedAccessToken(_)
+        | UserAuthenticationError::UserAccountDisabled(_)
+        | UserAuthenticationError::InvalidStateParameter
+        | UserAuthenticationError::MissingStateParameter
+        | UserAuthenticationError::DeviceCodeRequestTimedOut { .. }
+        | UserAuthenticationError::OrganizationAccessDenied(_)
+        | UserAuthenticationError::Unexpected(_) => format!("{err:#}"),
+    }
+}
+
+/// Returns an organization-signed-in TUI to its sign-in screen. Organization sign-in has no web
+/// logout to run: the identity provider session belongs to the organization.
+fn return_to_organization_sign_in(phase: TuiLoginPhase, ctx: &mut AppContext) {
+    AuthManager::handle(ctx).update(ctx, |auth_manager, _| {
+        auth_manager.cancel_organization_sign_in();
+    });
+    TuiLoginModel::handle(ctx).update(ctx, |model, ctx| {
+        model.phase = phase;
+        model.browser_flow = TuiAuthBrowserFlow::DirectDeviceAuthorization;
+        ctx.notify();
+        ctx.emit(TuiLoginEvent::PhaseChanged);
+        ctx.emit(TuiLoginEvent::LoggedOut);
+    });
 }
 
 fn set_logged_out_phase(ctx: &mut AppContext) {

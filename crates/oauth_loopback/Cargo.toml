@@ -1,0 +1,17 @@
+[package]
+name = "oauth_loopback"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+futures.workspace = true
+instant.workspace = true
+serde_urlencoded.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serial_test = "0.8.0"

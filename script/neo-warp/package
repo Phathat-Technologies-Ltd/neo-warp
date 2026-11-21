@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+# Builds a neo-warp release archive for this machine's platform.
+#
+# Usage:
+#   script/neo-warp/package <version>
+#
+# Produces target/neo-warp/neo-warp-<version>-<os>-<arch>.tar.gz containing:
+#   neo-warp                      the terminal app (the OSS TUI binary)
+#   resources/                    bundled skills, settings schema, Anthropic's ant CLI, and
+#                                 THIRD_PARTY_LICENSES.txt
+#   organization.toml.example     the admin configuration template
+#   docs/                         the admin guides
+#   LICENSE-AGPL, LICENSE-MIT     this project's licenses
+#
+# On macOS, set CODESIGN_IDENTITY to sign the app and the bundled ant CLI.
+
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <version>" >&2
+  exit 1
+fi
+VERSION="$1"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+
+case "$(uname -s)" in
+  Darwin) os="macos"; features="standalone,voice_input" ;;
+  Linux) os="linux"; features="standalone" ;;
+  *) echo "Error: unsupported platform $(uname -s)" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  arm64 | aarch64) arch="arm64" ;;
+  x86_64 | amd64) arch="amd64" ;;
+  *) echo "Error: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+esac
+
+echo "Building neo-warp $VERSION for $os-$arch"
+GIT_RELEASE_TAG="neo-warp-v$VERSION" \
+  cargo build --release -p warp_tui --bin warp-tui-oss --features "$features"
+
+name="neo-warp-$VERSION-$os-$arch"
+stage="$REPO_ROOT/target/neo-warp/$name"
+rm -rf "$stage"
+mkdir -p "$stage/docs"
+
+cp "target/release/warp-tui-oss" "$stage/neo-warp"
+GIT_RELEASE_TAG="neo-warp-v$VERSION" SETTINGS_SCHEMA_EXECUTABLE="$stage/neo-warp" \
+  script/prepare_bundled_resources "$stage/resources" oss
+
+cp crates/org_sign_in/organization.toml.example "$stage/organization.toml.example"
+cp docs/self-hosted/*.md "$stage/docs/"
+cp LICENSE-AGPL LICENSE-MIT "$stage/"
+
+if [ "$os" = "macos" ] && [ -n "${CODESIGN_IDENTITY:-}" ]; then
+  codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$stage/resources/bin/ant"
+  codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$stage/neo-warp"
+fi
+
+archive="$REPO_ROOT/target/neo-warp/$name.tar.gz"
+tar -czf "$archive" -C "$REPO_ROOT/target/neo-warp" "$name"
+shasum -a 256 "$archive" > "$archive.sha256"
+echo "Packaged $archive"
+cat "$archive.sha256"

@@ -23,8 +23,8 @@ use crate::keybindings::TUI_BINDING_GROUP;
 use crate::session_registry::{TuiSessionView, TuiSessions};
 use crate::transient_hint::TransientHint;
 use crate::ui::{
-    LoginBrowserOpenFailedParams, LoginFailedParams, LoginWaitingParams, login_browser_open_failed,
-    login_failed, login_waiting, signed_out_welcome, terminal_starting,
+    LoginBrowserOpenFailedParams, LoginFailedParams, LoginWaitingParams, SignedOutWelcomeParams,
+    login_browser_open_failed, login_failed, login_waiting, signed_out_welcome, terminal_starting,
 };
 use crate::zero_state_animation::ZeroStateAnimationConfig;
 const LAST_TEAM_STORAGE_KEY: &str = "TuiLastTeamUid";
@@ -269,8 +269,11 @@ impl TuiView for RootTuiView {
                 TuiLoginPhase::SignedOutWelcome => signed_out_welcome(
                     self.auth_animation_clock,
                     self.auth_animation_config.clone(),
-                    self.welcome_login_mouse.clone(),
-                    self.welcome_copy_mouse.clone(),
+                    SignedOutWelcomeParams {
+                        login_mouse: self.welcome_login_mouse.clone(),
+                        copy_mouse: self.welcome_copy_mouse.clone(),
+                        login_label: &TuiLoginModel::sign_in_label(),
+                    },
                     ctx,
                     |event_ctx, _| {
                         event_ctx.dispatch_typed_action(RootTuiAction::StartDeviceLogin);

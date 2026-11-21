@@ -2513,3 +2513,35 @@ fn removing_a_provider_key_clears_its_hidden_selection() {
         });
     });
 }
+
+#[test]
+fn claude_login_counts_as_an_anthropic_credential_only_when_requests_carry_it() {
+    with_warp_cloud_allowlist_test_context(true, |app, _, _| {
+        set_warp_cloud_models_enabled(app, false);
+        ApiKeyManager::handle(app).update(app, |manager, ctx| {
+            manager.set_provider_key(LLMProvider::Anthropic, None, ctx);
+            manager.set_anthropic_tokens(
+                Some(ai::api_keys::AnthropicTokens {
+                    access_token: "sk-ant-oat01-login".to_owned(),
+                    ..Default::default()
+                }),
+                ctx,
+            );
+        });
+        let claude_visible = |app: &App| {
+            app.read(|app| {
+                is_warp_cloud_model_visible(
+                    &provider_llm("claude", LLMProvider::Anthropic),
+                    LLMPreferences::as_ref(app),
+                    app,
+                )
+            })
+        };
+        assert!(!claude_visible(app));
+
+        ApiKeyManager::handle(app).update(app, |manager, _| {
+            manager.set_send_anthropic_oauth_as_api_key(true);
+        });
+        assert!(claude_visible(app));
+    });
+}

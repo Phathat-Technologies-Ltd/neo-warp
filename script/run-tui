@@ -118,7 +118,7 @@ BUILD_DIR="${BUILD_DIR}/${PROFILE_DIR}"
 # generation remains skipped for local runs.
 prepare_tui_bundled_resources() {
   echo "Preparing bundled resources at ${BUILD_DIR}/resources (channel: ${CHANNEL})..."
-  NO_LICENSES=1 SETTINGS_SCHEMA_EXECUTABLE="${BUILD_DIR}/${BIN}" \
+  ANT_CLI_OPTIONAL=1 NO_LICENSES=1 SETTINGS_SCHEMA_EXECUTABLE="${BUILD_DIR}/${BIN}" \
     "${REPO_ROOT}/script/prepare_bundled_resources" \
     "${BUILD_DIR}/resources" "${CHANNEL}"
 }

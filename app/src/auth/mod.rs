@@ -8,6 +8,8 @@ mod login_error_modal;
 mod login_failure_notification;
 pub mod login_slide;
 pub mod needs_sso_link_view;
+#[cfg(not(target_family = "wasm"))]
+pub mod organization;
 pub mod paste_auth_token_modal;
 mod user_properties;
 pub use warp_server_auth::{auth_state, credentials, user, user_uid};
@@ -270,6 +272,19 @@ pub fn log_out_and_open_web(app: &mut AppContext) {
 }
 
 // Log out the user, clears workspace state, stops running processes, and deletes database.
+/// Whether users sign in through their organization's identity provider instead of a Warp
+/// account.
+pub fn is_organization_sign_in() -> bool {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        organization::sign_in_config().is_some()
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        false
+    }
+}
+
 pub fn log_out(app: &mut AppContext) {
     send_telemetry_sync_from_app_ctx!(TelemetryEvent::LogOut, app);
 

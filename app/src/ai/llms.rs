@@ -52,7 +52,11 @@ pub fn is_using_api_key_for_provider_in_conversation(
             manager.keys().openai.is_some()
                 || is_chatgpt_subscription_active_in_conversation(manager, conversation)
         }
-        LLMProvider::Anthropic => manager.keys().anthropic.is_some(),
+        LLMProvider::Anthropic => {
+            manager.keys().anthropic.is_some()
+                || (manager.sends_anthropic_oauth_as_api_key()
+                    && manager.has_anthropic_subscription())
+        }
         LLMProvider::Google => manager.keys().google.is_some(),
         LLMProvider::Xai => manager.grok_tokens().is_some(),
         LLMProvider::Unknown => false,
@@ -207,7 +211,12 @@ fn is_warp_cloud_model(llm: &LLMInfo, prefs: &LLMPreferences) -> bool {
     true
 }
 
+/// Whether Warp-hosted models may be offered. Organization sign-in has no Warp-hosted models: the
+/// self-hosted server's catalog is shown only for providers the user has credentials for.
 pub fn is_warp_cloud_models_enabled(app: &AppContext) -> bool {
+    if crate::auth::is_organization_sign_in() {
+        return false;
+    }
     !app.has_singleton_model::<crate::settings::AISettings>()
         || *crate::settings::AISettings::as_ref(app).warp_cloud_models_enabled
 }

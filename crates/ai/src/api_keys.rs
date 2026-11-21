@@ -547,6 +547,18 @@ pub struct AnthropicTokens {
     pub expires_at: Option<SystemTime>,
     #[serde(default)]
     pub connected_at: Option<SystemTime>,
+    #[serde(default)]
+    pub source: AnthropicTokenSource,
+}
+
+/// Where a connected Claude login's tokens come from, which decides how they're refreshed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AnthropicTokenSource {
+    /// The app's own OAuth flow; refreshed with the stored refresh token.
+    #[default]
+    OAuth,
+    /// The `ant` CLI's sign-in; `ant` holds the refresh token and renews the access token.
+    AntCli,
 }
 
 impl AnthropicTokens {
@@ -608,6 +620,9 @@ pub struct ApiKeyManager {
     /// `crate::grok_subscription` keeps these fresh.
     grok_tokens: Option<GrokTokens>,
     anthropic_tokens: Option<AnthropicTokens>,
+    /// Sends the connected Claude login's OAuth token in the request's Anthropic key field when
+    /// no key is pasted. Only a self-hosted server understands it there; Warp's does not.
+    send_anthropic_oauth_as_api_key: bool,
     chatgpt_connection: ChatGPTConnectionStatus,
     /// True while a ChatGPT OAuth attempt is waiting on the browser callback.
     chatgpt_oauth_pending: bool,
@@ -713,6 +728,7 @@ impl ApiKeyManager {
             },
             grok_tokens,
             anthropic_tokens,
+            send_anthropic_oauth_as_api_key: false,
             chatgpt_connection: ChatGPTConnectionStatus::Unknown,
             chatgpt_oauth_pending: false,
             #[cfg(not(target_family = "wasm"))]
@@ -998,6 +1014,16 @@ impl ApiKeyManager {
     pub fn anthropic_tokens(&self) -> Option<&AnthropicTokens> {
         self.anthropic_tokens.as_ref()
     }
+
+    pub fn set_send_anthropic_oauth_as_api_key(&mut self, enabled: bool) {
+        self.send_anthropic_oauth_as_api_key = enabled;
+    }
+
+    /// Whether requests can use the connected Claude login (see
+    /// `set_send_anthropic_oauth_as_api_key`).
+    pub fn sends_anthropic_oauth_as_api_key(&self) -> bool {
+        self.send_anthropic_oauth_as_api_key
+    }
     pub fn has_anthropic_subscription(&self) -> bool {
         self.anthropic_tokens
             .as_ref()
@@ -1252,7 +1278,15 @@ impl ApiKeyManager {
         geap_binding: Option<GeapMintBinding>,
     ) -> Option<api::request::settings::ApiKeys> {
         let anthropic = include_byo_keys
-            .then(|| self.keys.anthropic.clone())
+            .then(|| {
+                self.keys.anthropic.clone().or_else(|| {
+                    self.send_anthropic_oauth_as_api_key
+                        .then_some(self.anthropic_tokens.as_ref())
+                        .flatten()
+                        .and_then(AnthropicTokens::access_token_for_request)
+                        .map(str::to_owned)
+                })
+            })
             .flatten()
             .unwrap_or_default();
         let openai = include_byo_keys

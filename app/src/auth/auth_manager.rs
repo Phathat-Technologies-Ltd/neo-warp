@@ -86,6 +86,13 @@ pub enum AuthManagerEvent {
         #[cfg_attr(target_family = "wasm", allow(unused))]
         user_code: String,
     },
+    /// Organization sign-in is waiting for the user to sign in to their identity provider at
+    /// `url`.
+    // Organization sign-in has no GUI entry point yet.
+    #[cfg_attr(any(target_family = "wasm", not(feature = "tui")), allow(dead_code))]
+    ReceivedOrganizationSignInUrl {
+        url: String,
+    },
 }
 
 pub type LoginGatedFeature = &'static str;
@@ -140,6 +147,10 @@ pub struct AuthManager {
     auth_client: Arc<dyn AuthClient>,
     /// A generated state token that the web app must provide back to the client.
     pending_auth_state: Option<String>,
+    /// Cancels the in-flight organization sign-in's loopback wait.
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    organization_sign_in_cancellation: Option<org_sign_in::CancellationHandle>,
 }
 
 impl AuthManager {
@@ -157,6 +168,8 @@ impl AuthManager {
             server_api,
             auth_client,
             pending_auth_state: None,
+            #[cfg(not(target_family = "wasm"))]
+            organization_sign_in_cancellation: None,
         }
     }
 
@@ -174,6 +187,8 @@ impl AuthManager {
             server_api,
             auth_client,
             pending_auth_state: None,
+            #[cfg(not(target_family = "wasm"))]
+            organization_sign_in_cancellation: None,
         }
     }
 
@@ -361,6 +376,92 @@ impl AuthManager {
             },
             Self::on_device_code_received,
         );
+    }
+
+    /// Signs the user in through their organization's identity provider: emits
+    /// [`AuthManagerEvent::ReceivedOrganizationSignInUrl`] once the browser should open, then
+    /// completes like device authorization, with `AuthComplete` or `AuthFailed`.
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    pub fn authorize_with_organization(
+        &mut self,
+        config: org_sign_in::OrganizationSignInConfig,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.cancel_organization_sign_in();
+        self.auth_state.set_credentials(None);
+        let issuer = config.issuer.clone();
+        ctx.spawn(
+            async move { org_sign_in::discover(&issuer).await },
+            move |me, metadata, ctx| me.on_organization_metadata(config, metadata, ctx),
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    fn on_organization_metadata(
+        &mut self,
+        config: org_sign_in::OrganizationSignInConfig,
+        metadata: Result<org_sign_in::ProviderMetadata>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let attempt =
+            metadata.and_then(|metadata| org_sign_in::SignInAttempt::start(&config, metadata));
+        let attempt = match attempt {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                ctx.emit(AuthManagerEvent::AuthFailed(
+                    UserAuthenticationError::Unexpected(
+                        error.context("Couldn't reach your organization's sign-in service"),
+                    ),
+                ));
+                return;
+            }
+        };
+        self.organization_sign_in_cancellation = Some(attempt.cancellation_handle());
+        ctx.emit(AuthManagerEvent::ReceivedOrganizationSignInUrl {
+            url: attempt.authorize_url(),
+        });
+
+        let auth_client = self.auth_client.clone();
+        let server_root_url = ChannelState::server_root_url().into_owned();
+        let (_release, id_token) = attempt.finish();
+        ctx.spawn(
+            async move {
+                let custom_token = async {
+                    let id_token = id_token.await?;
+                    org_sign_in::exchange_with_backend(&server_root_url, &id_token).await
+                }
+                .await
+                .map_err(|error| match error {
+                    org_sign_in::SignInError::AccessDenied(detail) => {
+                        UserAuthenticationError::OrganizationAccessDenied(detail)
+                    }
+                    org_sign_in::SignInError::Other(error) => {
+                        UserAuthenticationError::Unexpected(error)
+                    }
+                })?;
+                auth_client
+                    .fetch_user(
+                        LoginToken::Firebase(FirebaseToken::Custom(custom_token)),
+                        false,
+                    )
+                    .await
+            },
+            |me, result, ctx| {
+                me.organization_sign_in_cancellation = None;
+                me.on_user_fetched(result, ctx);
+            },
+        );
+    }
+
+    /// Stops waiting for an in-flight organization sign-in, freeing its loopback port.
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    pub fn cancel_organization_sign_in(&mut self) {
+        if let Some(cancellation) = self.organization_sign_in_cancellation.take() {
+            cancellation.cancel();
+        }
     }
 
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -589,6 +690,7 @@ impl AuthManager {
                     }
                     UserAuthenticationError::UserAccountDisabled(_) => {}
                     UserAuthenticationError::DeviceCodeRequestTimedOut { .. } => {}
+                    UserAuthenticationError::OrganizationAccessDenied(_) => {}
                     UserAuthenticationError::Unexpected(_) => {}
                     UserAuthenticationError::InvalidStateParameter => {}
                     UserAuthenticationError::MissingStateParameter => {}

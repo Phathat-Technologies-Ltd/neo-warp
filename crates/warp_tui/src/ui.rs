@@ -2,6 +2,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use warp::TuiLoginModel;
 use warpui_core::AppContext;
 use warpui_core::elements::animation::AnimationClock;
 use warpui_core::elements::tui::{
@@ -138,7 +139,7 @@ pub(crate) fn centered_in_viewport(content: Box<dyn TuiElement>) -> Box<dyn TuiE
 }
 
 pub(crate) fn render_welcome_title(builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
-    TuiText::new("Welcome to Warp")
+    TuiText::new(format!("Welcome to {}", TuiLoginModel::product_name()))
         .with_style(builder.brand_primary_style().add_modifier(Modifier::BOLD))
         .truncate()
         .finish()
@@ -148,6 +149,10 @@ pub(crate) fn append_welcome_capability_section(
     mut column: TuiFlex,
     builder: &TuiUiBuilder,
 ) -> TuiFlex {
+    // These describe Warp's hosted service, not an organization build.
+    if TuiLoginModel::is_organization_sign_in() {
+        return column;
+    }
     column = column.child(
         TuiText::new("What’s different about Warp")
             .with_style(builder.muted_text_style())
@@ -171,16 +176,28 @@ pub(crate) fn append_welcome_capability_section(
     column
 }
 
+/// Sign-in controls on the signed-out welcome screen.
+pub(crate) struct SignedOutWelcomeParams<'a> {
+    pub(crate) login_mouse: MouseStateHandle,
+    pub(crate) copy_mouse: MouseStateHandle,
+    /// Label of the sign-in action, e.g. "Log in with Warp" or "Sign in with Microsoft".
+    pub(crate) login_label: &'a str,
+}
+
 /// Signed-out welcome shown before browser device authorization begins.
 pub(crate) fn signed_out_welcome(
     clock: AnimationClock,
     animation_config: Arc<ZeroStateAnimationConfig>,
-    login_mouse: MouseStateHandle,
-    copy_mouse: MouseStateHandle,
+    params: SignedOutWelcomeParams<'_>,
     app: &AppContext,
     on_login: impl FnMut(&mut TuiEventContext, &AppContext) + Clone + 'static,
     on_copy: impl FnMut(&mut TuiEventContext, &AppContext) + Clone + 'static,
 ) -> Box<dyn TuiElement> {
+    let SignedOutWelcomeParams {
+        login_mouse,
+        copy_mouse,
+        login_label,
+    } = params;
     let builder = TuiUiBuilder::from_app(app);
     let primary = builder.primary_text_style();
     let muted = builder.muted_text_style();
@@ -216,7 +233,7 @@ pub(crate) fn signed_out_welcome(
         .child(
             TuiHoverable::new(
                 login_mouse,
-                TuiText::new("Log in with Warp")
+                TuiText::new(login_label)
                     .with_style(login_style)
                     .truncate()
                     .finish(),
@@ -293,7 +310,7 @@ pub(crate) fn login_waiting(
         .add_modifier(Modifier::BOLD);
     let mut content = TuiFlex::column()
         .child(
-            TuiText::new("Welcome to Warp")
+            TuiText::new(format!("Welcome to {}", TuiLoginModel::product_name()))
                 .with_style(title)
                 .truncate()
                 .finish(),
@@ -436,7 +453,7 @@ pub(crate) fn login_browser_open_failed(
     let mut on_copy_key = on_copy.clone();
     let content = TuiFlex::column()
         .child(
-            TuiText::new("Welcome to Warp")
+            TuiText::new(format!("Welcome to {}", TuiLoginModel::product_name()))
                 .with_style(title)
                 .truncate()
                 .finish(),
@@ -615,7 +632,7 @@ pub(crate) fn login_failed(
     let mut on_retry_enter = on_retry.clone();
     let content = TuiFlex::column()
         .child(
-            TuiText::new("Welcome to Warp")
+            TuiText::new(format!("Welcome to {}", TuiLoginModel::product_name()))
                 .with_style(title)
                 .truncate()
                 .finish(),

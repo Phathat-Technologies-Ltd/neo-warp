@@ -1087,6 +1087,8 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     // The `run` function already initializes feature flags, but ensure they're initialized here
     // for other entrypoints.
     features::init_feature_flags();
+    #[cfg(not(target_family = "wasm"))]
+    auth::organization::init();
 
     #[cfg(feature = "crash_reporting")]
     if launch_mode.needs_crash_reporting() {
@@ -1863,6 +1865,15 @@ pub(crate) fn initialize_app(
         )
     });
 
+    #[cfg(not(target_family = "wasm"))]
+    ::ai::anthropic_subscription::ant_cli::configure(
+        bundled_ant_cli()
+            .or_else(|| warp_util::path::resolve_executable("ant").map(|path| path.into_owned())),
+        warp_core::paths::secure_state_dir()
+            .unwrap_or_else(warp_core::paths::state_dir)
+            .join("anthropic-cli"),
+    );
+
     // Initialize ApiKeyManager after UserWorkspaces so it can subscribe to workspace/settings changes
     ctx.add_singleton_model(|ctx| {
         #[cfg_attr(target_family = "wasm", allow(unused_mut))]
@@ -1879,6 +1890,7 @@ pub(crate) fn initialize_app(
         if FeatureFlag::GeminiEnterprise.is_enabled() {
             manager.subscribe_to_geap_settings_changes(ctx);
         }
+        manager.set_send_anthropic_oauth_as_api_key(auth::is_organization_sign_in());
         // The Grok subscription refresher (`ai::grok_subscription`) has no
         // visibility into workspace policy, so wire the BYO API key policy in
         // here. The initial value resumes proactive refresh of any tokens
@@ -3359,3 +3371,12 @@ fn init_logging_for_unit_tests_glue() {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+/// Anthropic's `ant` CLI shipped in the app's bundled resources, used for Claude Console sign-in.
+#[cfg(not(target_family = "wasm"))]
+fn bundled_ant_cli() -> Option<std::path::PathBuf> {
+    let binary = if cfg!(windows) { "ant.exe" } else { "ant" };
+    warp_core::paths::bundled_resources_dir()
+        .map(|dir| dir.join("bin").join(binary))
+        .filter(|path| path.is_file())
+}

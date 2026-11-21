@@ -36,6 +36,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use channel_versions::{ChannelVersions, ParsedVersion};
 use futures::TryStreamExt as _;
+use warp::TuiLoginModel;
 use warp::settings::TuiAutoupdateSettings;
 use warp_core::channel::{Channel, ChannelState};
 use warp_core::{safe_warn, send_telemetry_from_ctx};
@@ -416,6 +417,11 @@ impl AutoupdateEligibility {
         if std::env::var_os(DISABLE_ENV_VAR).is_some() {
             return Self::Disabled {
                 reason: "opted out via the WARP_TUI_DISABLE_AUTOUPDATE environment variable",
+            };
+        }
+        if TuiLoginModel::is_organization_sign_in() {
+            return Self::Disabled {
+                reason: "organization builds are distributed by the organization, not Warp",
             };
         }
         if !*TuiAutoupdateSettings::as_ref(ctx).autoupdate_enabled {

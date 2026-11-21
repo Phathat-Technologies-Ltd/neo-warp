@@ -1,0 +1,44 @@
+[package]
+name = "selfhost_server"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "selfhost-server"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+# goose's agent loop and Anthropic provider, pinned to one commit: the oi-kit crates are alpha.
+oi-kit-agent = { git = "https://github.com/block/goose", rev = "36b29113aff691e1a46a21a5c25900824caf9949" }
+oi-kit-provider-types = { git = "https://github.com/block/goose", rev = "36b29113aff691e1a46a21a5c25900824caf9949" }
+oi-kit-providers = { git = "https://github.com/block/goose", rev = "36b29113aff691e1a46a21a5c25900824caf9949", features = ["rustls-tls"] }
+prost.workspace = true
+prost-types.workspace = true
+rmcp.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+warp_multi_agent_api.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+env_logger.workspace = true
+hex.workspace = true
+jsonwebtoken = "9.3"
+log.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync"] }
+toml = "0.8.13"
+
+[dev-dependencies]
+cynic.workspace = true
+tower = { workspace = true, features = ["util"] }
+warp_graphql.workspace = true

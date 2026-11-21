@@ -48,6 +48,9 @@ firebase = { path = "crates/firebase" }
 fuzzy_match = { path = "crates/fuzzy_match" }
 handlebars = { path = "crates/handlebars" }
 http_client = { path = "crates/http_client" }
+oauth_loopback = { path = "crates/oauth_loopback" }
+org_sign_in = { path = "crates/org_sign_in" }
+selfhost_server = { path = "crates/selfhost_server" }
 http_server = { path = "crates/http_server" }
 input_classifier = { path = "crates/input_classifier" }
 integration = { path = "crates/integration" }

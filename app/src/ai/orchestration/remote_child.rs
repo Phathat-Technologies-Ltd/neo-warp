@@ -372,7 +372,8 @@ pub fn classify_cloud_agent_startup_error(error: &anyhow::Error) -> CloudAgentSt
             | AIApiError::Stream { .. }
             | AIApiError::UnexpectedEof
             | AIApiError::GrokSubscriptionTokenRefreshFailed
-            | AIApiError::WarpCloudModelsDisabled => {}
+            | AIApiError::WarpCloudModelsDisabled
+            | AIApiError::NoModelCredential => {}
         }
     }
     CloudAgentStartupIssue::Failed(CloudAgentStartupFailure::Other {

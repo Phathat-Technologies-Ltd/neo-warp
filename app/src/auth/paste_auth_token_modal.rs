@@ -154,6 +154,7 @@ impl PasteAuthTokenModalView {
                     UserAuthenticationError::DeniedAccessToken(_)
                     | UserAuthenticationError::UserAccountDisabled(_)
                     | UserAuthenticationError::DeviceCodeRequestTimedOut { .. }
+                    | UserAuthenticationError::OrganizationAccessDenied(_)
                     | UserAuthenticationError::Unexpected(_) => {
                         LoginFailureReason::FailedUserAuthentication
                     }
