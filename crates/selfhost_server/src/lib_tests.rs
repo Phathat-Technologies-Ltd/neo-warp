@@ -315,6 +315,142 @@ async fn required_group_is_enforced() {
     assert_eq!(exchange(&state, &member).await.0, StatusCode::OK);
 }
 
+/// Asks for `operation` as a signed-in user and parses the body through the client's query type.
+async fn signed_in_query<T: serde::de::DeserializeOwned>(operation: &str) -> T {
+    let state = state();
+    let (id_token, _) = sign_in(&state).await;
+    let (status, body) = send(&state, graphql_post(operation, Some(&id_token))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let response: cynic::GraphQlResponse<T> = serde_json::from_value(body)
+        .unwrap_or_else(|e| panic!("{operation} response must match the client's query: {e}"));
+    assert!(response.errors.is_none(), "{operation} returned errors");
+    response
+        .data
+        .unwrap_or_else(|| panic!("{operation} should return data"))
+}
+
+#[tokio::test]
+async fn get_user_settings_stores_nothing() {
+    use warp_graphql::queries::get_user_settings::{GetUserSettings, UserResult};
+    let data: GetUserSettings = signed_in_query("GetUserSettings").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetUserSettings should return a UserOutput");
+    };
+    assert!(output.user.settings.is_none());
+}
+
+#[tokio::test]
+async fn request_limits_never_block_the_user() {
+    use warp_graphql::queries::get_request_limit_info::{GetRequestLimitInfo, UserResult};
+    let data: GetRequestLimitInfo = signed_in_query("GetRequestLimitInfo").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetRequestLimitInfo should return a UserOutput");
+    };
+    let limits = output.user.request_limit_info;
+    assert!(limits.is_unlimited);
+    assert!(limits.request_limit > 0);
+    assert_eq!(limits.requests_used_since_last_refresh, 0);
+    assert!(output.user.workspaces.is_empty());
+    assert!(output.user.bonus_grants.is_empty());
+}
+
+#[tokio::test]
+async fn workspaces_metadata_has_no_workspaces_and_available_credits() {
+    use warp_graphql::queries::get_workspaces_metadata_for_user::{
+        GetWorkspacesMetadataForUser, PricingInfoResult, UserResult,
+    };
+    let data: GetWorkspacesMetadataForUser = signed_in_query("GetWorkspacesMetadataForUser").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetWorkspacesMetadataForUser should return a UserOutput");
+    };
+    assert!(output.user.workspaces.is_empty());
+    assert!(output.user.discoverable_teams.is_empty());
+    assert!(output.user.ai_credit_availability.available);
+    assert!(!output.user.profile.uid.is_empty());
+    assert!(matches!(
+        data.pricing_info,
+        PricingInfoResult::PricingInfoOutput(_)
+    ));
+}
+
+#[tokio::test]
+async fn updated_cloud_objects_are_empty() {
+    use warp_graphql::queries::get_updated_cloud_objects::{
+        GetUpdatedCloudObjects, UpdatedCloudObjectsResult,
+    };
+    let data: GetUpdatedCloudObjects = signed_in_query("GetUpdatedCloudObjects").await;
+    let UpdatedCloudObjectsResult::UpdatedCloudObjectsOutput(output) = data.updated_cloud_objects
+    else {
+        panic!("GetUpdatedCloudObjects should return an UpdatedCloudObjectsOutput");
+    };
+    assert!(output.notebooks.unwrap().is_empty());
+    assert!(output.workflows.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn ai_conversation_metadata_is_empty() {
+    use warp_graphql::queries::list_ai_conversations::{
+        ListAIConversationMetadata, ListAIConversationMetadataResult,
+    };
+    let data: ListAIConversationMetadata = signed_in_query("ListAIConversationMetadata").await;
+    let ListAIConversationMetadataResult::ListAIConversationsOutput(output) =
+        data.list_ai_conversations
+    else {
+        panic!("ListAIConversationMetadata should return a ListAIConversationsOutput");
+    };
+    assert!(output.conversations.is_empty());
+}
+
+#[tokio::test]
+async fn only_the_warp_agent_harness_is_available() {
+    use warp_graphql::ai::AgentHarness;
+    use warp_graphql::queries::get_available_harnesses::{GetAvailableHarnesses, UserResult};
+    let data: GetAvailableHarnesses = signed_in_query("GetAvailableHarnesses").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetAvailableHarnesses should return a UserOutput");
+    };
+    let harnesses = output.user.available_harnesses.harnesses;
+    assert_eq!(harnesses.len(), 1);
+    assert!(matches!(harnesses[0].harness, AgentHarness::Oz));
+    assert!(harnesses[0].enabled);
+}
+
+#[tokio::test]
+async fn chatgpt_is_not_connected() {
+    use warp_graphql::queries::get_chatgpt_connection::{GetChatGPTConnection, UserResult};
+    let data: GetChatGPTConnection = signed_in_query("GetChatGPTConnection").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetChatGPTConnection should return a UserOutput");
+    };
+    assert!(output.user.chatgpt_connection.is_none());
+}
+
+#[tokio::test]
+async fn tui_onboarding_markers_read_as_already_shown() {
+    use warp_graphql::queries::tui_onboarding_markers::{
+        TuiOnboardingMarkers, TuiOnboardingMarkersResult,
+    };
+    let data: TuiOnboardingMarkers = signed_in_query("TuiOnboardingMarkers").await;
+    let TuiOnboardingMarkersResult::TuiOnboardingMarkersOutput(markers) =
+        data.tui_onboarding_markers
+    else {
+        panic!("TuiOnboardingMarkers should return a TuiOnboardingMarkersOutput");
+    };
+    assert!(markers.first_zero_state_shown);
+    assert!(markers.first_credit_gate_shown);
+}
+
+#[tokio::test]
+async fn signed_in_operations_require_a_valid_server_token() {
+    let state = state();
+    assert_eq!(
+        send(&state, graphql_post("GetRequestLimitInfo", None))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 #[tokio::test]
 async fn get_user_requires_a_valid_server_token() {
     let state = state();
@@ -337,7 +473,7 @@ async fn unsupported_operations_return_graphql_errors() {
     let (id_token, _) = sign_in(&state).await;
     let (status, body) = send(
         &state,
-        graphql_post("GetWorkspacesMetadataForUser", Some(&id_token)),
+        graphql_post("GetCloudEnvironments", Some(&id_token)),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -346,7 +482,7 @@ async fn unsupported_operations_return_graphql_errors() {
         body["errors"][0]["message"]
             .as_str()
             .unwrap()
-            .contains("GetWorkspacesMetadataForUser")
+            .contains("GetCloudEnvironments")
     );
 }
 

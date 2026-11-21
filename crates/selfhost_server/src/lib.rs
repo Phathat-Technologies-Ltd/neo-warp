@@ -24,6 +24,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::config::ServerConfig;
+use crate::graphql::Operation;
 use crate::oidc::OidcVerifier;
 use crate::sessions::{ID_TOKEN_LIFETIME, IssuedTokens, SessionStore, TokenError};
 
@@ -228,12 +229,12 @@ async fn graphql(
         Some(token) => state.sessions.user_for_id_token(token),
         None => None,
     };
-    match (operation.as_str(), user) {
-        ("GetUser", Some(user)) => Json(graphql::get_user_response(&user)).into_response(),
-        ("GetUser", None) => (StatusCode::UNAUTHORIZED, "sign in required").into_response(),
-        (operation, _) => {
+    match (Operation::from_name(&operation), user) {
+        (Some(operation), Some(user)) => Json(operation.response(&user)).into_response(),
+        (Some(_), None) => (StatusCode::UNAUTHORIZED, "sign in required").into_response(),
+        (None, _) => {
             log::debug!("Unsupported GraphQL operation {operation}");
-            Json(graphql::unsupported_operation_response(operation)).into_response()
+            Json(graphql::unsupported_operation_response(&operation)).into_response()
         }
     }
 }
