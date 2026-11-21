@@ -9,9 +9,9 @@
 # Anthropic's ant CLI in Contents/Resources/bin), plus organization.toml.example, the admin guides,
 # and the licenses.
 #
-# With a Developer ID in the keychain the app is signed for distribution (see sign-app, which
-# also notarizes when NEO_WARP_NOTARY_PROFILE is set). Otherwise it carries a development
-# signature, and macOS asks users to approve it on first launch.
+# The app carries a development signature, which runs on the building Mac. For distribution, set
+# NEO_WARP_SIGNING_IDENTITY to a Developer ID (see sign-app, which also notarizes when
+# NEO_WARP_NOTARY_PROFILE is set); otherwise macOS asks other users to approve it on first launch.
 
 set -euo pipefail
 
@@ -29,8 +29,11 @@ case "$(uname -m)" in
   *) echo "Error: unsupported architecture $(uname -m)" >&2; exit 1 ;;
 esac
 
+# The bundle script's last step, a disk image, needs create-dmg; neo-warp ships a zip instead, so
+# a failure there is fine as long as the app itself is complete (checked below).
 GIT_RELEASE_TAG="neo-warp-v$VERSION" \
-  script/macos/bundle --channel neo-warp --nouniversal --selfsign
+  script/macos/bundle --channel neo-warp --nouniversal --selfsign \
+  || echo "Warning: the bundle script failed (usually its disk-image step); checking the app"
 
 app="target/$target/release-lto/bundle/osx/neo-warp.app"
 if [ ! -x "$app/Contents/MacOS/neo-warp" ] || [ ! -x "$app/Contents/Resources/bin/ant" ]; then
@@ -38,10 +41,11 @@ if [ ! -x "$app/Contents/MacOS/neo-warp" ] || [ ! -x "$app/Contents/Resources/bi
   exit 1
 fi
 
-# A Developer ID signature (and notarization, with NEO_WARP_NOTARY_PROFILE) replaces the bundle
-# script's development signature when a Developer ID is available.
-if [ -n "${NEO_WARP_SIGNING_IDENTITY:-}" ] \
-  || security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+codesign --verify --deep --strict "$app"
+
+# For distribution, replace the development signature with a Developer ID (and notarize, with
+# NEO_WARP_NOTARY_PROFILE).
+if [ -n "${NEO_WARP_SIGNING_IDENTITY:-}" ]; then
   "$REPO_ROOT/script/neo-warp/sign-app" "$app"
 fi
 

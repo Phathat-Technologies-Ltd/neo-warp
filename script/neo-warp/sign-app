@@ -8,7 +8,7 @@
 #
 # Environment:
 #   NEO_WARP_SIGNING_IDENTITY  Developer ID Application identity (default: the first one in the
-#                              keychain).
+#                              keychain; package-app signs only when it is set).
 #   NEO_WARP_NOTARY_PROFILE    A notarytool keychain profile, created once with
 #                              `xcrun notarytool store-credentials <profile> --apple-id <id>
 #                              --team-id <team>`. Without it the app is signed but not notarized.
