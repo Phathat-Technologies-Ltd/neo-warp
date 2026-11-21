@@ -45,6 +45,11 @@ pub(crate) fn init() {
         eprintln!("Error: invalid organization server URL {server_url}: {error:#}");
         log::error!("Invalid organization server URL {server_url}: {error:#}");
     }
+    if config.sign_in.is_some() {
+        // The SSH extension installs a Linux build of the app on the remote host, downloaded from
+        // the server, and organization servers don't host one.
+        FeatureFlag::SshRemoteServer.set_enabled(false);
+    }
     let _ = ORGANIZATION_CONFIG.set(config);
 }
 

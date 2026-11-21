@@ -94,6 +94,8 @@ The model picker lists Claude Opus 5.5 (default), Sonnet 5.5, Haiku 5.5, and Fab
 - Agent tools: shell commands, read/edit/write files, grep, and find files. MCP tools, plans,
   and subagents aren't wired to the agent yet.
 - Sign-in needs a browser on the same machine; there's no device-code flow for SSH sessions yet.
+- Over SSH, the desktop app works as a Warpified terminal, but its SSH extension (remote file
+  browsing and code review) is off: it needs a Linux build of neo-warp on the remote host.
 
 ## Licenses
 
