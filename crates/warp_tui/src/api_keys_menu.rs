@@ -5,6 +5,7 @@ use ai::anthropic_subscription::ant_cli;
 use ai::anthropic_subscription::oauth::AnthropicOAuthFlow;
 use ai::api_keys::{AnthropicTokenSource, ApiKeyManager, ApiKeyManagerEvent, CustomEndpointId};
 use ai::grok_subscription::oauth::OauthAttempt;
+use warp::TuiLoginModel;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::settings::{AISettings, AISettingsChangedEvent};
 use warp::tui_export::{TeamContextResolver, UserWorkspaces};
@@ -593,7 +594,7 @@ impl TuiApiKeysMenuModel {
                 rows: list
                     .rows()
                     .iter()
-                    .map(|row| self.snapshot_row(row, ctx, false))
+                    .map(|row| self.snapshot_row(row, ctx, None))
                     .collect(),
                 selected_index: list.selected_index(),
                 scroll_offset: list.scroll_offset(),
@@ -655,9 +656,11 @@ impl TuiApiKeysMenuModel {
             }),
             TuiApiKeysMenuState::ConnectingGrok { controller } => {
                 let error = controller.as_ref(ctx).error().map(ToOwned::to_owned);
-                let rows = all_rows(ctx)
-                    .into_iter()
-                    .map(|row| self.snapshot_row(&row, ctx, true))
+                let rows = all_rows(ctx);
+                let selected_index = provider_row_index(&rows, LLMProvider::Xai);
+                let rows = rows
+                    .iter()
+                    .map(|row| self.snapshot_row(row, ctx, Some(LLMProvider::Xai)))
                     .collect();
                 Some(TuiInlineMenuSnapshot {
                     header: Some(TuiInlineMenuHeader {
@@ -665,7 +668,7 @@ impl TuiApiKeysMenuModel {
                         tabs: Vec::new(),
                     }),
                     rows,
-                    selected_index: Some(3),
+                    selected_index,
                     scroll_offset: 0,
                     scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
                     max_visible_rows: MAX_VISIBLE_ROWS,
@@ -674,9 +677,11 @@ impl TuiApiKeysMenuModel {
             }
             TuiApiKeysMenuState::ConnectingAnthropic { controller } => {
                 let error = controller.as_ref(ctx).error().map(ToOwned::to_owned);
-                let rows = all_rows(ctx)
-                    .into_iter()
-                    .map(|row| self.snapshot_row(&row, ctx, true))
+                let rows = all_rows(ctx);
+                let selected_index = provider_row_index(&rows, LLMProvider::Anthropic);
+                let rows = rows
+                    .iter()
+                    .map(|row| self.snapshot_row(row, ctx, Some(LLMProvider::Anthropic)))
                     .collect();
                 Some(TuiInlineMenuSnapshot {
                     header: Some(TuiInlineMenuHeader {
@@ -686,7 +691,7 @@ impl TuiApiKeysMenuModel {
                         tabs: Vec::new(),
                     }),
                     rows,
-                    selected_index: Some(0),
+                    selected_index,
                     scroll_offset: 0,
                     scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
                     max_visible_rows: MAX_VISIBLE_ROWS,
@@ -700,12 +705,13 @@ impl TuiApiKeysMenuModel {
         &self,
         row: &TuiApiKeysRow,
         ctx: &AppContext,
-        connecting_grok: bool,
+        connecting: Option<LLMProvider>,
     ) -> TuiInlineMenuRow {
+        let is_connecting = connecting.is_some();
         let (description, state_suffix, is_selectable) = match &row.kind {
             TuiApiKeysRowKind::Provider(provider) => {
                 let connected = provider_connected(*provider, ctx);
-                let suffix = if connecting_grok && *provider == LLMProvider::Xai {
+                let suffix = if connecting == Some(*provider) {
                     "(Connecting...)".to_owned()
                 } else if *provider == LLMProvider::Anthropic && connected {
                     format!("({})", anthropic_connected_suffix(ctx))
@@ -714,11 +720,7 @@ impl TuiApiKeysMenuModel {
                 } else {
                     "(Not connected)".to_owned()
                 };
-                (
-                    Some(String::new()),
-                    Some(suffix.to_owned()),
-                    !connecting_grok,
-                )
+                (Some(String::new()), Some(suffix.to_owned()), !is_connecting)
             }
             TuiApiKeysRowKind::CustomEndpointConfigurationError => (
                 Some("Fix agents.custom_endpoints in settings".to_owned()),
@@ -731,11 +733,7 @@ impl TuiApiKeysMenuModel {
                 } else {
                     "(Not connected)"
                 };
-                (
-                    Some(String::new()),
-                    Some(suffix.to_owned()),
-                    !connecting_grok,
-                )
+                (Some(String::new()), Some(suffix.to_owned()), !is_connecting)
             }
             TuiApiKeysRowKind::WarpCreditFallbackSetting => (
                 Some(FALLBACK_DESCRIPTION.to_owned()),
@@ -747,7 +745,7 @@ impl TuiApiKeysMenuModel {
                         "off"
                     }
                 )),
-                !connecting_grok,
+                !is_connecting,
             ),
         };
         let style = if row.kind == TuiApiKeysRowKind::WarpCreditFallbackSetting {
@@ -980,6 +978,14 @@ fn custom_endpoint_connected(id: &CustomEndpointId, ctx: &AppContext) -> bool {
 }
 
 fn all_rows(ctx: &AppContext) -> Vec<TuiApiKeysRow> {
+    // Organization builds' agent only calls Anthropic and has no Warp credits to fall back on.
+    if TuiLoginModel::is_organization_sign_in() {
+        return vec![TuiApiKeysRow {
+            kind: TuiApiKeysRowKind::Provider(LLMProvider::Anthropic),
+            title: "Anthropic API key".to_owned(),
+            is_selectable: true,
+        }];
+    }
     let mut rows = vec![
         TuiApiKeysRow {
             kind: TuiApiKeysRowKind::Provider(LLMProvider::Anthropic),
@@ -1030,6 +1036,11 @@ fn all_rows(ctx: &AppContext) -> Vec<TuiApiKeysRow> {
     });
     rows
 }
+fn provider_row_index(rows: &[TuiApiKeysRow], provider: LLMProvider) -> Option<usize> {
+    rows.iter()
+        .position(|row| row.kind == TuiApiKeysRowKind::Provider(provider))
+}
+
 /// Returns whether the provider has a configured API key or connected subscription.
 fn provider_connected(provider: LLMProvider, ctx: &AppContext) -> bool {
     if provider == LLMProvider::Xai {
