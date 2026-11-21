@@ -7,6 +7,7 @@ use super::{
 
 fn test_controller() -> TuiAnthropicOAuthController {
     TuiAnthropicOAuthController {
+        uses_ant_cli: false,
         manual_exchange: Some(ManualCodeExchange {
             verifier: "verifier".to_owned(),
         }),

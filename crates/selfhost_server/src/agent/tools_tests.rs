@@ -111,3 +111,20 @@ fn results_render_as_text_for_the_model() {
     assert!(text.contains("cancelled"));
     assert!(failed);
 }
+
+#[test]
+fn recursive_globs_also_match_the_top_level() {
+    let call::Tool::FileGlobV2(glob) = to_warp_tool(
+        "find_files",
+        Some(&args(
+            json!({ "patterns": ["**/*", "**/*.rs", "src/*.toml"] }),
+        )),
+    )
+    .unwrap() else {
+        panic!("expected FileGlobV2")
+    };
+    assert_eq!(
+        glob.patterns,
+        vec!["**/*", "*", "**/*.rs", "*.rs", "src/*.toml"]
+    );
+}

@@ -64,6 +64,7 @@ pub(crate) async fn run_with_provider(
     let reason = match stream.run_turn(request, &make_provider).await {
         Ok(()) => api::response_event::stream_finished::Reason::Done(Default::default()),
         Err(TurnError::InvalidApiKey { model }) => {
+            log::warn!("Agent turn refused: no usable Anthropic credential for {model}");
             api::response_event::stream_finished::Reason::InvalidApiKey(
                 api::response_event::stream_finished::InvalidApiKey {
                     provider: api::LlmProvider::Anthropic as i32,
@@ -256,8 +257,11 @@ impl Stream {
             .and_then(|settings| settings.api_keys.as_ref())
             .map(|keys| keys.anthropic.trim().to_owned())
             .filter(|key| !key.is_empty())
-            .ok_or_else(|| TurnError::InvalidApiKey {
-                model: model.clone(),
+            .ok_or_else(|| {
+                log::warn!("The request carries no Anthropic credential");
+                TurnError::InvalidApiKey {
+                    model: model.clone(),
+                }
             })?;
         let tools = tools::definitions(
             settings
@@ -395,6 +399,7 @@ impl Stream {
             .into_inner()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(error) = trailing_error(&messages) {
+            log::warn!("The model call failed: {error}");
             return Err(classify_message_error(&error, model));
         }
         Ok(messages)

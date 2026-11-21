@@ -547,6 +547,18 @@ pub struct AnthropicTokens {
     pub expires_at: Option<SystemTime>,
     #[serde(default)]
     pub connected_at: Option<SystemTime>,
+    #[serde(default)]
+    pub source: AnthropicTokenSource,
+}
+
+/// Where a connected Claude login's tokens come from, which decides how they're refreshed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AnthropicTokenSource {
+    /// The app's own OAuth flow; refreshed with the stored refresh token.
+    #[default]
+    OAuth,
+    /// The `ant` CLI's sign-in; `ant` holds the refresh token and renews the access token.
+    AntCli,
 }
 
 impl AnthropicTokens {

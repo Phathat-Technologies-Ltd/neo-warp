@@ -1865,6 +1865,15 @@ pub(crate) fn initialize_app(
         )
     });
 
+    #[cfg(not(target_family = "wasm"))]
+    ::ai::anthropic_subscription::ant_cli::configure(
+        bundled_ant_cli()
+            .or_else(|| warp_util::path::resolve_executable("ant").map(|path| path.into_owned())),
+        warp_core::paths::secure_state_dir()
+            .unwrap_or_else(warp_core::paths::state_dir)
+            .join("anthropic-cli"),
+    );
+
     // Initialize ApiKeyManager after UserWorkspaces so it can subscribe to workspace/settings changes
     ctx.add_singleton_model(|ctx| {
         #[cfg_attr(target_family = "wasm", allow(unused_mut))]
@@ -3362,3 +3371,12 @@ fn init_logging_for_unit_tests_glue() {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+/// Anthropic's `ant` CLI shipped in the app's bundled resources, used for Claude Console sign-in.
+#[cfg(not(target_family = "wasm"))]
+fn bundled_ant_cli() -> Option<std::path::PathBuf> {
+    let binary = if cfg!(windows) { "ant.exe" } else { "ant" };
+    warp_core::paths::bundled_resources_dir()
+        .map(|dir| dir.join("bin").join(binary))
+        .filter(|path| path.is_file())
+}

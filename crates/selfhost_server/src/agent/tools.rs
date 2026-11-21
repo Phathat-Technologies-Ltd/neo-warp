@@ -293,12 +293,29 @@ pub fn to_warp_tool(
         AgentTool::FindFiles => {
             let args: SearchArgs = serde_json::from_value(arguments).map_err(parse_error)?;
             call::Tool::FileGlobV2(call::FileGlobV2 {
-                patterns: args.patterns,
+                patterns: with_top_level_patterns(args.patterns),
                 search_dir: args.path.unwrap_or_default(),
                 ..Default::default()
             })
         }
     })
+}
+
+/// The client's glob requires `**/` to match at least one directory, so `**/*.rs` would skip
+/// files directly in the search directory. Add each such pattern's top-level form.
+fn with_top_level_patterns(patterns: Vec<String>) -> Vec<String> {
+    let mut expanded = Vec::with_capacity(patterns.len() * 2);
+    for pattern in patterns {
+        let top_level = pattern.strip_prefix("**/").map(str::to_owned);
+        expanded.push(pattern);
+        if let Some(top_level) = top_level
+            && !top_level.is_empty()
+            && !expanded.contains(&top_level)
+        {
+            expanded.push(top_level);
+        }
+    }
+    expanded
 }
 
 /// Renders a client tool result as text for the model, and whether it reports a failure.
