@@ -20,7 +20,7 @@ use warpui::{
 };
 
 use super::AuthStateProvider;
-use super::auth_manager::AuthManager;
+use super::auth_manager::{AuthManager, AuthManagerEvent};
 use super::auth_view_modal::AuthViewVariant;
 use super::auth_view_shared_helpers::{
     PrivacySettingsActions, PrivacySettingsHandles, action_button_color_and_variant,
@@ -28,6 +28,7 @@ use super::auth_view_shared_helpers::{
     render_square_logo,
 };
 use crate::appearance::Appearance;
+use crate::auth;
 use crate::auth::auth_view_shared_helpers::render_offline_contents;
 use crate::editor::{
     EditorView, InteractionState, SingleLineEditorOptions, TextColors, TextOptions,
@@ -88,6 +89,7 @@ struct MouseStateHandles {
     learn_more_mouse_state_handle: MouseStateHandle,
     privacy_settings_mouse_state_handle: MouseStateHandle,
     close_button_mouse_state_handle: MouseStateHandle,
+    cancel_organization_sign_in_mouse_state_handle: MouseStateHandle,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -107,6 +109,8 @@ pub struct AuthViewBody {
     loginless_step: LoginlessStep,
     copy_url_click_count: u8,
     allow_loginless: bool,
+    /// The identity provider page of the organization sign-in in progress, for copying.
+    organization_sign_in_url: Option<String>,
 }
 
 /// State for two-step loginless flow for anonymous users
@@ -131,6 +135,7 @@ pub enum AuthViewBodyAction {
     CopyLoginUrl,
     Signup,
     SignupAnonymousUser,
+    CancelOrganizationSignIn,
     ShowOverlay(AuthViewOverlay),
     HideOverlay,
     ToggleTelemetry,
@@ -182,7 +187,12 @@ impl AuthViewBody {
             ctx.notify();
         });
 
-        let allow_loginless = !FeatureFlag::ForceLogin.is_enabled();
+        let allow_loginless =
+            !FeatureFlag::ForceLogin.is_enabled() && !auth::is_organization_sign_in();
+
+        ctx.subscribe_to_model(&AuthManager::handle(ctx), |me, _, event, ctx| {
+            me.handle_auth_manager_event(event, ctx);
+        });
 
         let network_status = NetworkStatus::handle(ctx);
         ctx.subscribe_to_model(&network_status, |_, _, _, ctx| {
@@ -200,6 +210,47 @@ impl AuthViewBody {
             loginless_step: LoginlessStep::Start,
             copy_url_click_count: 0,
             allow_loginless,
+            organization_sign_in_url: None,
+        }
+    }
+
+    fn handle_auth_manager_event(&mut self, event: &AuthManagerEvent, ctx: &mut ViewContext<Self>) {
+        match event {
+            AuthManagerEvent::ReceivedOrganizationSignInUrl { url } => {
+                ctx.open_url(url);
+                self.organization_sign_in_url = Some(url.clone());
+                ctx.notify();
+            }
+            AuthManagerEvent::AuthFailed(_) if auth::is_organization_sign_in() => {
+                self.organization_sign_in_url = None;
+                self.auth_step = AuthStep::SelectAuthPathway;
+                ctx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    fn start_organization_sign_in(&mut self, ctx: &mut ViewContext<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(config) = auth::organization::sign_in_config() {
+            self.auth_step = AuthStep::BrowserOpen;
+            self.organization_sign_in_url = None;
+            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+                auth_manager.authorize_with_organization(config.clone(), ctx);
+            });
+            ctx.emit(AuthViewBodyEvent::SignUpButtonClicked);
+            ctx.notify();
+        }
+    }
+
+    fn organization_sign_in_label() -> Option<String> {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            auth::organization::sign_in_config().map(|config| config.button_label())
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            None
         }
     }
 
@@ -475,7 +526,9 @@ impl AuthViewBody {
                 Some(click_button_style),
                 None,
             )
-            .with_centered_text_label("Sign up".into())
+            .with_centered_text_label(
+                Self::organization_sign_in_label().unwrap_or_else(|| "Sign up".to_owned()),
+            )
             .build()
             .on_click(move |ctx, _, _| {
                 ctx.dispatch_typed_action(on_click_action);
@@ -637,10 +690,13 @@ impl AuthViewBody {
         };
 
         let text = match self.variant {
-            AuthViewVariant::Initial => "Welcome to Warp!",
+            AuthViewVariant::Initial if auth::is_organization_sign_in() => {
+                format!("Welcome to {}", auth::organization::PRODUCT_NAME)
+            }
+            AuthViewVariant::Initial => "Welcome to Warp!".to_owned(),
             AuthViewVariant::RequireLoginCloseable
             | AuthViewVariant::HitDriveObjectLimitCloseable
-            | AuthViewVariant::ShareRequirementCloseable => "Sign up for Warp",
+            | AuthViewVariant::ShareRequirementCloseable => "Sign up for Warp".to_owned(),
         };
 
         ui_builder
@@ -710,6 +766,8 @@ impl AuthViewBody {
                         AuthViewBodyAction::ShowOverlay(AuthViewOverlay::OfflineInfo),
                     );
                     vec![logo, header, offline_contents]
+                } else if auth::is_organization_sign_in() {
+                    vec![header, sign_up_button]
                 } else if self.active_overlay.is_none() {
                     let mut contents = if self.allow_loginless {
                         let sign_up_later_row = match self.loginless_step {
@@ -804,6 +862,29 @@ impl AuthViewBody {
         )
         .finish();
 
+        if auth::is_organization_sign_in() {
+            let cancel = Container::new(
+                ui_builder
+                    .link(
+                        "Cancel".into(),
+                        None,
+                        Some(Box::new(|event_ctx| {
+                            event_ctx
+                                .dispatch_typed_action(AuthViewBodyAction::CancelOrganizationSignIn);
+                        })),
+                        self.mouse_state_handles
+                            .cancel_organization_sign_in_mouse_state_handle
+                            .clone(),
+                    )
+                    .soft_wrap(false)
+                    .build()
+                    .finish(),
+            )
+            .with_margin_top(AUTH_MODAL_GAP)
+            .finish();
+            return vec![header, hint, cancel];
+        }
+
         let mut contents = vec![logo, header, hint];
 
         let auth_token = Container::new(match self.render_auth_token_input(appearance) {
@@ -838,6 +919,29 @@ impl TypedActionView for AuthViewBody {
 
     fn handle_action(&mut self, action: &AuthViewBodyAction, ctx: &mut ViewContext<Self>) {
         match action {
+            AuthViewBodyAction::Login | AuthViewBodyAction::Signup
+                if auth::is_organization_sign_in() =>
+            {
+                self.start_organization_sign_in(ctx);
+            }
+            AuthViewBodyAction::CancelOrganizationSignIn => {
+                #[cfg(not(target_family = "wasm"))]
+                AuthManager::handle(ctx).update(ctx, |auth_manager, _| {
+                    auth_manager.cancel_organization_sign_in();
+                });
+                self.organization_sign_in_url = None;
+                self.auth_step = AuthStep::SelectAuthPathway;
+                ctx.notify();
+            }
+            AuthViewBodyAction::CopyLoginUrl if auth::is_organization_sign_in() => {
+                if let Some(url) = &self.organization_sign_in_url {
+                    ctx.clipboard().write(ClipboardContent {
+                        plain_text: url.clone(),
+                        paths: Some(vec![url.clone()]),
+                        ..Default::default()
+                    });
+                }
+            }
             AuthViewBodyAction::Login => {
                 send_telemetry_from_ctx!(
                     TelemetryEvent::LoginButtonClicked {

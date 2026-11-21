@@ -35,6 +35,9 @@ pub struct ChannelState {
 
     /// Root URL of a self-hosted token service that replaces Firebase's token endpoints.
     auth_token_root_url: Option<Cow<'static, str>>,
+
+    /// A profile that keeps this build's user data apart from other builds of the same channel.
+    data_profile: Option<Cow<'static, str>>,
 }
 
 impl ChannelState {
@@ -55,6 +58,7 @@ impl ChannelState {
                 mcp_static_config: None,
             },
             auth_token_root_url: None,
+            data_profile: None,
         }
     }
 
@@ -74,7 +78,15 @@ impl ChannelState {
             additional_features: Default::default(),
             config,
             auth_token_root_url: None,
+            data_profile: None,
         }
+    }
+
+    /// Stores this build's user data under its own profile, so it never shares settings, sessions,
+    /// or credentials with another build of the same channel.
+    pub fn with_data_profile(mut self, profile: impl Into<Cow<'static, str>>) -> Self {
+        self.data_profile = Some(profile.into());
+        self
     }
 
     pub fn with_additional_features(mut self, overrides: &[FeatureFlag]) -> Self {
@@ -155,14 +167,18 @@ impl ChannelState {
     /// Returns a profile name for isolating user data. This should be used to
     /// sandbox how user data is stored.
     ///
-    /// This is a debugging tool for isolating development instances of Warp, and is not
-    /// supported in release builds.
+    /// Debug builds can override it with `WARP_DATA_PROFILE` to isolate development instances.
     pub fn data_profile() -> Option<String> {
-        if cfg!(debug_assertions) {
-            std::env::var("WARP_DATA_PROFILE").ok()
-        } else {
-            None
+        if cfg!(debug_assertions)
+            && let Ok(profile) = std::env::var("WARP_DATA_PROFILE")
+        {
+            return Some(profile);
         }
+        CHANNEL_STATE
+            .lock()
+            .data_profile
+            .as_ref()
+            .map(|profile| profile.to_string())
     }
 
     /// Returns a value that should be used for namespacing persisted data.
@@ -399,6 +415,12 @@ impl ChannelState {
             .as_ref()
             .map(|crc| crc.sentry_url.clone())
             .unwrap_or_default()
+    }
+
+    /// Whether this build has a release feed to update from. Builds without one, such as OSS and
+    /// organization builds, are updated by whoever distributes them.
+    pub fn has_autoupdate_source() -> bool {
+        CHANNEL_STATE.lock().config.autoupdate_config.is_some()
     }
 
     pub fn show_autoupdate_menu_items() -> bool {

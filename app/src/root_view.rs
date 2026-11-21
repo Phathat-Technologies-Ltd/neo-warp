@@ -58,7 +58,7 @@ use crate::auth::needs_sso_link_view::NeedsSsoLinkView;
 use crate::auth::paste_auth_token_modal::{PasteAuthTokenModalEvent, PasteAuthTokenModalView};
 #[cfg(target_family = "wasm")]
 use crate::auth::web_handoff::{WebHandoffEvent, WebHandoffView};
-use crate::auth::{AuthStateProvider, LoginFailureReason};
+use crate::auth::{self, AuthStateProvider, LoginFailureReason};
 use crate::autoupdate::{AutoupdateState, AutoupdateStateEvent, RequestType, UpdateReady};
 use crate::changelog_model::ChangelogRequestType;
 use crate::cloud_object::model::persistence::CloudModel;
@@ -1934,8 +1934,9 @@ impl RootView {
                     AuthOnboardingState::WebImport(AuthOnboardingTarget::Workspace(workspace_args.into()))
                 } else {
 
-                    if FeatureFlag::ForceLogin.is_enabled() {
-                        // ForceLogin is true for Preview
+                    if FeatureFlag::ForceLogin.is_enabled() || auth::is_organization_sign_in() {
+                        // ForceLogin is true for Preview. Organization builds have no
+                        // signed-out mode or Warp account onboarding.
                         AuthOnboardingState::Auth(workspace_args.into())
                     } else if FeatureFlag::AgentOnboarding.is_enabled()
                         && !has_completed_local_onboarding(ctx)
@@ -3697,6 +3698,19 @@ impl RootView {
                 }
                 self.start_autoupdate_polling(ctx);
                 self.focus(ctx);
+            }
+            AuthManagerEvent::NeedsReauth if auth::is_organization_sign_in() => {
+                // Organization sessions can't be renewed in the background once they end, so send
+                // the user back through their identity provider.
+                auth::log_out(ctx);
+                self.auth_view.update(ctx, |auth_view, ctx| {
+                    auth_view.show_failure(
+                        LoginFailureReason::Organization {
+                            message: auth::organization::SIGN_IN_EXPIRED_MESSAGE.to_owned(),
+                        },
+                        ctx,
+                    );
+                });
             }
             AuthManagerEvent::LoginOverrideDetected(interrupted_auth_payload) => {
                 match &self.auth_onboarding_state {

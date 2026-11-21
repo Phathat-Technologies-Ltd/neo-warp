@@ -215,6 +215,12 @@ impl AuthView {
         self.set_auth_step(ctx, AuthStep::BrowserOpen);
     }
 
+    /// Shows why the user was signed out when they land back on the sign-in screen.
+    pub fn show_failure(&mut self, reason: LoginFailureReason, ctx: &mut ViewContext<Self>) {
+        self.last_login_failure_reason = Some(reason);
+        ctx.notify();
+    }
+
     pub fn start_sign_in(&mut self, ctx: &mut ViewContext<Self>) {
         self.update_auth_body(ctx, |body, ctx| {
             body.handle_action(&AuthViewBodyAction::Login, ctx);
@@ -298,7 +304,11 @@ impl AuthView {
                     report_error!(err);
                 }
 
-                if let UserAuthenticationError::InvalidStateParameter = err {
+                if crate::auth::is_organization_sign_in() {
+                    self.last_login_failure_reason = Some(LoginFailureReason::Organization {
+                        message: crate::auth::organization::login_failure_message(err),
+                    });
+                } else if let UserAuthenticationError::InvalidStateParameter = err {
                     self.last_login_failure_reason =
                         Some(LoginFailureReason::InvalidStateParameter);
                 } else if let UserAuthenticationError::MissingStateParameter = err {

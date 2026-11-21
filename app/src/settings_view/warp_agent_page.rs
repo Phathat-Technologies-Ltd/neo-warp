@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use ::ai::anthropic_subscription::ant_cli;
 use ::ai::api_keys::{
     ApiKeyManager, ApiKeyManagerEvent, ApiKeys, ChatGPTConnectFailure, CustomEndpointParams,
 };
@@ -83,7 +84,7 @@ use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::geap_credentials::force_refresh_geap_credentials;
 use crate::ai::llms::{LLMId, LLMPreferences, LLMProvider, is_using_api_key_for_provider};
 use crate::appearance::{Appearance, AppearanceEvent};
-use crate::auth::AuthStateProvider;
+use crate::auth::{self, AuthStateProvider};
 use crate::editor::{
     EditorOptions, EditorView, Event as EditorEvent, PropagateAndNoOpNavigationKeys,
     SingleLineEditorOptions, TextColors, TextOptions,
@@ -699,6 +700,8 @@ pub struct WarpAgentPageView {
 
     #[cfg(not(target_family = "wasm"))]
     grok_oauth_attempt: Option<GrokOauthAttempt>,
+    /// Whether a Claude sign-in through the bundled `ant` CLI is waiting on the browser.
+    claude_sign_in_pending: bool,
     #[cfg(not(target_family = "wasm"))]
     grok_code_editor: ViewHandle<EditorView>,
 
@@ -1252,6 +1255,7 @@ impl WarpAgentPageView {
             last_seen_provider_keys,
             #[cfg(not(target_family = "wasm"))]
             grok_oauth_attempt: None,
+            claude_sign_in_pending: false,
             #[cfg(not(target_family = "wasm"))]
             grok_code_editor,
             chatgpt_oauth_attempt: None,
@@ -1823,6 +1827,49 @@ impl WarpAgentPageView {
             editor.set_placeholder_text("Paste sign-in code", ctx);
             editor
         })
+    }
+
+    /// Signs in to Claude through the bundled `ant` CLI, which opens the browser itself.
+    #[cfg(not(target_family = "wasm"))]
+    fn start_claude_sign_in(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(ant) = ant_cli::get() else {
+            return;
+        };
+        if self.claude_sign_in_pending {
+            return;
+        }
+        self.claude_sign_in_pending = true;
+        ctx.notify();
+        ctx.spawn(
+            async move {
+                ant.login().await?;
+                ant.token().await
+            },
+            |me, result, ctx| {
+                me.claude_sign_in_pending = false;
+                let window_id = ctx.window_id();
+                let toast = match result {
+                    Ok(tokens) => {
+                        ApiKeyManager::handle(ctx).update(ctx, move |manager, ctx| {
+                            manager.store_ant_cli_tokens(tokens, ctx);
+                        });
+                        crate::view_components::DismissibleToast::success(
+                            "Connected your Claude account.".to_string(),
+                        )
+                    }
+                    Err(error) => {
+                        log::warn!("Claude sign-in through the ant CLI failed: {error:#}");
+                        crate::view_components::DismissibleToast::error(
+                            "Couldn't connect your Claude account. Please try again.".to_string(),
+                        )
+                    }
+                };
+                crate::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                });
+                ctx.notify();
+            },
+        );
     }
 
     /// Kicks off the xAI (Grok) subscription OAuth flow: opens the consent
@@ -2598,6 +2645,8 @@ pub enum WarpAgentPageAction {
     // Custom inference
     OpenAddCustomEndpointModal,
     OpenEditCustomEndpointModal(usize),
+    ConnectClaude,
+    DisconnectClaude,
     ConnectGrokSubscription,
     CancelGrokSubscriptionConnect,
     DisconnectGrokSubscription,
@@ -3164,6 +3213,16 @@ impl TypedActionView for WarpAgentPageView {
                             .agent_attribution_enabled
                             .toggle_and_save_value(ctx)
                     );
+                });
+                ctx.notify();
+            }
+            WarpAgentPageAction::ConnectClaude => {
+                #[cfg(not(target_family = "wasm"))]
+                self.start_claude_sign_in(ctx);
+            }
+            WarpAgentPageAction::DisconnectClaude => {
+                ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.disconnect_anthropic_subscription(ctx);
                 });
                 ctx.notify();
             }
@@ -5088,6 +5147,9 @@ struct ApiKeysWidget {
     provider_api_key_editors: Vec<ProviderApiKeyEditor>,
     /// Buttons for the SuperGrok (xAI) subscription row; which one renders
     /// depends on stored tokens / attempt phase.
+    claude_connect_button: ViewHandle<ActionButton>,
+    claude_pending_button: ViewHandle<ActionButton>,
+    claude_disconnect_button: ViewHandle<ActionButton>,
     grok_connect_button: ViewHandle<ActionButton>,
     grok_cancel_button: ViewHandle<ActionButton>,
     grok_cancelling_button: ViewHandle<ActionButton>,
@@ -5110,9 +5172,12 @@ impl ApiKeysWidget {
         let is_byo_enabled = workspace_handle.as_ref(ctx).is_byo_api_key_enabled(ctx);
         let member_byo_keys_allowed = member_byo_keys_allowed_for_view(ctx);
 
+        let is_organization = auth::is_organization_sign_in();
         let provider_api_key_editors = LLMProvider::API_KEY_PROVIDERS
             .into_iter()
             .filter(|provider| provider.supports_pasted_api_key())
+            // Organization builds' agent only calls Anthropic.
+            .filter(|provider| !is_organization || *provider == LLMProvider::Anthropic)
             .map(|provider| {
                 let key = provider
                     .api_key(ApiKeyManager::as_ref(ctx).keys())
@@ -5233,6 +5298,26 @@ impl ApiKeysWidget {
             }
         });
 
+        let claude_connect_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Continue with Claude", SecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WarpAgentPageAction::ConnectClaude);
+                })
+        });
+        let claude_pending_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Waiting for browser…", SecondaryTheme).with_size(ButtonSize::Small)
+        });
+        claude_pending_button.update(ctx, |button, ctx| {
+            button.set_disabled(true, ctx);
+        });
+        let claude_disconnect_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Disconnect", DangerSecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WarpAgentPageAction::DisconnectClaude);
+                })
+        });
         let grok_connect_button = ctx.add_typed_action_view(|_| {
             ActionButton::new("Continue with Grok", SecondaryTheme)
                 .with_size(ButtonSize::Small)
@@ -5351,6 +5436,10 @@ impl ApiKeysWidget {
         Self {
             view_handle: ctx.handle(),
             provider_api_key_editors,
+
+            claude_connect_button,
+            claude_pending_button,
+            claude_disconnect_button,
 
             grok_connect_button,
             grok_cancel_button,
@@ -5741,6 +5830,95 @@ impl ApiKeysWidget {
 
     /// The "Connect ChatGPT subscription" row. Unlike SuperGrok, the connection
     /// lives on warp-server, so the row renders the last server-reported status.
+    /// The "Use your Claude account" row: sign-in through the bundled `ant` CLI, and a
+    /// "Connected on ..." status line while a Claude login is stored.
+    fn render_claude_row(
+        &self,
+        appearance: &Appearance,
+        is_enabled: bool,
+        sign_in_pending: bool,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let tokens = ApiKeyManager::as_ref(app).anthropic_tokens();
+        let text_color = styles::header_font_color(is_enabled, app);
+        let label = Text::new_inline(
+            "Use your Claude account",
+            appearance.ui_font_family(),
+            CONTENT_FONT_SIZE,
+        )
+        .with_color(text_color.into())
+        .finish();
+
+        let button = if tokens.is_some() {
+            &self.claude_disconnect_button
+        } else if sign_in_pending {
+            &self.claude_pending_button
+        } else {
+            &self.claude_connect_button
+        };
+
+        let header_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Shrinkable::new(1., label).finish())
+            .with_child(button.as_ref(app).render(app))
+            .finish();
+
+        let description = Container::new(
+            Text::new(
+                "Sign in to your Anthropic Console organization in the browser to run Claude models with your own account.",
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(styles::description_font_color(is_enabled, app).into())
+            .soft_wrap(true)
+            .finish(),
+        )
+        .with_margin_right(styles::TOGGLE_WIDTH_MARGIN)
+        .finish();
+
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_child(header_row)
+            .with_child(description);
+
+        if let Some(tokens) = tokens {
+            let connected_text = match tokens.connected_at.map(DateTime::<Local>::from) {
+                Some(connected_at) => format!(
+                    "Connected on {}.",
+                    connected_at.format("%m/%d/%Y at %-I:%M%P")
+                ),
+                None => "Connected.".to_string(),
+            };
+            let check = ConstrainedBox::new(
+                Icon::Check
+                    .to_warpui_icon(appearance.theme().ansi_fg_green().into())
+                    .finish(),
+            )
+            .with_width(12.)
+            .with_height(12.)
+            .finish();
+            let status_text = Text::new_inline(
+                connected_text,
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(styles::description_font_color(is_enabled, app).into())
+            .finish();
+            column.add_child(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(4.)
+                    .with_child(check)
+                    .with_child(status_text)
+                    .finish(),
+            );
+        }
+
+        column.finish()
+    }
+
     fn render_chatgpt_subscription_row(
         &self,
         appearance: &Appearance,
@@ -6069,8 +6247,22 @@ impl SettingsWidget for ApiKeysWidget {
             }
         }
 
+        let is_organization = auth::is_organization_sign_in();
+        if is_organization && show_provider_keys && ant_cli::get().is_some() {
+            column.add_child(
+                Container::new(self.render_claude_row(
+                    appearance,
+                    provider_keys_enabled,
+                    view.claude_sign_in_pending,
+                    app,
+                ))
+                .with_margin_top(16.)
+                .finish(),
+            );
+        }
+
         // Entrypoint for connecting a SuperGrok (xAI) subscription via OAuth.
-        if FeatureFlag::SuperGrok.is_enabled() && show_provider_keys {
+        if FeatureFlag::SuperGrok.is_enabled() && show_provider_keys && !is_organization {
             #[cfg(not(target_family = "wasm"))]
             let grok_oauth_phase = view
                 .grok_oauth_attempt
@@ -6099,7 +6291,7 @@ impl SettingsWidget for ApiKeysWidget {
             }
         }
 
-        if FeatureFlag::ChatGPTSubscription.is_enabled() && show_provider_keys {
+        if FeatureFlag::ChatGPTSubscription.is_enabled() && show_provider_keys && !is_organization {
             column.add_child(
                 Container::new(self.render_chatgpt_subscription_row(
                     appearance,
@@ -6112,7 +6304,7 @@ impl SettingsWidget for ApiKeysWidget {
         }
 
         // Warp credit fallback applies to member-provided API keys, not custom endpoints.
-        if is_byo_enabled && show_provider_keys {
+        if is_byo_enabled && show_provider_keys && !is_organization {
             column.add_child(
                 Container::new(self.render_warp_credit_fallback_toggle(view, app))
                     .with_margin_top(16.)

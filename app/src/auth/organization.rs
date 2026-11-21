@@ -11,6 +11,8 @@ use org_sign_in::{OrganizationConfig, OrganizationSignInConfig};
 use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
 
+use crate::server::server_api::auth::UserAuthenticationError;
+
 static ORGANIZATION_CONFIG: OnceLock<OrganizationConfig> = OnceLock::new();
 
 /// How long an organization sign-in lasts before the user must pass the identity provider again.
@@ -107,6 +109,31 @@ fn apply_server_url(server_url: &str) -> Result<(), url::ParseError> {
     ChannelState::override_auth_token_root_url(server_url.to_owned())?;
     log::info!("Using the self-hosted server at {server_url}");
     Ok(())
+}
+
+/// The product name organization builds show in place of "Warp".
+pub const PRODUCT_NAME: &str = "neo-warp";
+
+pub const SIGN_IN_EXPIRED_MESSAGE: &str = "Your sign-in expired. Sign in again to continue.";
+
+/// The message to show when signing in, or keeping a session, fails.
+pub fn login_failure_message(err: &UserAuthenticationError) -> String {
+    match err {
+        // A refused refresh means the organization session ended, not a broken login.
+        UserAuthenticationError::DeniedAccessToken(_)
+        | UserAuthenticationError::UserAccountDisabled(_)
+            if sign_in_config().is_some() =>
+        {
+            SIGN_IN_EXPIRED_MESSAGE.to_owned()
+        }
+        UserAuthenticationError::DeniedAccessToken(_)
+        | UserAuthenticationError::UserAccountDisabled(_)
+        | UserAuthenticationError::InvalidStateParameter
+        | UserAuthenticationError::MissingStateParameter
+        | UserAuthenticationError::DeviceCodeRequestTimedOut { .. }
+        | UserAuthenticationError::OrganizationAccessDenied(_)
+        | UserAuthenticationError::Unexpected(_) => format!("{err:#}"),
+    }
 }
 
 /// The organization sign-in settings, when this build signs users in through their organization

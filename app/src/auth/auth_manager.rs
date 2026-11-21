@@ -149,7 +149,6 @@ pub struct AuthManager {
     pending_auth_state: Option<String>,
     /// Cancels the in-flight organization sign-in's loopback wait.
     #[cfg(not(target_family = "wasm"))]
-    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     organization_sign_in_cancellation: Option<org_sign_in::CancellationHandle>,
 }
 
@@ -382,7 +381,6 @@ impl AuthManager {
     /// [`AuthManagerEvent::ReceivedOrganizationSignInUrl`] once the browser should open, then
     /// completes like device authorization, with `AuthComplete` or `AuthFailed`.
     #[cfg(not(target_family = "wasm"))]
-    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     pub fn authorize_with_organization(
         &mut self,
         config: org_sign_in::OrganizationSignInConfig,
@@ -398,7 +396,6 @@ impl AuthManager {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     fn on_organization_metadata(
         &mut self,
         config: org_sign_in::OrganizationSignInConfig,
@@ -457,7 +454,6 @@ impl AuthManager {
 
     /// Stops waiting for an in-flight organization sign-in, freeing its loopback port.
     #[cfg(not(target_family = "wasm"))]
-    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     pub fn cancel_organization_sign_in(&mut self) {
         if let Some(cancellation) = self.organization_sign_in_cancellation.take() {
             cancellation.cancel();

@@ -17,6 +17,8 @@ pub enum LoginFailureReason {
     FailedMintCustomToken,
     InvalidStateParameter,
     MissingStateParameter,
+    /// Organization sign-in failed, or the organization session ended.
+    Organization { message: String },
 }
 
 impl LoginFailureReason {
@@ -60,6 +62,9 @@ impl LoginFailureReason {
                 with_troubleshooting_text(vec![FormattedTextFragment::plain_text(
                     "The redirect URL pasted did not originate from this app. Please click the button below to try again.",
                 )])
+            }
+            LoginFailureReason::Organization { message } => {
+                vec![FormattedTextFragment::plain_text(message.clone())]
             }
         };
         FormattedText::new([FormattedTextLine::Line(fragments)])
