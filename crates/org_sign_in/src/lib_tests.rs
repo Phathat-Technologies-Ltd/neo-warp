@@ -346,3 +346,12 @@ fn environment_configures_the_server_url_and_sign_in() {
         OrganizationConfig::default()
     );
 }
+
+#[test]
+fn shipped_example_config_is_valid() {
+    let (_dir, path) = write_config_file(include_str!("../organization.toml.example"));
+    let config = OrganizationConfig::from_file(&path).expect("the example must parse");
+    assert_eq!(config.server_url, None, "the example runs the embedded server");
+    let sign_in = config.sign_in.expect("the example configures sign-in");
+    assert_eq!(sign_in.button_label(), "Sign in with Microsoft");
+}

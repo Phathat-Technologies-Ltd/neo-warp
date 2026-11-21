@@ -1,0 +1,27 @@
+# neo-warp organization configuration.
+#
+# Deploy this file, renamed to organization.toml, to the system-wide location (it takes admin
+# rights to write, so users can't redirect the app):
+#   macOS:   /Library/Application Support/Warp/organization.toml
+#   Linux:   /etc/warp/organization.toml
+#   Windows: %ProgramData%\Warp\organization.toml
+#
+# With [sign_in] set and no server_url, neo-warp runs its sign-in and agent server inside the app,
+# so nothing else needs deploying.
+
+# Optional: a standalone selfhost-server for the organization, instead of the embedded one.
+# server_url = "https://neo-warp.internal.example.com"
+
+[sign_in]
+# Your identity provider's OpenID Connect issuer URL and the public client ID registered there.
+# For Microsoft Entra ID (see docs/entra-setup.md):
+issuer = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+client_id = "<application-client-id>"
+
+# Optional: the provider name on the sign-in button ("Sign in with Microsoft").
+display_name = "Microsoft"
+
+# Optional: extra scopes to request, and a fixed redirect port for providers that require the
+# exact registered port (Entra and Google accept any port on http://localhost/callback).
+# extra_scopes = []
+# redirect_port = 53682
