@@ -419,3 +419,23 @@ async fn many_sessions_run_concurrently() {
         "{SESSIONS} turns took {elapsed:?}"
     );
 }
+
+#[test]
+fn provider_errors_map_to_reasons_the_user_can_act_on() {
+    let forbidden = "Ran into this error: Authentication error: Authentication failed for https://api.anthropic.com/v1/messages. Status: 403 Forbidden. Response: OAuth token does not meet scope requirement any_of(user:inference) (provider request id: req_1).";
+    assert!(matches!(
+        classify_message_error(forbidden, "claude-opus-5-5"),
+        TurnError::Internal(message)
+            if message == "Anthropic refused the request: OAuth token does not meet scope requirement any_of(user:inference)"
+    ));
+    let unauthorized =
+        "Authentication failed. Status: 401 Unauthorized. Response: invalid x-api-key";
+    assert!(matches!(
+        classify_message_error(unauthorized, "claude-opus-5-5"),
+        TurnError::InvalidApiKey { .. }
+    ));
+    assert!(matches!(
+        classify_message_error("Status: 529 Overloaded. Response: overloaded_error", "m"),
+        TurnError::Unavailable
+    ));
+}

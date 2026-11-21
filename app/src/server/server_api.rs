@@ -206,6 +206,13 @@ pub enum AIApiError {
         "Warp Cloud models are turned off and this request has no allowed model. Add an API key or custom endpoint, or turn on Warp Cloud models in Settings > Agents > Warp Agent."
     )]
     WarpCloudModelsDisabled,
+
+    /// Synthesized client-side under organization sign-in when no model has a connected
+    /// credential; there are no Warp-hosted models to fall back on.
+    #[error(
+        "No Claude credential is connected. Type /api-keys, choose Anthropic, and connect Claude or paste an API key."
+    )]
+    NoModelCredential,
 }
 
 impl From<http_client::ResponseError> for AIApiError {
@@ -350,7 +357,8 @@ impl AIApiError {
             // A failed Grok token refresh is a credential problem the user must
             // fix by reconnecting, so retrying or resuming won't help.
             AIApiError::GrokSubscriptionTokenRefreshFailed
-            | AIApiError::WarpCloudModelsDisabled => false,
+            | AIApiError::WarpCloudModelsDisabled
+            | AIApiError::NoModelCredential => false,
             // By default, attempt recovery on error.
             _ => true,
         }
@@ -373,7 +381,8 @@ impl ErrorExt for AIApiError {
             | AIApiError::ServerOverloaded
             | AIApiError::NoContextFound
             | AIApiError::GrokSubscriptionTokenRefreshFailed
-            | AIApiError::WarpCloudModelsDisabled => false,
+            | AIApiError::WarpCloudModelsDisabled
+            | AIApiError::NoModelCredential => false,
         }
     }
 }

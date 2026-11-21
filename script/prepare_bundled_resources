@@ -16,6 +16,8 @@
 #                           stable). Used to include channel-gated skills.
 #
 # Environment variables:
+#   SKIP_ANT_CLI:         Set to "1" to leave out Anthropic's ant CLI (see fetch_ant_cli, which
+#                         also honors ANT_CLI_OPTIONAL).
 #   SKIP_SETTINGS_SCHEMA: Set to "1" to skip generating the JSON settings
 #                         schema. By default the schema is always generated
 #                         so that production bundles never accidentally omit it.
@@ -152,6 +154,11 @@ if [ "${SKIP_SETTINGS_SCHEMA:-}" != "1" ]; then
     echo "Error: Settings schema was not written to $SCHEMA_OUTPUT" >&2
     exit 1
   fi
+fi
+
+# Anthropic's ant CLI, for Claude Console sign-in. Set SKIP_ANT_CLI=1 to leave it out.
+if [ "${SKIP_ANT_CLI:-}" != "1" ]; then
+  "$SCRIPT_DIR/fetch_ant_cli" "$DEST_DIR"
 fi
 
 echo "Successfully prepared bundled resources in $DEST_DIR"

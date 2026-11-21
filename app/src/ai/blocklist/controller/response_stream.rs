@@ -586,7 +586,12 @@ impl ResponseStream {
             // receive the error.
             let _ = ctx.spawn(async {}, move |me, _, ctx| {
                 if me.current_request_id == Some(request_id) {
-                    me.surface_terminal_error(AIApiError::WarpCloudModelsDisabled, request_id, ctx);
+                    let error = if crate::auth::is_organization_sign_in() {
+                        AIApiError::NoModelCredential
+                    } else {
+                        AIApiError::WarpCloudModelsDisabled
+                    };
+                    me.surface_terminal_error(error, request_id, ctx);
                 }
             });
             return;

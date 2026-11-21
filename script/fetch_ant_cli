@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# Installs Anthropic's `ant` CLI into a bundled-resources directory, for Claude Console sign-in.
+#
+# Usage:
+#   fetch_ant_cli <destination_directory>
+#
+# Puts the binary at <destination_directory>/bin/ant (ant.exe on Windows) and its license files
+# under <destination_directory>/bin/ant-licenses. Downloads are cached in target/ant-cli-cache
+# and checked against the SHA-256 values pinned below, so a changed release asset is rejected.
+#
+# Environment variables:
+#   ANT_CLI_OPTIONAL: Set to "1" to warn instead of failing when the download is unavailable
+#                     (for local builds without network access).
+
+set -euo pipefail
+
+ANT_CLI_VERSION="2.12.1"
+
+asset_sha256() {
+  case "$1" in
+    ant_2.12.1_macos_arm64.zip) echo "94261d6e0dfa5a953d7264ccc09fcd41d698afb8a7fb8c07d0284bff9bdc88c4" ;;
+    ant_2.12.1_macos_amd64.zip) echo "7680047f95cb413a9c255df2f1fb2c913d51758154a0684376652f0f06df3f09" ;;
+    ant_2.12.1_linux_amd64.tar.gz) echo "0ff27598096a89bb75c44c0f96e6be8eba405b6426febd54839391eafa6da69e" ;;
+    ant_2.12.1_linux_arm64.tar.gz) echo "2f203d4b3abd9305f094d31a0e9aa2b17e67a20a08145bf46d69f471a9f666c3" ;;
+    ant_2.12.1_windows_amd64.zip) echo "c93572ddd6dbe0bf054146621772a3d792b8eac965c00b45577f08ab01944a21" ;;
+    ant_2.12.1_windows_arm64.zip) echo "6e5f55e99e3ea18df7ab771f365ceaaf964a7f291d2c15d77923b66694be454e" ;;
+    *) return 1 ;;
+  esac
+}
+
+fail() {
+  if [ "${ANT_CLI_OPTIONAL:-}" = "1" ]; then
+    echo "Warning: $1; Claude Console sign-in will use an ant CLI on PATH, if any." >&2
+    exit 0
+  fi
+  echo "Error: $1" >&2
+  exit 1
+}
+
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <destination_directory>" >&2
+  exit 1
+fi
+DEST_DIR="$1"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CACHE_DIR="$REPO_ROOT/target/ant-cli-cache"
+
+case "$(uname -s)" in
+  Darwin) os="macos"; ext="zip"; binary="ant" ;;
+  Linux) os="linux"; ext="tar.gz"; binary="ant" ;;
+  MINGW* | MSYS* | CYGWIN*) os="windows"; ext="zip"; binary="ant.exe" ;;
+  *) fail "no ant CLI build for $(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  arm64 | aarch64) arch="arm64" ;;
+  x86_64 | amd64) arch="amd64" ;;
+  *) fail "no ant CLI build for $(uname -m)" ;;
+esac
+
+asset="ant_${ANT_CLI_VERSION}_${os}_${arch}.${ext}"
+expected="$(asset_sha256 "$asset")" || fail "no pinned checksum for $asset"
+archive="$CACHE_DIR/$asset"
+
+mkdir -p "$CACHE_DIR"
+if [ ! -f "$archive" ]; then
+  url="https://github.com/anthropics/anthropic-cli/releases/download/v${ANT_CLI_VERSION}/${asset}"
+  echo "Downloading $url"
+  curl -fsSL --retry 2 -o "$archive.partial" "$url" || fail "couldn't download $asset"
+  mv "$archive.partial" "$archive"
+fi
+
+actual="$(shasum -a 256 "$archive" | cut -d' ' -f1)"
+if [ "$actual" != "$expected" ]; then
+  rm -f "$archive"
+  fail "checksum mismatch for $asset (expected $expected, got $actual)"
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+case "$ext" in
+  zip) unzip -q "$archive" -d "$work" ;;
+  tar.gz) tar -xzf "$archive" -C "$work" ;;
+esac
+[ -f "$work/$binary" ] || fail "$asset has no $binary"
+
+mkdir -p "$DEST_DIR/bin/ant-licenses"
+install -m 0755 "$work/$binary" "$DEST_DIR/bin/$binary"
+for license in LICENSE LICENSE-MIT; do
+  if [ -f "$work/$license" ]; then
+    cp "$work/$license" "$DEST_DIR/bin/ant-licenses/$license"
+  fi
+done
+echo "Installed ant CLI $ANT_CLI_VERSION at $DEST_DIR/bin/$binary"

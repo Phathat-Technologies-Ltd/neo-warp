@@ -610,18 +610,30 @@ fn trailing_error(messages: &[Message]) -> Option<String> {
 
 fn classify_message_error(error: &str, model: &str) -> TurnError {
     let lowered = error.to_lowercase();
-    if lowered.contains("401")
-        || lowered.contains("authentication")
-        || lowered.contains("invalid x-api-key")
-    {
+    if lowered.contains("status: 401") || lowered.contains("invalid x-api-key") {
         TurnError::InvalidApiKey {
             model: model.to_owned(),
         }
-    } else if lowered.contains("529") || lowered.contains("overloaded") {
+    } else if lowered.contains("status: 529") || lowered.contains("overloaded") {
         TurnError::Unavailable
     } else {
-        TurnError::Internal(error.to_owned())
+        TurnError::Internal(format!(
+            "Anthropic refused the request: {}",
+            provider_reason(error)
+        ))
     }
+}
+
+/// The provider's own explanation from an error, without the transport details around it.
+fn provider_reason(error: &str) -> &str {
+    let reason = error
+        .split_once("Response: ")
+        .map_or(error, |(_, response)| response);
+    reason
+        .split(" (provider request id")
+        .next()
+        .unwrap_or(reason)
+        .trim()
 }
 
 fn classify_error(error: anyhow::Error) -> TurnError {
