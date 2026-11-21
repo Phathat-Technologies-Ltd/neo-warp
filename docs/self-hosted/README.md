@@ -43,6 +43,10 @@ Nothing connects to Warp's servers. To allowlist neo-warp on a firewall, allow:
 3. Distribute the release archive. Users run `neo-warp` from the extracted folder; keep the
    `resources/` folder next to the binary.
 
+   Sign macOS builds (`CODESIGN_IDENTITY=... script/neo-warp/package <version>`). macOS ties
+   keychain access to the app's signature, so each unsigned build asks every user for their
+   password before it can read their saved sign-in and Claude login.
+
 To revoke someone's access, remove them (or their group assignment) in your identity provider.
 Their current sign-in ends within 12 hours at most, and they can't sign in again.
 
