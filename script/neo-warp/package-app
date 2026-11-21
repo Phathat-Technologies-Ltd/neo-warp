@@ -9,9 +9,9 @@
 # Anthropic's ant CLI in Contents/Resources/bin), plus organization.toml.example, the admin guides,
 # and the licenses.
 #
-# Without signing credentials the app is ad-hoc signed, so macOS asks users to approve it on first
-# launch and asks for keychain access after each upgrade. Pass a Developer ID through the bundle
-# script's signing environment for distribution.
+# With a Developer ID in the keychain the app is signed for distribution (see sign-app, which
+# also notarizes when NEO_WARP_NOTARY_PROFILE is set). Otherwise it carries a development
+# signature, and macOS asks users to approve it on first launch.
 
 set -euo pipefail
 
@@ -36,6 +36,13 @@ app="target/$target/release-lto/bundle/osx/neo-warp.app"
 if [ ! -x "$app/Contents/MacOS/neo-warp" ] || [ ! -x "$app/Contents/Resources/bin/ant" ]; then
   echo "Error: $app is missing the app binary or the bundled ant CLI" >&2
   exit 1
+fi
+
+# A Developer ID signature (and notarization, with NEO_WARP_NOTARY_PROFILE) replaces the bundle
+# script's development signature when a Developer ID is available.
+if [ -n "${NEO_WARP_SIGNING_IDENTITY:-}" ] \
+  || security find-identity -v -p codesigning | grep -q "Developer ID Application"; then
+  "$REPO_ROOT/script/neo-warp/sign-app" "$app"
 fi
 
 name="neo-warp-$VERSION-macos-$arch-app"

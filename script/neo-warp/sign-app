@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# Signs neo-warp.app with a Developer ID for distribution and, when a notary profile is given,
+# notarizes and staples it so Gatekeeper opens it without warnings.
+#
+# Usage:
+#   script/neo-warp/sign-app <path/to/neo-warp.app>
+#
+# Environment:
+#   NEO_WARP_SIGNING_IDENTITY  Developer ID Application identity (default: the first one in the
+#                              keychain).
+#   NEO_WARP_NOTARY_PROFILE    A notarytool keychain profile, created once with
+#                              `xcrun notarytool store-credentials <profile> --apple-id <id>
+#                              --team-id <team>`. Without it the app is signed but not notarized.
+
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <path/to/neo-warp.app>" >&2
+  exit 1
+fi
+app="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+identity="${NEO_WARP_SIGNING_IDENTITY:-}"
+if [ -z "$identity" ]; then
+  identity="$(security find-identity -v -p codesigning | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')"
+fi
+if [ -z "$identity" ]; then
+  echo "Error: no Developer ID Application identity found; set NEO_WARP_SIGNING_IDENTITY" >&2
+  exit 1
+fi
+echo "Signing $app as $identity"
+
+sign() {
+  codesign --force --options runtime --timestamp --sign "$identity" "$@"
+}
+
+# Inside out: helpers outside the standard code locations first, then the bundle, whose --deep
+# pass covers its plug-ins and frameworks.
+sign "$app/Contents/Resources/bin/ant"
+sign --deep --entitlements "$SCRIPT_DIR/Entitlements.plist" "$app"
+codesign --verify --deep --strict --verbose=2 "$app"
+
+if [ -z "${NEO_WARP_NOTARY_PROFILE:-}" ]; then
+  echo "Signed. Set NEO_WARP_NOTARY_PROFILE to notarize."
+  exit 0
+fi
+
+submission="$(mktemp -d)/neo-warp-notarize.zip"
+ditto -c -k --keepParent "$app" "$submission"
+echo "Submitting to Apple's notary service (this takes a few minutes)"
+xcrun notarytool submit "$submission" --keychain-profile "$NEO_WARP_NOTARY_PROFILE" --wait
+xcrun stapler staple "$app"
+spctl --assess --type execute --verbose=2 "$app"
