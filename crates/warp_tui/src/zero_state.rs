@@ -15,6 +15,7 @@ use ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent};
 use ai::project_context::model::{
     ProjectContextModel, ProjectContextModelEvent, ProjectRulesResult,
 };
+use warp::TuiLoginModel;
 use warp::settings::{TuiZeroStateSettings, TuiZeroStateSettingsChangedEvent};
 use warp::tui_export::{
     ActiveSession, ActiveSessionEvent, ChangelogModel, ChangelogModelEvent, ChangelogState,
@@ -649,7 +650,7 @@ fn render_standard_top_section(
 
     let mut column = TuiFlex::column()
         .child(
-            TuiText::new("Warp Agent CLI")
+            TuiText::new(TuiLoginModel::cli_name())
                 .with_style(title_style)
                 .truncate()
                 .finish(),

@@ -79,6 +79,30 @@ impl TuiLoginModel {
         &self.phase
     }
 
+    /// Whether this build signs users in through their organization (neo-warp) instead of a
+    /// Warp account.
+    pub fn is_organization_sign_in() -> bool {
+        organization_sign_in().is_some()
+    }
+
+    /// The product name shown to users.
+    pub fn product_name() -> &'static str {
+        if Self::is_organization_sign_in() {
+            ORGANIZATION_PRODUCT_NAME
+        } else {
+            "Warp"
+        }
+    }
+
+    /// The name of this terminal front end shown to users.
+    pub fn cli_name() -> &'static str {
+        if Self::is_organization_sign_in() {
+            ORGANIZATION_PRODUCT_NAME
+        } else {
+            "Warp Agent CLI"
+        }
+    }
+
     /// The label of the welcome screen's sign-in action.
     pub fn sign_in_label() -> String {
         organization_sign_in()
@@ -441,6 +465,7 @@ pub fn log_out_tui(ctx: &mut AppContext) {
     authorize_device(ctx);
 }
 
+const ORGANIZATION_PRODUCT_NAME: &str = "neo-warp";
 const SIGN_IN_EXPIRED_MESSAGE: &str = "Your sign-in expired. Sign in again to continue.";
 
 fn login_failure_message(err: &UserAuthenticationError) -> String {

@@ -2,6 +2,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use warp::TuiLoginModel;
 use warpui_core::AppContext;
 use warpui_core::elements::animation::AnimationClock;
 use warpui_core::elements::tui::{
@@ -138,7 +139,7 @@ pub(crate) fn centered_in_viewport(content: Box<dyn TuiElement>) -> Box<dyn TuiE
 }
 
 pub(crate) fn render_welcome_title(builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
-    TuiText::new("Welcome to Warp")
+    TuiText::new(format!("Welcome to {}", TuiLoginModel::product_name()))
         .with_style(builder.brand_primary_style().add_modifier(Modifier::BOLD))
         .truncate()
         .finish()
@@ -148,6 +149,10 @@ pub(crate) fn append_welcome_capability_section(
     mut column: TuiFlex,
     builder: &TuiUiBuilder,
 ) -> TuiFlex {
+    // These describe Warp's hosted service, not an organization build.
+    if TuiLoginModel::is_organization_sign_in() {
+        return column;
+    }
     column = column.child(
         TuiText::new("What’s different about Warp")
             .with_style(builder.muted_text_style())
@@ -305,7 +310,7 @@ pub(crate) fn login_waiting(
         .add_modifier(Modifier::BOLD);
     let mut content = TuiFlex::column()
         .child(
-            TuiText::new("Welcome to Warp")
+            TuiText::new(format!("Welcome to {}", TuiLoginModel::product_name()))
                 .with_style(title)
                 .truncate()
                 .finish(),
@@ -448,7 +453,7 @@ pub(crate) fn login_browser_open_failed(
     let mut on_copy_key = on_copy.clone();
     let content = TuiFlex::column()
         .child(
-            TuiText::new("Welcome to Warp")
+            TuiText::new(format!("Welcome to {}", TuiLoginModel::product_name()))
                 .with_style(title)
                 .truncate()
                 .finish(),
@@ -627,7 +632,7 @@ pub(crate) fn login_failed(
     let mut on_retry_enter = on_retry.clone();
     let content = TuiFlex::column()
         .child(
-            TuiText::new("Welcome to Warp")
+            TuiText::new(format!("Welcome to {}", TuiLoginModel::product_name()))
                 .with_style(title)
                 .truncate()
                 .finish(),
