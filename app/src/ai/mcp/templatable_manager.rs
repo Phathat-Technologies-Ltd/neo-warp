@@ -24,18 +24,21 @@ use simple_logger::SimpleLogger;
 use uuid::Uuid;
 #[cfg(not(target_family = "wasm"))]
 use warpui::ModelSpawner;
-use warpui::{Entity, SingletonEntity};
+use warpui::{Entity, EntityId, SingletonEntity};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_sdk::driver::git_credentials::restricted::{
     active_restricted_child_environment, protected_environment_key,
 };
+use crate::ai::mcp::session_selection::{SessionMcpDefaults, SessionMcpSelection};
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::templatable::CloudTemplatableMCPServer;
 use crate::ai::mcp::templatable_installation::TemplatableMCPServerInstallation;
+use crate::ai::mcp::tool_risk::McpAccessLevel;
 use crate::ai::mcp::{FileBasedMCPManager, MCPServerState};
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::{StaticEnvVar, TransportType};
+use crate::settings::AISettings;
 
 #[cfg(not(target_family = "wasm"))]
 type ReconnectResultSender =
@@ -105,6 +108,7 @@ pub struct TemplatableMCPServerManager {
     /// UUIDs of MCP servers started via the Oz CLI. We track these so they can be distinguished from
     /// file-based ephemeral MCP servers, which are directory-scoped.
     cli_spawned_server_uuids: HashSet<Uuid>,
+    session_selection: SessionMcpSelection,
     /// UUIDs of built-in Warp-hosted servers (e.g. the Factory MCP), which are
     /// spawned automatically from in-code definitions and authenticated with
     /// the logged-in user's session credentials.
@@ -435,6 +439,130 @@ impl TemplatableMCPServerManager {
         self.builtin_server_uuids
             .iter()
             .filter_map(|uuid| self.active_servers.get(uuid).map(|info| (*uuid, info)))
+            .collect()
+    }
+
+    /// Every active server an agent session in `cwd` can reach (installed, file-based servers in
+    /// scope for `cwd`, CLI-spawned, and built-in), ordered by name so requests list them stably.
+    pub fn active_servers_for_session(
+        &self,
+        cwd: Option<&std::path::Path>,
+        app: &warpui::AppContext,
+    ) -> Vec<&TemplatableMCPServerInfo> {
+        let mut servers: HashMap<Uuid, &TemplatableMCPServerInfo> =
+            self.get_active_templatable_servers();
+        if let Some(cwd) = cwd {
+            servers.extend(self.get_active_file_based_servers(cwd, app));
+        }
+        servers.extend(self.get_active_cli_spawned_servers());
+        servers.extend(self.get_active_builtin_servers());
+        let mut servers: Vec<_> = servers.into_values().collect();
+        servers.sort_by(|a, b| {
+            a.name()
+                .cmp(b.name())
+                .then_with(|| a.installation_id().cmp(&b.installation_id()))
+        });
+        servers
+    }
+
+    /// The settings' current defaults for sessions that start now.
+    fn new_session_defaults(app: &warpui::AppContext) -> SessionMcpDefaults {
+        let ai_settings = AISettings::as_ref(app);
+        SessionMcpDefaults {
+            enabled: *ai_settings.mcp_servers_enabled_in_new_sessions,
+            level: *ai_settings.mcp_default_access_level_in_new_sessions,
+        }
+    }
+
+    /// Snapshots the current new-session defaults for `pane`, so later changes to those settings
+    /// don't reach it. Has no effect if `pane` already started.
+    pub fn start_session(&mut self, pane: EntityId, app: &warpui::AppContext) {
+        self.session_selection
+            .start_session(pane, Self::new_session_defaults(app));
+    }
+
+    /// Whether the agent in `pane` may use `server`.
+    pub fn is_server_enabled_for_session(
+        &self,
+        pane: EntityId,
+        server: Uuid,
+        app: &warpui::AppContext,
+    ) -> bool {
+        self.session_selection
+            .is_enabled(pane, server, Self::new_session_defaults(app))
+    }
+
+    pub fn set_server_enabled_for_session(&mut self, pane: EntityId, server: Uuid, enabled: bool) {
+        self.session_selection.set_enabled(pane, server, enabled);
+    }
+
+    pub fn server_access_level_for_session(
+        &self,
+        pane: EntityId,
+        server: Uuid,
+        app: &warpui::AppContext,
+    ) -> McpAccessLevel {
+        self.session_selection
+            .access_level(pane, server, Self::new_session_defaults(app))
+    }
+
+    pub fn set_server_access_level_for_session(
+        &mut self,
+        pane: EntityId,
+        server: Uuid,
+        level: McpAccessLevel,
+    ) {
+        self.session_selection.set_access_level(pane, server, level);
+    }
+
+    /// Checks that the agent in `pane` may call `tool_name` on the active server `server`,
+    /// returning why not otherwise.
+    pub fn check_session_tool_call(
+        &self,
+        pane: Option<EntityId>,
+        server: Uuid,
+        tool_name: &str,
+        app: &warpui::AppContext,
+    ) -> Result<(), String> {
+        let tool = self
+            .active_servers
+            .get(&server)
+            .and_then(|server| server.tools().iter().find(|tool| tool.name == tool_name));
+        self.session_selection.check_tool_call(
+            pane,
+            Self::new_session_defaults(app),
+            server,
+            tool_name,
+            tool,
+            &AISettings::as_ref(app).mcp_tool_risk_overrides,
+        )
+    }
+
+    /// The servers an agent session may use, each with the tools its access level allows.
+    pub fn session_server_tools(
+        &self,
+        pane: Option<EntityId>,
+        cwd: Option<&std::path::Path>,
+        app: &warpui::AppContext,
+    ) -> Vec<(&TemplatableMCPServerInfo, Vec<rmcp::model::Tool>)> {
+        let servers = self.active_servers_for_session(cwd, app);
+        let selected = self.session_selection.select(
+            pane,
+            Self::new_session_defaults(app),
+            servers
+                .iter()
+                .map(|server| (server.installation_id(), server.tools().as_slice())),
+            &AISettings::as_ref(app).mcp_tool_risk_overrides,
+        );
+        let mut tools_by_server: HashMap<Uuid, Vec<rmcp::model::Tool>> =
+            selected.into_iter().collect();
+        servers
+            .into_iter()
+            .filter_map(|server| {
+                tools_by_server
+                    .remove(&server.installation_id())
+                    .map(|tools| (server, tools))
+            })
             .collect()
     }
 }

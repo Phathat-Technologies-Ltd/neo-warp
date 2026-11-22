@@ -1,5 +1,6 @@
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_color::ColorU;
+use uuid::Uuid;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::external_product_icon::ExternalProductIcon;
 use warp_core::ui::icons::{ICON_DIMENSIONS, Icon};
@@ -21,14 +22,52 @@ use warpui::ui_components::switch::SwitchStateHandle;
 use warpui::{AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext};
 
 use crate::ai::mcp::templatable::CloudTemplatableMCPServer;
+use crate::ai::mcp::tool_risk::{
+    McpToolClass, McpToolRisk, McpToolRiskSource, classify_tool, classify_tool_with_overrides,
+    next_user_risk,
+};
 use crate::ai::mcp::{MCPServerState, TemplatableMCPServerManager};
 use crate::appearance::Appearance;
 use crate::cloud_object::{CloudObject, CloudObjectUuidLookup as _};
+use crate::settings::AISettings;
 use crate::settings_view::mcp_servers::{ServerCardItemId, style};
 use crate::ui_components::avatar::{Avatar, AvatarContent, StatusElementTypes};
 use crate::ui_components::blended_colors;
 use crate::ui_components::buttons::icon_button;
 use crate::ui_components::red_notification_dot::RedNotificationDot;
+
+/// A running server's tool and its risk class.
+#[derive(Debug, Clone)]
+pub struct ServerCardTool {
+    pub name: String,
+    pub class: McpToolClass,
+    /// The class without the user's choice, restored when the user cycles back to automatic.
+    pub automatic_class: McpToolClass,
+}
+
+/// A running server's tools, with the installation they belong to.
+#[derive(Debug, Clone)]
+pub struct ServerCardTools {
+    pub installation: Uuid,
+    pub tools: Vec<ServerCardTool>,
+}
+
+impl ServerCardTools {
+    pub fn new(installation: Uuid, tools: &[rmcp::model::Tool], app: &AppContext) -> Self {
+        let overrides = &AISettings::as_ref(app).mcp_tool_risk_overrides;
+        Self {
+            installation,
+            tools: tools
+                .iter()
+                .map(|tool| ServerCardTool {
+                    name: tool.name.to_string(),
+                    class: classify_tool_with_overrides(installation, tool, overrides),
+                    automatic_class: classify_tool(tool),
+                })
+                .collect(),
+        }
+    }
+}
 
 /// A chip displayed inline with the server card title, optionally with a leading icon.
 #[derive(Debug, Clone)]
@@ -56,6 +95,7 @@ impl TitleChip {
 #[derive(Debug, Clone)]
 pub enum ServerCardAction {
     ToggleToolsExpanded,
+    CycleToolRisk(usize),
     ToggleRunningSwitch,
     Edit(ServerCardItemId),
     Share(ServerCardItemId),
@@ -68,6 +108,12 @@ pub enum ServerCardAction {
 
 #[derive(Debug, Clone)]
 pub enum ServerCardEvent {
+    /// The user set a tool's class; `None` returns it to automatic classification.
+    SetToolRisk {
+        installation: Uuid,
+        tool: String,
+        risk: Option<McpToolRisk>,
+    },
     Edit(ServerCardItemId),
     Share(ServerCardItemId),
     ToggleRunningSwitch(ServerCardItemId, bool),
@@ -336,7 +382,8 @@ pub struct ServerCardView {
 
     title: String,
     description: Option<String>,
-    tools: Option<Vec<String>>,
+    tools: Option<ServerCardTools>,
+    tool_mouse_states: Vec<MouseStateHandle>,
     error_text: Option<String>,
     title_chips: Vec<TitleChip>,
 
@@ -353,16 +400,21 @@ impl ServerCardView {
         item_id: ServerCardItemId,
         title: String,
         description: Option<String>,
-        tools: Option<Vec<String>>,
+        tools: Option<ServerCardTools>,
         error_text: Option<String>,
         title_chips: Vec<TitleChip>,
         render_options: ServerCardOptions,
     ) -> Self {
+        let tool_mouse_states = tools
+            .as_ref()
+            .map(|tools| tools.tools.iter().map(|_| Default::default()).collect())
+            .unwrap_or_default();
         Self {
             item_id,
             title,
             description,
             tools,
+            tool_mouse_states,
             error_text,
             title_chips,
             render_options,
@@ -440,12 +492,19 @@ impl ServerCardView {
         avatar.build().finish()
     }
 
-    fn render_tool_chips(tools: &[String], appearance: &Appearance) -> Vec<Box<dyn Element>> {
+    fn render_tool_chips(
+        &self,
+        tools: &[ServerCardTool],
+        appearance: &Appearance,
+    ) -> Vec<Box<dyn Element>> {
         tools
             .iter()
-            .map(|tool| {
-                Chip::new(
-                    tool.to_string(),
+            .zip(&self.tool_mouse_states)
+            .enumerate()
+            .map(|(index, (tool, mouse_state))| {
+                let label = format!("{} · {}", tool.name, tool.class.label());
+                let chip = Chip::new(
+                    label,
                     UiComponentStyles {
                         font_family_id: Some(appearance.ui_font_family()),
                         font_size: Some(style::TOOL_CHIP_TEXT_SIZE),
@@ -459,14 +518,20 @@ impl ServerCardView {
                     },
                 )
                 .build()
-                .finish()
+                .finish();
+                Hoverable::new(mouse_state.clone(), move |_| chip)
+                    .with_cursor(Cursor::PointingHand)
+                    .on_click(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(ServerCardAction::CycleToolRisk(index));
+                    })
+                    .finish()
             })
             .collect()
     }
 
     fn render_tools_expandable(
         &self,
-        tools: &[String],
+        tools: &[ServerCardTool],
         appearance: &Appearance,
     ) -> Box<dyn Element> {
         let text_color =
@@ -949,6 +1014,29 @@ impl TypedActionView for ServerCardView {
                 self.is_tools_expanded = !self.is_tools_expanded;
                 ctx.notify();
             }
+            ServerCardAction::CycleToolRisk(index) => {
+                let Some(tools) = &mut self.tools else {
+                    return;
+                };
+                let installation = tools.installation;
+                let Some(tool) = tools.tools.get_mut(*index) else {
+                    return;
+                };
+                let current_user_risk = match tool.class.source {
+                    Some(McpToolRiskSource::User) => tool.class.risk,
+                    Some(McpToolRiskSource::Annotation | McpToolRiskSource::Heuristic) | None => {
+                        None
+                    }
+                };
+                let risk = next_user_risk(current_user_risk);
+                tool.class = risk.map_or(tool.automatic_class, McpToolClass::user);
+                ctx.emit(ServerCardEvent::SetToolRisk {
+                    installation,
+                    tool: tool.name.clone(),
+                    risk,
+                });
+                ctx.notify();
+            }
             ServerCardAction::ToggleRunningSwitch => {
                 if let Some(server_running_state) = self.render_options.server_running_switch_state
                 {
@@ -1023,7 +1111,7 @@ impl View for ServerCardView {
             info_column = self.add_subtitle_lines(info_column, appearance, app);
 
             if let Some(tools) = &self.tools {
-                let tools_info_row = self.render_tools_expandable(tools, appearance);
+                let tools_info_row = self.render_tools_expandable(&tools.tools, appearance);
                 info_column = info_column.with_child(tools_info_row)
             }
 
@@ -1042,7 +1130,7 @@ impl View for ServerCardView {
             if self.is_tools_expanded
                 && let Some(tools) = &self.tools
             {
-                let tool_chips = ServerCardView::render_tool_chips(tools, appearance);
+                let tool_chips = self.render_tool_chips(&tools.tools, appearance);
                 let tool_chips_row = Wrap::row()
                     .with_spacing(6.)
                     .with_run_spacing(6.)

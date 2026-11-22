@@ -357,6 +357,7 @@ fn full_result_text(result: &api::message::tool_call_result::Result) -> (String,
         R::ApplyFileDiffs(result) => apply_diffs_text(result),
         R::Grep(result) => grep_text(result),
         R::FileGlobV2(result) => glob_text(result),
+        R::CallMcpTool(result) => super::mcp::result_text(result),
         R::Cancel(()) => ("The user cancelled this tool call.".to_owned(), true),
         other => (format!("{other:?}"), false),
     }

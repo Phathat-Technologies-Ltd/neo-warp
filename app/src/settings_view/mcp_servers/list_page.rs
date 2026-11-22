@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
-use settings::ToggleableSetting as _;
+use settings::{Setting as _, ToggleableSetting as _};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::Icon;
 use warp_core::ui::theme::color::internal_colors;
-use warp_errors::report_error;
+use warp_errors::{report_error, report_if_error};
 use warpui::elements::{
     Align, Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, Expanded, Fill, Flex,
     FormattedTextElement, HighlightedHyperlink, MainAxisAlignment, MainAxisSize, ParentElement,
@@ -29,6 +29,7 @@ use crate::ai::mcp::templatable::{GalleryData, TemplatableMCPServer};
 use crate::ai::mcp::templatable_manager::{
     TemplatableMCPServerManager, TemplatableMCPServerManagerEvent,
 };
+use crate::ai::mcp::tool_risk::override_key;
 use crate::ai::mcp::{
     FileBasedMCPManager, MCPGalleryManager, MCPProvider, MCPServerUpdate,
     TemplatableMCPServerInstallation, logs,
@@ -54,7 +55,8 @@ use crate::search_bar::SearchBar;
 use crate::server::telemetry::{MCPTemplateInstallationSource, TelemetryEvent};
 use crate::settings::{AISettings, AISettingsChangedEvent};
 use crate::settings_view::mcp_servers::server_card::{
-    ServerCardEvent, ServerCardOptions, ServerCardStatus, ServerCardView, TitleChip,
+    ServerCardEvent, ServerCardOptions, ServerCardStatus, ServerCardTools, ServerCardView,
+    TitleChip,
 };
 use crate::settings_view::mcp_servers::update_modal::{UpdateModalBody, UpdateModalBodyEvent};
 use crate::settings_view::mcp_servers::{ServerCardItemId, style};
@@ -394,13 +396,13 @@ impl MCPServersListPageView {
 
         let title_chip_text = Self::get_title_chip_text(item_id, installation.template_uuid(), ctx);
         let description = installation.templatable_mcp_server().description.clone();
-        let tools = (server_card_status == ServerCardStatus::Running).then_some(
-            TemplatableMCPServerManager::as_ref(ctx)
-                .tools_for_server(installation_uuid)
-                .iter()
-                .map(|tool| tool.name.to_string())
-                .collect(),
-        );
+        let tools = (server_card_status == ServerCardStatus::Running).then(|| {
+            ServerCardTools::new(
+                installation_uuid,
+                &TemplatableMCPServerManager::as_ref(ctx).tools_for_server(installation_uuid),
+                ctx,
+            )
+        });
         let error_text = if server_card_status == ServerCardStatus::Error {
             // Get specific error message if available
             TemplatableMCPServerManager::as_ref(ctx)
@@ -646,6 +648,25 @@ impl MCPServersListPageView {
 
     fn handle_server_card_event(&mut self, event: &ServerCardEvent, ctx: &mut ViewContext<Self>) {
         match event {
+            ServerCardEvent::SetToolRisk {
+                installation,
+                tool,
+                risk,
+            } => {
+                let key = override_key(*installation, tool);
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut overrides = settings.mcp_tool_risk_overrides.clone();
+                    match risk {
+                        Some(risk) => {
+                            overrides.insert(key, *risk);
+                        }
+                        None => {
+                            overrides.remove(&key);
+                        }
+                    }
+                    report_if_error!(settings.mcp_tool_risk_overrides.set_value(overrides, ctx));
+                });
+            }
             ServerCardEvent::Edit(item_id) => {
                 ctx.emit(MCPServersListPageViewEvent::Edit(*item_id));
             }
@@ -1676,13 +1697,13 @@ impl MCPServersListPageView {
                 None => ServerCardStatus::Installed,
             };
         let title_chips = Self::get_file_based_title_chips(uuid, None, ctx);
-        let tools = (server_card_status == ServerCardStatus::Running).then_some(
-            TemplatableMCPServerManager::as_ref(ctx)
-                .tools_for_server(uuid)
-                .iter()
-                .map(|tool| tool.name.to_string())
-                .collect(),
-        );
+        let tools = (server_card_status == ServerCardStatus::Running).then(|| {
+            ServerCardTools::new(
+                uuid,
+                &TemplatableMCPServerManager::as_ref(ctx).tools_for_server(uuid),
+                ctx,
+            )
+        });
         let error_text = if server_card_status == ServerCardStatus::Error {
             TemplatableMCPServerManager::as_ref(ctx)
                 .get_server_error_message(uuid)

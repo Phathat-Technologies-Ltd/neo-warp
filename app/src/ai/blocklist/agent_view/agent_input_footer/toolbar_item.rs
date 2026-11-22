@@ -77,6 +77,9 @@ pub enum AgentToolbarItemKind {
 
     // Agent view only – "Hand off to cloud" chip.
     HandoffToCloud,
+
+    // Agent view only – picks which MCP servers this session's agent may use.
+    McpServers,
 }
 
 impl AgentToolbarItemKind {
@@ -92,6 +95,7 @@ impl AgentToolbarItemKind {
             | Self::ContextWindowUsage
             | Self::UsageSummary
             | Self::FastForwardToggle
+            | Self::McpServers
             | Self::HandoffToCloud => ToolbarAvailability::AgentViewOnly,
             Self::RichInput | Self::Settings => ToolbarAvailability::CLIAgentOnly,
         }
@@ -118,6 +122,7 @@ impl AgentToolbarItemKind {
             | Self::UsageSummary
             | Self::RichInput
             | Self::VoiceInput => true,
+            Self::McpServers => !status.is_viewer(),
         }
     }
 
@@ -136,6 +141,7 @@ impl AgentToolbarItemKind {
             Self::Settings => "Settings",
             Self::FastForwardToggle => "Fast Forward",
             Self::HandoffToCloud => "Hand off to cloud",
+            Self::McpServers => "MCP Servers",
         }
     }
 
@@ -156,6 +162,7 @@ impl AgentToolbarItemKind {
             // The bundled `upload-cloud-01.svg` (cloud-with-upward-arrow) is the
             // closest fit among the existing icons for V0; design may swap it later.
             Self::HandoffToCloud => Some(Icon::UploadCloud),
+            Self::McpServers => Some(Icon::Dataflow),
         }
     }
 
@@ -172,6 +179,7 @@ impl AgentToolbarItemKind {
             | Self::ContextWindowUsage
             | Self::UsageSummary
             | Self::FastForwardToggle
+            | Self::McpServers
             | Self::HandoffToCloud
             | Self::ShareSession
             | Self::FileExplorer
@@ -237,6 +245,7 @@ impl AgentToolbarItemKind {
             Self::ContextChip(ContextChipKind::AgentPlanAndTodoList),
             Self::ContextWindowUsage,
             Self::UsageSummary,
+            Self::McpServers,
             Self::ModelSelector,
         ];
         if FeatureFlag::CreatingSharedSessions.is_enabled()
@@ -268,6 +277,7 @@ impl AgentToolbarItemKind {
             Self::FileAttach,
             Self::ContextWindowUsage,
             Self::UsageSummary,
+            Self::McpServers,
             // Opt-in only: deliberately absent from `default_left`/`default_right`.
             Self::FileExplorer,
         ]);

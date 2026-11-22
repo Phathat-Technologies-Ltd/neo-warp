@@ -38,10 +38,10 @@ use warp_errors::report_error;
 use warp_errors::report_if_error;
 use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::elements::{
-    ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
-    DispatchEventResult, Element, Empty, EventHandler, Flex, MainAxisAlignment, MainAxisSize,
-    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius, SavePosition,
-    Shrinkable, Stack, Wrap, WrapFill, WrapFillEntireRun,
+    Border, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, DispatchEventResult, Element, Empty, EventHandler, Flex, MainAxisAlignment,
+    MainAxisSize, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Radius,
+    SavePosition, Shrinkable, Stack, Wrap, WrapFill, WrapFillEntireRun,
 };
 use warpui::{
     AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
@@ -62,6 +62,8 @@ use crate::ai::blocklist::usage::usage_popover_view::{
 };
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::harness_availability::HarnessAvailabilityModel;
+use crate::ai::mcp::TemplatableMCPServerManager;
+use crate::ai::mcp::tool_risk::McpAccessLevel;
 use crate::appearance::Appearance;
 use crate::auth::{AuthManager, AuthStateProvider};
 use crate::completer::SessionContext;
@@ -69,6 +71,7 @@ use crate::context_chips::display_chip::{DisplayChip, DisplayChipConfig, PromptC
 use crate::context_chips::prompt_type::PromptType;
 use crate::context_chips::{self, ContextChipKind};
 use crate::features::FeatureFlag;
+use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields, MenuVariant};
 use crate::network::NetworkStatus;
 use crate::send_telemetry_from_ctx;
 #[cfg(feature = "voice_input")]
@@ -97,6 +100,7 @@ use crate::terminal::input::models::InlineModelSelectorTab;
 use crate::terminal::input::{HandoffComposeState, MenuPositioning, MenuPositioningProvider};
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::local_shell::LocalShellState;
+use crate::terminal::model::session::active_session::ActiveSession;
 use crate::terminal::profile_model_selector::{ProfileModelSelector, ProfileModelSelectorEvent};
 use crate::terminal::session_settings::{
     SessionSettings, SessionSettingsChangedEvent, ToolbarChipSelection,
@@ -121,6 +125,7 @@ use crate::workspace::WorkspaceAction;
 use crate::workspace::view::TOGGLE_PROJECT_EXPLORER_BINDING_NAME;
 use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
 use crate::workspaces::workspace::ChargeUnit;
+use uuid::Uuid;
 
 const ENABLE_NLD_TOOLTIP: &str = "Enable terminal command autodetection";
 const DISABLE_NLD_TOOLTIP: &str = "Disable terminal command autodetection";
@@ -140,6 +145,7 @@ const CLOUD_MODE_V2_FOOTER_GAP: f32 = 4.;
 
 /// id for the conversation usage popover's trigger button to anchor the popover overlay
 const USAGE_BUTTON_SAVE_POSITION_ID: &str = "agent_input_footer::usage_button";
+const MCP_BUTTON_SAVE_POSITION_ID: &str = "agent_input_footer::mcp_button";
 
 /// How long to wait after session creation before showing the install chip.
 /// Gives the plugin time to connect and send its `SessionStart` event.
@@ -273,6 +279,11 @@ pub struct AgentInputFooter {
     menu_positioning_provider: Arc<dyn MenuPositioningProvider>,
     usage_popover: ViewHandle<UsagePopoverView>,
     usage_popover_open: bool,
+    mcp_button: ViewHandle<ActionButton>,
+    mcp_menu: ViewHandle<Menu<AgentInputFooterAction>>,
+    mcp_menu_open: bool,
+    /// Source of the cwd for the MCP menu, the same one agent requests use.
+    active_session: Option<ModelHandle<ActiveSession>>,
 }
 
 impl AgentInputFooter {
@@ -709,6 +720,39 @@ impl AgentInputFooter {
                 })
         });
 
+        let mcp_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new("", AgentInputButtonTheme)
+                .with_icon(Icon::Dataflow)
+                .with_tooltip("MCP servers for this session")
+                .with_size(button_size)
+                .with_tooltip_alignment(TooltipAlignment::Left)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(AgentInputFooterAction::ToggleMcpMenu);
+                })
+        });
+        let mcp_menu = ctx.add_typed_action_view(|ctx| {
+            let theme = Appearance::as_ref(ctx).theme();
+            Menu::new()
+                .with_menu_variant(MenuVariant::Fixed)
+                .with_border(Border::all(1.).with_border_fill(theme.outline()))
+                .with_drop_shadow()
+        });
+        ctx.subscribe_to_view(&mcp_menu, |me, _, event, ctx| match event {
+            MenuEvent::Close { .. } => {
+                me.mcp_menu_open = false;
+                ctx.notify();
+            }
+            MenuEvent::ItemSelected | MenuEvent::ItemHovered => {}
+        });
+
+        ctx.subscribe_to_model(
+            &TemplatableMCPServerManager::handle(ctx),
+            |me, _, _, ctx| me.refresh_mcp_menu(ctx),
+        );
+        TemplatableMCPServerManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.start_session(terminal_view_id, ctx);
+        });
+
         let usage_popover = ctx.add_typed_action_view(|ctx| UsagePopoverView::new(None, ctx));
         ctx.subscribe_to_view(&usage_popover, |me, _, event, ctx| match event {
             UsagePopoverEvent::Close => {
@@ -1009,6 +1053,10 @@ impl AgentInputFooter {
             menu_positioning_provider: menu_positioning_provider.clone(),
             usage_popover,
             usage_popover_open: false,
+            mcp_button,
+            mcp_menu,
+            mcp_menu_open: false,
+            active_session: None,
         };
         me.sync_fast_forward_button(ctx);
         me.sync_remote_control_button(ctx);
@@ -1025,6 +1073,15 @@ impl AgentInputFooter {
             );
         }
         me
+    }
+
+    pub fn set_active_session(
+        &mut self,
+        active_session: ModelHandle<ActiveSession>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.active_session = Some(active_session);
+        self.refresh_mcp_menu(ctx);
     }
 
     pub fn set_current_repo_path(
@@ -1638,8 +1695,43 @@ impl AgentInputFooter {
             | AgentToolbarItemKind::ContextWindowUsage
             | AgentToolbarItemKind::UsageSummary
             | AgentToolbarItemKind::FastForwardToggle
+            | AgentToolbarItemKind::McpServers
             | AgentToolbarItemKind::HandoffToCloud => None,
         }
+    }
+
+    fn render_mcp_button(&self, app: &AppContext) -> Box<dyn Element> {
+        let button = SavePosition::new(
+            ChildView::new(&self.mcp_button).finish(),
+            MCP_BUTTON_SAVE_POSITION_ID,
+        )
+        .finish();
+        let mut stack = Stack::new().with_child(button);
+        if self.mcp_menu_open {
+            let positioning = match self.menu_positioning_provider.menu_position(app) {
+                MenuPositioning::BelowInputBox => {
+                    OffsetPositioning::offset_from_save_position_element(
+                        MCP_BUTTON_SAVE_POSITION_ID,
+                        vec2f(0., 4.),
+                        warpui::elements::PositionedElementOffsetBounds::WindowByPosition,
+                        warpui::elements::PositionedElementAnchor::BottomRight,
+                        ChildAnchor::TopRight,
+                    )
+                }
+                MenuPositioning::AboveInputBox => {
+                    OffsetPositioning::offset_from_save_position_element(
+                        MCP_BUTTON_SAVE_POSITION_ID,
+                        vec2f(0., -4.),
+                        warpui::elements::PositionedElementOffsetBounds::WindowByPosition,
+                        warpui::elements::PositionedElementAnchor::TopRight,
+                        ChildAnchor::BottomRight,
+                    )
+                }
+            };
+            stack
+                .add_positioned_overlay_child(ChildView::new(&self.mcp_menu).finish(), positioning);
+        }
+        stack.finish()
     }
 
     fn cloud_routing_indicator_view(
@@ -1928,7 +2020,8 @@ impl AgentInputFooter {
                 }
 
                 if !crate::voice::is_voice_transcribed_locally()
-                    && !crate::ai::AIRequestUsageModel::as_ref(ctx).can_request_voice() {
+                    && !crate::ai::AIRequestUsageModel::as_ref(ctx).can_request_voice()
+                {
                     self.show_cli_voice_error_toast("Voice input limit reached", ctx);
                     return;
                 }
@@ -2242,6 +2335,25 @@ impl AgentInputFooter {
         }
     }
 
+    fn refresh_mcp_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.mcp_menu_open {
+            return;
+        }
+        let cwd = self.active_session.as_ref().and_then(|session| {
+            session
+                .as_ref(ctx)
+                .current_working_directory()
+                .map(PathBuf::from)
+        });
+        let items = session_mcp_menu_items(session_mcp_servers(
+            self.terminal_view_id,
+            cwd.as_deref(),
+            ctx,
+        ));
+        self.mcp_menu
+            .update(ctx, |menu, ctx| menu.set_items(items, ctx));
+    }
+
     /// Refreshes the usage button's tooltip with the active conversation's
     /// total cost — the same figure the popover's header shows.
     fn update_usage_button(&mut self, ctx: &mut ViewContext<Self>) {
@@ -2465,6 +2577,10 @@ impl AgentInputFooter {
             AgentToolbarItemKind::FastForwardToggle => FeatureFlag::FastForwardAutoexecuteButton
                 .is_enabled()
                 .then(|| ChildView::new(&self.fast_forward_button).finish()),
+            // Without grouped server context the request can't be filtered per server.
+            AgentToolbarItemKind::McpServers => FeatureFlag::MCPGroupedServerContext
+                .is_enabled()
+                .then(|| self.render_mcp_button(app)),
             AgentToolbarItemKind::HandoffToCloud => {
                 if !AISettings::as_ref(app).is_cloud_handoff_enabled(app) || is_cloud_context {
                     return None;
@@ -2658,6 +2774,69 @@ impl View for AgentInputFooter {
     }
 }
 
+/// An MCP server the session's agent can reach, and whether the user has it on for this pane.
+#[derive(Debug, Clone, PartialEq)]
+struct SessionMcpServer {
+    id: Uuid,
+    name: String,
+    enabled: bool,
+    level: McpAccessLevel,
+}
+
+fn session_mcp_servers(
+    pane: EntityId,
+    cwd: Option<&std::path::Path>,
+    app: &AppContext,
+) -> Vec<SessionMcpServer> {
+    let manager = TemplatableMCPServerManager::as_ref(app);
+    manager
+        .active_servers_for_session(cwd, app)
+        .into_iter()
+        .map(|server| SessionMcpServer {
+            id: server.installation_id(),
+            name: server.name().to_owned(),
+            enabled: manager.is_server_enabled_for_session(pane, server.installation_id(), app),
+            level: manager.server_access_level_for_session(pane, server.installation_id(), app),
+        })
+        .collect()
+}
+
+fn session_mcp_menu_items(servers: Vec<SessionMcpServer>) -> Vec<MenuItem<AgentInputFooterAction>> {
+    if servers.is_empty() {
+        return vec![
+            MenuItemFields::new("No MCP servers running")
+                .with_disabled(true)
+                .into_item(),
+        ];
+    }
+    servers
+        .into_iter()
+        .flat_map(|server| {
+            let toggle = MenuItemFields::new(server.name).with_on_select_action(
+                AgentInputFooterAction::SetSessionMcpServerEnabled {
+                    server: server.id,
+                    enabled: !server.enabled,
+                },
+            );
+            let toggle = if server.enabled {
+                toggle.with_icon(Icon::Check)
+            } else {
+                toggle.with_indent()
+            };
+            let access = server.enabled.then(|| {
+                MenuItemFields::new(format!("Access: {}", server.level.label()))
+                    .with_indent()
+                    .with_on_select_action(AgentInputFooterAction::SetSessionMcpAccessLevel {
+                        server: server.id,
+                        level: server.level.next(),
+                    })
+                    .into_item()
+            });
+            std::iter::once(toggle.into_item()).chain(access)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub enum AgentInputFooterAction {
     #[cfg(feature = "voice_input")]
@@ -2684,6 +2863,15 @@ pub enum AgentInputFooterAction {
         position: Vector2F,
     },
     ToggleUsagePopover,
+    ToggleMcpMenu,
+    SetSessionMcpServerEnabled {
+        server: Uuid,
+        enabled: bool,
+    },
+    SetSessionMcpAccessLevel {
+        server: Uuid,
+        level: McpAccessLevel,
+    },
 }
 
 impl TypedActionView for AgentInputFooter {
@@ -2880,6 +3068,30 @@ impl TypedActionView for AgentInputFooter {
                 ctx.emit(AgentInputFooterEvent::ShowContextMenu {
                     position: *position,
                 });
+            }
+            AgentInputFooterAction::ToggleMcpMenu => {
+                self.mcp_menu_open = !self.mcp_menu_open;
+                self.refresh_mcp_menu(ctx);
+                ctx.notify();
+            }
+            AgentInputFooterAction::SetSessionMcpServerEnabled { server, enabled } => {
+                let pane = self.terminal_view_id;
+                TemplatableMCPServerManager::handle(ctx).update(ctx, |manager, _| {
+                    manager.set_server_enabled_for_session(pane, *server, *enabled);
+                });
+                // Selecting an item closes the menu; reopen it so several servers can be toggled.
+                self.mcp_menu_open = true;
+                self.refresh_mcp_menu(ctx);
+                ctx.notify();
+            }
+            AgentInputFooterAction::SetSessionMcpAccessLevel { server, level } => {
+                let pane = self.terminal_view_id;
+                TemplatableMCPServerManager::handle(ctx).update(ctx, |manager, _| {
+                    manager.set_server_access_level_for_session(pane, *server, *level);
+                });
+                self.mcp_menu_open = true;
+                self.refresh_mcp_menu(ctx);
+                ctx.notify();
             }
             AgentInputFooterAction::ToggleUsagePopover => {
                 self.usage_popover_open = !self.usage_popover_open;

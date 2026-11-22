@@ -89,6 +89,7 @@ use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::geap_credentials::force_refresh_geap_credentials;
 use crate::ai::llms::{LLMId, LLMPreferences, LLMProvider, is_using_api_key_for_provider};
+use crate::ai::mcp::tool_risk::McpAccessLevel;
 use crate::appearance::{Appearance, AppearanceEvent};
 use crate::auth::{self, AuthStateProvider};
 use crate::editor::{
@@ -105,7 +106,8 @@ use crate::settings::{
     AwsBedrockCredentialsEnabled, CanUseWarpCreditsForFallback, ConversationReadCodeSummaries,
     EnableAiCommandSearchHashTrigger, GeminiEnterpriseCredentialsEnabled,
     GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory, InputSettings,
-    IntelligentAutosuggestionsEnabled, LongRunningCommandSubmissionMode, NLDInTerminalEnabled,
+    IntelligentAutosuggestionsEnabled, LongRunningCommandSubmissionMode,
+    McpDefaultAccessLevelInNewSessions, McpServersEnabledInNewSessions, NLDInTerminalEnabled,
     NaturalLanguageAutosuggestionsEnabled, OrchestrationMessageDisplayMode, PromptSubmissionMode,
     SharedBlockTitleGenerationEnabled, ShouldRenderUseAgentToolbarForUserCommands,
     ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
@@ -207,6 +209,20 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
             )
             .with_group(bindings::BindingGroup::WarpAi)
             .with_enabled(|| FeatureFlag::AgentView.is_enabled()),
+        ],
+        app,
+    );
+    ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
+        vec![
+            ToggleSettingActionPair::new(
+                "all MCP servers in new agent sessions",
+                builder(SettingsAction::WarpAgent(
+                    WarpAgentPageAction::ToggleMcpServersEnabledInNewSessions,
+                )),
+                &(context.clone() & id!(flags::IS_ANY_AI_ENABLED)),
+                flags::MCP_SERVERS_ENABLED_IN_NEW_SESSIONS_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
         ],
         app,
     );
@@ -682,6 +698,7 @@ pub struct WarpAgentPageView {
     agent_toolbar_inline_editor: ViewHandle<AgentToolbarInlineEditor>,
 
     thinking_display_mode_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
+    mcp_default_access_level_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
     orchestration_message_display_mode_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
     default_prompt_submission_mode_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
     lrc_submission_mode_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
@@ -815,6 +832,7 @@ impl WarpAgentPageView {
                 );
             });
         }
+        let mcp_default_access_level_dropdown = McpDefaultAccessLevelWidget::create_dropdown(ctx);
         let orchestration_message_display_mode_dropdown =
             OtherAIWidget::create_orchestration_message_display_mode_dropdown(ctx);
         {
@@ -974,6 +992,18 @@ impl WarpAgentPageView {
                         .update(ctx, |dropdown, ctx| {
                             dropdown.set_selected_by_action(
                                 WarpAgentPageAction::SetThinkingDisplayMode(current_mode),
+                                ctx,
+                            );
+                        });
+                }
+                AISettingsChangedEvent::McpDefaultAccessLevelInNewSessions { .. } => {
+                    let level = *AISettings::as_ref(ctx)
+                        .mcp_default_access_level_in_new_sessions
+                        .value();
+                    me.mcp_default_access_level_dropdown
+                        .update(ctx, |dropdown, ctx| {
+                            dropdown.set_selected_by_action(
+                                WarpAgentPageAction::SetMcpDefaultAccessLevel(level),
                                 ctx,
                             );
                         });
@@ -1264,6 +1294,7 @@ impl WarpAgentPageView {
             local_only_icon_tooltip_states: Default::default(),
             agent_toolbar_inline_editor,
             thinking_display_mode_dropdown,
+            mcp_default_access_level_dropdown,
             orchestration_message_display_mode_dropdown,
             default_prompt_submission_mode_dropdown,
             lrc_submission_mode_dropdown,
@@ -2507,6 +2538,8 @@ impl WarpAgentPageView {
                 Box::new(ShowInputHintTextWidget::default()),
                 Box::new(AiCommandSearchHashTriggerWidget::default()),
                 Box::new(ShowAgentTipsWidget::default()),
+                Box::new(McpServersEnabledInNewSessionsWidget::default()),
+                Box::new(McpDefaultAccessLevelWidget),
                 Box::new(IncludeAgentCommandsInHistoryWidget::default()),
                 Box::new(AutoApproveBypassesCommandDenylistWidget::default()),
                 Box::new(PromptSubmissionModeWidget),
@@ -2748,6 +2781,8 @@ pub enum WarpAgentPageAction {
     ToggleShowInputHintText,
     ToggleAiCommandSearchHashTrigger,
     ToggleShowAgentTips,
+    ToggleMcpServersEnabledInNewSessions,
+    SetMcpDefaultAccessLevel(McpAccessLevel),
     ToggleShowOzUpdatesInZeroState,
     SetThinkingDisplayMode(ThinkingDisplayMode),
     SetOrchestrationMessageDisplayMode(OrchestrationMessageDisplayMode),
@@ -3211,6 +3246,17 @@ impl TypedActionView for WarpAgentPageView {
                     );
                 });
             }
+            WarpAgentPageAction::ToggleMcpServersEnabledInNewSessions => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    if let Err(e) = settings
+                        .mcp_servers_enabled_in_new_sessions
+                        .toggle_and_save_value(ctx)
+                    {
+                        log::warn!("Failed to toggle MCP servers enabled in new sessions: {e:?}");
+                    }
+                });
+                ctx.notify();
+            }
             WarpAgentPageAction::ToggleShowAgentTips => {
                 InputSettings::handle(ctx).update(ctx, |input_settings, ctx| match input_settings
                     .show_agent_tips
@@ -3236,6 +3282,16 @@ impl TypedActionView for WarpAgentPageView {
                         settings
                             .should_show_oz_updates_in_zero_state
                             .toggle_and_save_value(ctx)
+                    );
+                });
+                ctx.notify();
+            }
+            WarpAgentPageAction::SetMcpDefaultAccessLevel(level) => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(
+                        settings
+                            .mcp_default_access_level_in_new_sessions
+                            .set_value(*level, ctx)
                     );
                 });
                 ctx.notify();
@@ -4133,6 +4189,98 @@ impl SettingsWidget for ShowAgentTipsWidget {
             self.toggle.clone(),
             &view.local_only_icon_tooltip_states,
             app,
+        )
+    }
+}
+
+#[derive(Default)]
+struct McpServersEnabledInNewSessionsWidget {
+    toggle: SwitchStateHandle,
+}
+
+impl SettingsWidget for McpServersEnabledInNewSessionsWidget {
+    type View = WarpAgentPageView;
+
+    fn search_terms(&self) -> &str {
+        "mcp servers sessions enabled default agent tools"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        _appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ai_settings = AISettings::as_ref(app);
+        render_ai_setting_toggle::<McpServersEnabledInNewSessions>(
+            "Enable all MCP servers in new agent sessions",
+            WarpAgentPageAction::ToggleMcpServersEnabledInNewSessions,
+            *ai_settings.mcp_servers_enabled_in_new_sessions,
+            ai_settings.is_any_ai_enabled(app),
+            self.toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        )
+    }
+}
+
+struct McpDefaultAccessLevelWidget;
+
+impl McpDefaultAccessLevelWidget {
+    fn create_dropdown(
+        ctx: &mut ViewContext<WarpAgentPageView>,
+    ) -> ViewHandle<Dropdown<WarpAgentPageAction>> {
+        let items = McpAccessLevel::ALL
+            .map(|level| {
+                DropdownItem::new(
+                    level.label(),
+                    WarpAgentPageAction::SetMcpDefaultAccessLevel(level),
+                )
+            })
+            .to_vec();
+        let current = *AISettings::as_ref(ctx).mcp_default_access_level_in_new_sessions;
+        ctx.add_typed_action_view(|ctx| {
+            let mut dropdown = Dropdown::new(ctx);
+            dropdown.set_top_bar_max_width(AI_SETTINGS_DROPDOWN_WIDTH);
+            dropdown.set_menu_width(AI_SETTINGS_DROPDOWN_WIDTH, ctx);
+            dropdown.set_menu_max_height(AI_SETTINGS_DROPDOWN_MAX_HEIGHT, ctx);
+            dropdown.add_items(items, ctx);
+            dropdown.set_selected_by_action(
+                WarpAgentPageAction::SetMcpDefaultAccessLevel(current),
+                ctx,
+            );
+            dropdown
+        })
+    }
+}
+
+impl SettingsWidget for McpDefaultAccessLevelWidget {
+    type View = WarpAgentPageView;
+
+    fn search_terms(&self) -> &str {
+        "mcp servers sessions default access level read-only destructive tools risk"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let is_any_ai_enabled = AISettings::as_ref(app).is_any_ai_enabled(app);
+        render_dropdown_item(
+            appearance,
+            "MCP access level in new agent sessions",
+            Some("Which MCP tools, by risk, new sessions may use from each server."),
+            None,
+            LocalOnlyIconState::for_setting(
+                McpDefaultAccessLevelInNewSessions::storage_key(),
+                McpDefaultAccessLevelInNewSessions::sync_to_cloud(),
+                &mut view.local_only_icon_tooltip_states.borrow_mut(),
+                app,
+            ),
+            (!is_any_ai_enabled).then(|| appearance.theme().disabled_ui_text_color()),
+            &view.mcp_default_access_level_dropdown,
         )
     }
 }

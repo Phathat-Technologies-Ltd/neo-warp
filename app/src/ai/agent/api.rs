@@ -19,7 +19,6 @@ pub use convert_from::{
 pub(crate) use convert_to::{mcp_server_identity, serde_json_to_prost};
 use futures_lite::Stream;
 pub use r#impl::generate_multi_agent_output;
-use mcp::TemplatableMCPServerInfo;
 use serde::Serialize;
 use warp_core::channel::{Channel, ChannelState};
 use warp_core::execution_mode::AppExecutionMode;
@@ -268,42 +267,23 @@ impl RequestParams {
         let mcp_context = if FeatureFlag::MCPGroupedServerContext.is_enabled() {
             // Group MCP tools and resources by server
             let templatable_manager = TemplatableMCPServerManager::as_ref(app);
-
-            let mut active_servers: Vec<&TemplatableMCPServerInfo> = templatable_manager
-                .get_active_templatable_servers()
-                .values()
-                .copied()
-                .collect();
-
-            // If file-based MCP servers are enabled, add active servers in scope of
-            // the user's current working directory
-            if let Some(cwd) = session_context.current_working_directory() {
-                active_servers.extend(
-                    templatable_manager
-                        .get_active_file_based_servers(Path::new(cwd), app)
-                        .values(),
-                );
-            }
-
-            // Include any ephemeral MCP servers started via the Oz CLI.
-            active_servers.extend(
-                templatable_manager
-                    .get_active_cli_spawned_servers()
-                    .values(),
-            );
-
-            // Include built-in Warp-hosted servers (e.g. the Factory MCP).
-            active_servers.extend(templatable_manager.get_active_builtin_servers().values());
-
-            let servers: Vec<MCPServer> = active_servers
+            let servers: Vec<MCPServer> = templatable_manager
+                .session_server_tools(
+                    terminal_view_id,
+                    session_context
+                        .current_working_directory()
+                        .as_deref()
+                        .map(Path::new),
+                    app,
+                )
                 .into_iter()
-                .map(|server| MCPServer {
+                .map(|(server, tools)| MCPServer {
                     name: server.name().to_string(),
                     description: server.description().unwrap_or_default().to_string(),
                     id: server.installation_id().to_string(),
                     warp_id: server.warp_id().unwrap_or_default().to_string(),
                     resources: server.resources().to_vec(),
-                    tools: server.tools().to_vec(),
+                    tools,
                 })
                 .collect();
 
