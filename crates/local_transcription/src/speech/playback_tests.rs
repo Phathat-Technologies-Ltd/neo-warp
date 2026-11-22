@@ -578,6 +578,56 @@ fn a_new_prompt_replaces_the_reply_being_spoken() {
 }
 
 #[test]
+fn stopping_mid_reply_silences_it_and_drops_its_echo() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h
+        .controller
+        .reply_text("Here is the plan for the refactor. ");
+    h.apply(actions);
+    h.run_synthesis();
+    h.controller.speech_started(h.now);
+    let actions = h.controller.stop(h.now);
+    h.apply(actions);
+    assert_eq!(h.log.last().map(String::as_str), Some("stop"));
+    assert!(h.controller.is_echo_window(h.now));
+    h.controller.speech_ended();
+    let (outcome, _) = h
+        .controller
+        .on_final("here is the plan for the refactor", h.now);
+    assert_eq!(outcome, FinalOutcome::Echo);
+}
+
+#[test]
+fn restarting_after_a_stop_drops_the_previous_reply_echo() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h
+        .controller
+        .reply_text("Here is the plan for the refactor. Then we test it. ");
+    h.apply(actions);
+    h.run_synthesis();
+    let stopped_reply = h.controller.reply();
+    h.controller.speech_started(h.now);
+    let actions = h.controller.stop(h.now);
+    h.apply(actions);
+    h.controller.start(ChunkerOptions::default());
+    h.advance(ECHO_TAIL);
+    h.controller.speech_ended();
+    let (outcome, _) = h.controller.on_final("the plan for the refactor", h.now);
+    assert_eq!(outcome, FinalOutcome::Echo);
+    assert!(!h.controller.is_speaking());
+    assert!(
+        h.controller
+            .synthesized(stopped_reply, 1, None, h.now)
+            .is_empty()
+    );
+    assert_eq!(h.say("run the tests please"), FinalOutcome::NotConsumed);
+}
+
+#[test]
 fn nothing_happens_while_off() {
     let mut controller: ConversationController<(), u32> = ConversationController::default();
     assert!(controller.prompt_sent().is_empty());
