@@ -83,6 +83,8 @@ impl Harness {
                 PlaybackAction::Interrupted { reply } => {
                     self.log.push(format!("interrupted {reply}"));
                 }
+                PlaybackAction::Duck { gain } => self.log.push(format!("duck {gain}")),
+                PlaybackAction::Restore => self.log.push("restore".to_owned()),
             }
         }
     }
@@ -822,4 +824,135 @@ fn unresolved_approval_prompts_are_spaced_out() {
     );
     h.advance(APPROVAL_DEBOUNCE);
     assert!(h.controller.check_approval_due(h.now).is_empty());
+}
+
+/// A loudspeaker conversation with echo cancellation and verified barge-in, speaking a reply.
+fn verified_barge_in_harness() -> Harness {
+    let mut h = Harness::new();
+    h.controller.set_echo_cancelled(true);
+    h.controller.set_verify_barge_in(true);
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("A long answer. Another sentence. ");
+    h.apply(actions);
+    h.run_synthesis();
+    h.log.clear();
+    h
+}
+
+#[test]
+fn verified_barge_in_resumes_after_echo() {
+    let mut h = verified_barge_in_harness();
+    let now = h.now;
+    h.controller.speech_started(now);
+    let actions = h
+        .controller
+        .check_barge_in(now + BARGE_IN_AFTER_WITH_ECHO_CANCELLATION);
+    h.apply(actions);
+    assert_eq!(h.log, [format!("duck {BARGE_IN_DUCK_GAIN}")]);
+    assert!(h.controller.is_barge_in_pending());
+    assert_eq!(h.controller.state(), ConversationState::Speaking);
+    let actions = h
+        .controller
+        .barge_in_verdict(false, now + BARGE_IN_CHECK_AFTER);
+    h.apply(actions);
+    assert_eq!(h.log.last().map(String::as_str), Some("restore"));
+    // The rejected speech never ducks or interrupts again.
+    let actions = h.controller.check_barge_in(now + Duration::from_secs(1));
+    assert!(actions.is_empty());
+    assert_eq!(h.controller.state(), ConversationState::Speaking);
+    assert!(!h.log.iter().any(|entry| entry.starts_with("interrupted")));
+    h.controller.speech_ended();
+    let (outcome, _) = h
+        .controller
+        .on_final("a long answer", now + Duration::from_secs(1));
+    assert_eq!(outcome, FinalOutcome::Echo);
+}
+
+#[test]
+fn verified_barge_in_stops_for_the_user() {
+    let mut h = verified_barge_in_harness();
+    let reply = h.controller.reply();
+    let now = h.now;
+    h.controller.speech_started(now);
+    let actions = h
+        .controller
+        .check_barge_in(now + BARGE_IN_AFTER_WITH_ECHO_CANCELLATION);
+    h.apply(actions);
+    let actions = h
+        .controller
+        .barge_in_verdict(true, now + BARGE_IN_CHECK_AFTER);
+    h.apply(actions);
+    assert_eq!(
+        h.log,
+        [
+            format!("duck {BARGE_IN_DUCK_GAIN}"),
+            "stop".to_owned(),
+            "restore".to_owned(),
+            format!("interrupted {reply}"),
+        ]
+    );
+    assert_eq!(h.controller.state(), ConversationState::Listening);
+    h.controller.speech_ended();
+    let (outcome, _) = h
+        .controller
+        .on_final("wait, run the tests", now + Duration::from_secs(1));
+    assert_eq!(outcome, FinalOutcome::NotConsumed);
+}
+
+#[test]
+fn verified_barge_in_resumes_when_the_check_times_out() {
+    let mut h = verified_barge_in_harness();
+    let now = h.now;
+    h.controller.speech_started(now);
+    let ducked_at = now + BARGE_IN_AFTER_WITH_ECHO_CANCELLATION;
+    let actions = h.controller.check_barge_in(ducked_at);
+    h.apply(actions);
+    h.controller.speech_ended();
+    assert!(
+        h.controller
+            .check_barge_in(ducked_at + Duration::from_secs(1))
+            .is_empty()
+    );
+    let actions = h
+        .controller
+        .check_barge_in(ducked_at + BARGE_IN_VERDICT_TIMEOUT);
+    h.apply(actions);
+    assert_eq!(h.log.last().map(String::as_str), Some("restore"));
+    assert!(!h.controller.is_barge_in_pending());
+    assert_eq!(h.controller.state(), ConversationState::Speaking);
+}
+
+#[test]
+fn stop_phrase_interrupts_a_ducked_reply_at_once() {
+    let mut h = verified_barge_in_harness();
+    let now = h.now;
+    h.controller.speech_started(now);
+    let actions = h
+        .controller
+        .check_barge_in(now + BARGE_IN_AFTER_WITH_ECHO_CANCELLATION);
+    h.apply(actions);
+    h.controller.speech_ended();
+    let (outcome, actions) = h
+        .controller
+        .on_final("stop", now + Duration::from_millis(300));
+    h.apply(actions);
+    assert_eq!(outcome, FinalOutcome::Stopped);
+    assert_eq!(h.log[1..], ["stop".to_owned(), "restore".to_owned()]);
+    assert_eq!(h.controller.state(), ConversationState::Listening);
+}
+
+#[test]
+fn unverified_barge_in_interrupts_without_ducking() {
+    let mut h = verified_barge_in_harness();
+    h.controller.set_verify_barge_in(false);
+    let now = h.now;
+    h.controller.speech_started(now);
+    let actions = h
+        .controller
+        .check_barge_in(now + BARGE_IN_AFTER_WITH_ECHO_CANCELLATION);
+    h.apply(actions);
+    assert!(!h.log.iter().any(|entry| entry.starts_with("duck")));
+    assert_eq!(h.log[0], "stop");
+    assert_eq!(h.controller.state(), ConversationState::Listening);
 }

@@ -60,6 +60,14 @@ pub const APPROVAL_DEBOUNCE: Duration = Duration::from_secs(1);
 /// The least time between two approval prompts of a turn while the earlier one is unresolved.
 pub const APPROVAL_PROMPT_GAP: Duration = Duration::from_secs(8);
 
+/// Speech gain while a candidate barge-in waits for its speaker check.
+pub const BARGE_IN_DUCK_GAIN: f32 = 0.3;
+/// Speech a candidate barge-in needs before its speaker check runs; shorter than the early check
+/// for partials, since the reply stays ducked until the verdict.
+pub const BARGE_IN_CHECK_AFTER: Duration = Duration::from_millis(700);
+/// How long a ducked reply waits for the speaker check before resuming at full volume.
+pub const BARGE_IN_VERDICT_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// How often the owner re-checks barge-in while the user keeps talking.
 pub const BARGE_IN_POLL: Duration = Duration::from_millis(40);
 
@@ -91,6 +99,10 @@ pub enum PlaybackAction<A> {
     StopPlayback,
     /// The user talked over reply `reply`; its block should say it was interrupted.
     Interrupted { reply: u64 },
+    /// Lower the speech volume to `gain` while a barge-in is checked.
+    Duck { gain: f32 },
+    /// Return the speech to full volume.
+    Restore,
 }
 
 /// What a final utterance meant to the conversation. Every outcome but `NotConsumed` keeps the
@@ -117,6 +129,8 @@ struct Utterance {
     /// The assistant was audible (or its echo tail was) when the speech started.
     overlapped: bool,
     barged_in: bool,
+    /// The speaker check's verdict on this utterance, once known: whether it is the user.
+    speaker_matched: Option<bool>,
 }
 
 /// An approval request that has not been announced yet.
@@ -170,6 +184,10 @@ pub struct ConversationController<A, Id> {
     echo_cancelled: bool,
     /// The words of the assistant's latest sentences, oldest first.
     recent_speech: VecDeque<Vec<String>>,
+    /// Barge-in waits for a speaker check against the enrolled voiceprint.
+    verify_barge_in: bool,
+    /// When the speech was ducked for a barge-in awaiting its speaker check.
+    ducked_at: Option<Instant>,
 }
 
 impl<A, Id> Default for ConversationController<A, Id> {
@@ -201,6 +219,8 @@ impl<A, Id> Default for ConversationController<A, Id> {
             muted: false,
             echo_cancelled: false,
             recent_speech: VecDeque::new(),
+            verify_barge_in: false,
+            ducked_at: None,
         }
     }
 }
@@ -294,6 +314,17 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.playing.is_some() || self.synthesizing.is_some() || !self.ready.is_empty()
     }
 
+    /// Whether barge-in waits for a speaker check: speech over the reply ducks it, and only the
+    /// enrolled user's voice stops it.
+    pub fn set_verify_barge_in(&mut self, verify: bool) {
+        self.verify_barge_in = verify;
+    }
+
+    /// Whether the speech is ducked waiting for a barge-in speaker check.
+    pub fn is_barge_in_pending(&self) -> bool {
+        self.ducked_at.is_some()
+    }
+
     fn barge_in_after(&self) -> Option<Duration> {
         if self.headphones {
             Some(BARGE_IN_AFTER)
@@ -349,6 +380,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     /// Drops all queued speech, returning the action that stops the audio when some is playing.
     fn silence(&mut self, now: Option<Instant>) -> Vec<PlaybackAction<A>> {
         let was_playing = self.playing.is_some();
+        let restore = self.ducked_at.take().is_some();
         self.queued.clear();
         self.ready.clear();
         self.synthesizing = None;
@@ -360,11 +392,14 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.approval_prompt_seq = None;
         self.reply += 1;
         self.chunker = SentenceChunker::new(self.chunker_options);
+        let mut actions = Vec::new();
         if was_playing {
-            vec![PlaybackAction::StopPlayback]
-        } else {
-            Vec::new()
+            actions.push(PlaybackAction::StopPlayback);
         }
+        if restore {
+            actions.push(PlaybackAction::Restore);
+        }
+        actions
     }
 
     /// The user asked to stop the readout (Esc or the Stop button). The rest of the reply being
@@ -726,6 +761,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             started_at: now,
             overlapped: self.is_audible(now),
             barged_in: false,
+            speaker_matched: None,
         });
     }
 
@@ -735,8 +771,18 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     }
 
     /// Stops the speech once the user has talked over it long enough (see [`BARGE_IN_AFTER`]).
-    /// The owner calls it every [`BARGE_IN_POLL`] while the user keeps talking.
+    /// With [`Self::set_verify_barge_in`] on, it ducks the speech instead until
+    /// [`Self::barge_in_verdict`] or [`BARGE_IN_VERDICT_TIMEOUT`]. The owner calls it every
+    /// [`BARGE_IN_POLL`] while the user keeps talking, and once the timeout has passed.
     pub fn check_barge_in(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
+        if let Some(ducked_at) = self.ducked_at {
+            if now.saturating_duration_since(ducked_at) >= BARGE_IN_VERDICT_TIMEOUT {
+                log::info!("Barge-in speaker check timed out; resuming the reply");
+                self.ducked_at = None;
+                return vec![PlaybackAction::Restore];
+            }
+            return Vec::new();
+        }
         if !self.talking || !self.is_speaking() {
             return Vec::new();
         }
@@ -753,6 +799,42 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         if now.saturating_duration_since(overlap_start) < barge_in_after {
             return Vec::new();
         }
+        if self.verify_barge_in {
+            match utterance.speaker_matched {
+                Some(true) => {}
+                Some(false) => return Vec::new(),
+                None => {
+                    log::info!("Possible barge-in: ducking the reply until the speaker is checked");
+                    self.ducked_at = Some(now);
+                    return vec![PlaybackAction::Duck {
+                        gain: BARGE_IN_DUCK_GAIN,
+                    }];
+                }
+            }
+        }
+        self.interrupt(now)
+    }
+
+    /// Resolves the speaker check of the utterance in progress: the user's voice stops a ducked
+    /// reply, anything else (echo, silence, an unavailable check) resumes it at full volume.
+    pub fn barge_in_verdict(&mut self, matched: bool, now: Instant) -> Vec<PlaybackAction<A>> {
+        if let Some(utterance) = &mut self.utterance {
+            utterance.speaker_matched = Some(matched);
+        }
+        if self.ducked_at.is_none() {
+            return Vec::new();
+        }
+        if matched {
+            log::info!("Barge-in speaker check matched; stopping the reply");
+            self.interrupt(now)
+        } else {
+            log::info!("Barge-in speaker check did not match; resuming the reply");
+            self.ducked_at = None;
+            vec![PlaybackAction::Restore]
+        }
+    }
+
+    fn interrupt(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
         let reply = self.reply;
         let mut actions = self.silence(Some(now));
         actions.push(PlaybackAction::Interrupted { reply });

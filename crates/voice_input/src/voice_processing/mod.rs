@@ -297,6 +297,7 @@ impl PlaybackQueue {
     /// Fills `out` from the audio thread without blocking.
     pub(crate) fn render(&self, out: &mut [f32]) {
         let read = self.ring.pop_into(out);
+        crate::speaker_output::apply_playback_gain(out);
         // A producer holding the lock is replacing the clip; check again on the next callback.
         let Some(mut finished) = self.finished.try_lock() else {
             return;

@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::Context as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -10,6 +11,32 @@ use parking_lot::Mutex;
 
 use crate::live::LinearResampler;
 use crate::voice_processing::{self, AudioBackend, OnFinished, OutputLease, open_with_fallback};
+
+/// The speech gain the output ramps toward, as `f32` bits.
+static TARGET_GAIN: AtomicU32 = AtomicU32::new(0x3f80_0000);
+/// The gain applied to the last rendered sample, as `f32` bits.
+static CURRENT_GAIN: AtomicU32 = AtomicU32::new(0x3f80_0000);
+/// Gain change per output sample: a full swing takes about 20 ms at 48 kHz, short enough to feel
+/// immediate and long enough not to click.
+const GAIN_STEP: f32 = 1.0 / 960.0;
+
+/// Scales rendered speech by the output gain, ramping toward [`SpeechOutput::set_gain`]'s target.
+pub(crate) fn apply_playback_gain(out: &mut [f32]) {
+    let target = f32::from_bits(TARGET_GAIN.load(Ordering::Relaxed));
+    let mut gain = f32::from_bits(CURRENT_GAIN.load(Ordering::Relaxed));
+    if gain == 1.0 && target == 1.0 {
+        return;
+    }
+    for sample in out {
+        gain = if gain < target {
+            (gain + GAIN_STEP).min(target)
+        } else {
+            (gain - GAIN_STEP).max(target)
+        };
+        *sample *= gain;
+    }
+    CURRENT_GAIN.store(gain.to_bits(), Ordering::Relaxed);
+}
 
 #[derive(Default)]
 struct Shared {
@@ -26,6 +53,7 @@ impl Shared {
             let sample = self.samples.pop_front().unwrap_or(0.0);
             frame.fill(sample);
         }
+        apply_playback_gain(out);
         if self.samples.is_empty() {
             self.on_finished.take()
         } else {
@@ -174,6 +202,11 @@ impl SpeechOutput {
                 lease.play(&resampled, Box::new(on_finished));
             }
         }
+    }
+
+    /// Ramps the speech volume to `gain` (1.0 is full volume) over a few milliseconds.
+    pub fn set_gain(&self, gain: f32) {
+        TARGET_GAIN.store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     /// Stops playback at once.
