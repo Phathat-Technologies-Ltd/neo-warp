@@ -24,6 +24,9 @@ pub mod recovery;
 mod speaker_output;
 pub use speaker_output::SpeechOutput;
 pub mod voice_processing;
+pub use voice_processing::system_aec::{
+    blocked_notices as system_echo_cancellation_blocked_notices, set_system_echo_cancellation,
+};
 pub use voice_processing::{AudioBackend, is_echo_cancelling, set_voice_processing_wanted};
 
 const DEFAULT_CHUNK_SIZE: u32 = 512;

@@ -31,7 +31,7 @@ use super::speaker_id::SpeakerProfile;
 use crate::server::server_api::ServerApiProvider;
 use crate::settings::AISettings;
 use crate::system::{SystemStats, SystemStatsEvent};
-use crate::view_components::DismissibleToast;
+use crate::view_components::{DismissibleToast, ToastLink};
 use crate::workspace::ToastStack;
 
 /// How often a held auto-send re-checks whether the reply has gone quiet.
@@ -163,6 +163,24 @@ impl HandsFreeSession {
         };
         ToastStack::handle(ctx).update(ctx, |stack, ctx| {
             stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+        });
+    }
+
+    fn show_system_audio_notice(&self, ctx: &mut ModelContext<Self>) {
+        let Some(window_id) = self.window_id else {
+            return;
+        };
+        let toast = DismissibleToast::default(
+            "Allow neo-warp to record system audio in System Settings \u{203a} Privacy & Security \
+             to cancel sound from other apps."
+                .to_owned(),
+        )
+        .with_link(
+            ToastLink::new("Open Privacy & Security".to_owned())
+                .with_href(super::SYSTEM_AUDIO_PRIVACY_URL.to_owned()),
+        );
+        ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+            stack.add_persistent_toast(toast, window_id, ctx);
         });
     }
 
@@ -370,6 +388,11 @@ impl HandsFreeSession {
             return;
         }
         self.watching_app = true;
+        ctx.spawn_stream_local(
+            voice_input::system_echo_cancellation_blocked_notices(),
+            |me, (), ctx| me.show_system_audio_notice(ctx),
+            |_, _| {},
+        );
         ctx.subscribe_to_model(&WindowManager::handle(ctx), |me, _, event, ctx| {
             let StateEvent::ValueChanged { current, previous } = event;
             if current.stage == previous.stage {
@@ -429,6 +452,7 @@ impl HandsFreeSession {
 
     /// Opens the microphone and the transcription socket under a new generation.
     fn open_microphone(&mut self, ctx: &mut ModelContext<Self>) -> Result<(), String> {
+        super::apply_system_echo_cancellation_setting(ctx);
         let (audio_tx, audio_rx) = mpsc::unbounded::<LiveChunk>();
         let (update_tx, update_rx) = mpsc::unbounded();
         let failure_tx = update_tx.clone();

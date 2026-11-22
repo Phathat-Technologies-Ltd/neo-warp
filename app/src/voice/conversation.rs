@@ -204,8 +204,10 @@ impl ConversationSession {
         let options = ChunkerOptions {
             read_code_summaries: *settings.conversation_read_code_summaries,
         };
-        // The microphone and the speaker must both be on the echo-cancelling unit, so hands-free
-        // capture moves onto it as well.
+        // With system echo cancellation the microphone is already cleaned and speech plays on the
+        // plain path. Otherwise the microphone and the speaker must both be on the echo-cancelling
+        // unit, so hands-free capture moves onto it as well.
+        super::apply_system_echo_cancellation_setting(ctx);
         voice_input::set_voice_processing_wanted(*settings.conversation_echo_cancellation);
         let output = SpeechOutput::open().map_err(|error| {
             voice_input::set_voice_processing_wanted(false);

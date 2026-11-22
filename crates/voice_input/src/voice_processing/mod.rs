@@ -18,6 +18,7 @@ pub(crate) use macos::{CaptureLease, OutputLease, acquire_capture, acquire_outpu
 #[doc(hidden)]
 pub use macos::{ProbeLevels, probe_duplex};
 
+pub mod system_aec;
 #[cfg(not(all(target_os = "macos", feature = "voice_processing")))]
 mod unsupported;
 #[cfg(not(all(target_os = "macos", feature = "voice_processing")))]
@@ -46,6 +47,8 @@ pub enum AudioBackend {
     Cpal,
     /// The shared echo-cancelling unit.
     VoiceProcessing,
+    /// System-wide echo cancellation of everything the Mac plays.
+    SystemAec,
 }
 
 /// Decides whether streams try the voice-processing backend, and backs off after it fails.
@@ -143,9 +146,10 @@ pub fn set_voice_processing_wanted(wanted: bool) {
 }
 
 /// Whether the microphone signal currently has acoustic echo cancellation for the speech being
-/// played: the shared unit runs with both the microphone and the speaker on it.
+/// played: either the microphone is on the system pipeline, or the shared unit runs with both the
+/// microphone and the speaker on it.
 pub fn is_echo_cancelling() -> bool {
-    ECHO_CANCELLING.load(Ordering::Relaxed)
+    ECHO_CANCELLING.load(Ordering::Relaxed) || system_aec::is_cancelling()
 }
 
 pub(crate) fn with_selector<R>(f: impl FnOnce(&mut BackendSelector) -> R) -> R {
@@ -233,6 +237,11 @@ impl SampleRing {
     /// Producer: the position just past the last queued sample.
     pub fn write_position(&self) -> usize {
         self.write.load(Ordering::Relaxed)
+    }
+
+    /// Consumer: how many samples are queued.
+    pub fn available(&self) -> usize {
+        self.write.load(Ordering::Acquire) - self.effective_read()
     }
 
     /// Consumer: fills `out` with queued samples, padding with silence, and returns the read
