@@ -1,4 +1,4 @@
-use local_transcription::context_correction::Correction;
+use local_transcription::context_correction::{Correction, CorrectionContext};
 use string_offset::ByteOffset;
 use warp_core::ui::theme::AnsiColorIdentifier;
 use warpui::{SingletonEntity, ViewContext};
@@ -39,6 +39,7 @@ impl EditorView {
     pub fn correct_voice_transcript(
         &mut self,
         text: &str,
+        context: CorrectionContext,
         ctx: &mut ViewContext<Self>,
     ) -> (String, Vec<(Correction, u64)>) {
         let Some(vocabulary) = self.voice_vocabulary.clone() else {
@@ -48,7 +49,7 @@ impl EditorView {
             return (text.to_owned(), Vec::new());
         }
         VoiceCorrections::handle(ctx).update(ctx, |corrections, ctx| {
-            corrections.correct(text, &vocabulary, ctx)
+            corrections.correct(text, &vocabulary, context, ctx)
         })
     }
 
@@ -78,20 +79,18 @@ impl EditorView {
             TextStyleOperation::default().set_error_underline_color(color),
             ctx,
         );
+        let Some(message) = context_correction::corrections_toast_text(corrections) else {
+            return;
+        };
         let window_id = ctx.window_id();
-        for (correction, id) in corrections {
-            let toast = DismissibleToast::default(format!(
-                "{} (heard: {})",
-                correction.corrected, correction.heard
-            ))
-            .with_link(
-                ToastLink::new("Revert".to_owned())
-                    .with_onclick_action(WorkspaceAction::RevertVoiceCorrection(*id)),
-            );
-            ToastStack::handle(ctx).update(ctx, |toasts, ctx| {
-                toasts.add_ephemeral_toast(toast, window_id, ctx);
-            });
-        }
+        let ids = corrections.iter().map(|(_, id)| *id).collect();
+        let toast = DismissibleToast::default(message).with_link(
+            ToastLink::new("Revert".to_owned())
+                .with_onclick_action(WorkspaceAction::RevertVoiceCorrection(ids)),
+        );
+        ToastStack::handle(ctx).update(ctx, |toasts, ctx| {
+            toasts.add_ephemeral_toast(toast, window_id, ctx);
+        });
     }
 
     /// Restores the heard words in place of the last occurrence of `corrected`.

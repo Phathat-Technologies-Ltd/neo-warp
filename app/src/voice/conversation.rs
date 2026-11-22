@@ -19,7 +19,9 @@ use voice_input::SpeechOutput;
 use warpui::r#async::Timer;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity, WindowId};
 
-use super::conversation_text::{spoken_action_prompt, spoken_action_result, spoken_reply_text};
+use super::conversation_text::{
+    reply_has_spoken_summary, spoken_action_prompt, spoken_action_result, spoken_reply_text,
+};
 use super::hands_free::{HandsFreeEvent, HandsFreeSession, toggle_hands_free};
 use super::local_model::{
     SpeechOutputEngine, SpeechOutputModel, ensure_speech_output_ready, is_conversation_enabled,
@@ -39,6 +41,11 @@ pub enum ConversationEvent {
     StateChanged,
 }
 
+/// Whether moving the hands-free target to `target` moves which pane's replies are read.
+pub fn surface_changes(current: Option<EntityId>, target: Option<EntityId>) -> bool {
+    target.is_some() && current != target
+}
+
 /// The action model and conversation of the approval being asked about.
 struct ApprovalTarget {
     action_model: ModelHandle<BlocklistAIActionModel>,
@@ -49,6 +56,8 @@ struct ApprovalTarget {
 struct SpokenReply {
     exchange_id: crate::ai::agent::AIAgentExchangeId,
     fed: String,
+    /// Whether the reply has a `<spoken>` summary, which covers its tool calls and results.
+    has_spoken: bool,
 }
 
 pub struct ConversationSession {
@@ -83,12 +92,15 @@ impl ConversationSession {
                 return;
             }
             let session = session.as_ref(ctx);
+            let target = session.target_surface();
             if !session.is_active() {
                 me.stop(ctx);
+                return;
             } else if !session.state().is_mic_on() {
                 // Paused because Warp isn't the active app: nothing is spoken over other apps.
                 me.stop_speaking(ctx);
             }
+            me.follow_target(target, ctx);
         });
         ctx.subscribe_to_model(
             &BlocklistAIHistoryModel::handle(ctx),
@@ -226,6 +238,20 @@ impl ConversationSession {
         ctx.notify();
     }
 
+    /// Reads replies only from the hands-free target's pane: when the target moves to another
+    /// tab or pane, the reply being read stops and the new pane's replies are read instead.
+    fn follow_target(&mut self, target: Option<EntityId>, ctx: &mut ModelContext<Self>) {
+        if target.is_none() || !surface_changes(self.surface, target) {
+            return;
+        }
+        self.stop_speaking(ctx);
+        self.surface = target;
+        self.reply = None;
+        self.approval = None;
+        ctx.emit(ConversationEvent::StateChanged);
+        ctx.notify();
+    }
+
     /// A prompt was sent from the input of `surface` in `window_id`; its reply is spoken.
     pub fn prompt_sent(
         &mut self,
@@ -275,10 +301,16 @@ impl ConversationSession {
             return;
         };
         let finished = exchange.output_status.is_finished();
-        let text = exchange
+        let (text, has_spoken) = exchange
             .output_status
             .output()
-            .map(|output| spoken_reply_text(&output.get(), finished))
+            .map(|output| {
+                let output = output.get();
+                (
+                    spoken_reply_text(&output, finished),
+                    reply_has_spoken_summary(&output),
+                )
+            })
             .unwrap_or_default();
         let reply = match &mut self.reply {
             Some(reply) if reply.exchange_id == exchange_id => reply,
@@ -287,9 +319,11 @@ impl ConversationSession {
                 self.reply.insert(SpokenReply {
                     exchange_id,
                     fed: String::new(),
+                    has_spoken: false,
                 })
             }
         };
+        reply.has_spoken |= has_spoken;
         let common = common_prefix_len(&reply.fed, &text);
         let delta = text[common..].to_owned();
         reply.fed = text;
@@ -329,8 +363,8 @@ impl ConversationSession {
         self.apply(actions, ctx);
     }
 
-    /// An agent action of `surface` finished; a command's result is read out when short and
-    /// summarized otherwise.
+    /// An agent action of `surface` finished; a command's outcome gets a one-line note unless the
+    /// reply's `<spoken>` summary covers the turn.
     pub fn action_finished(
         &mut self,
         surface: EntityId,
@@ -338,6 +372,9 @@ impl ConversationSession {
         ctx: &mut ModelContext<Self>,
     ) {
         if !self.is_active() || self.surface != Some(surface) {
+            return;
+        }
+        if self.reply.as_ref().is_some_and(|reply| reply.has_spoken) {
             return;
         }
         let Some(text) = spoken_action_result(result) else {

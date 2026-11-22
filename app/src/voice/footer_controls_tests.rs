@@ -103,3 +103,19 @@ fn conversation_visual_marks_a_muted_readout() {
         "Speaking (muted)"
     );
 }
+
+#[test]
+fn only_the_target_input_shows_the_live_state() {
+    assert_eq!(
+        visible_voice_state(true, HandsFreeState::Hearing, true),
+        (HandsFreeState::Hearing, true)
+    );
+    assert_eq!(
+        visible_voice_state(false, HandsFreeState::Hearing, true),
+        (HandsFreeState::Off, false)
+    );
+    assert_eq!(
+        visible_voice_state(false, HandsFreeState::Listening, false),
+        (HandsFreeState::Off, false)
+    );
+}

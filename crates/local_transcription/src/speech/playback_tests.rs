@@ -450,7 +450,7 @@ fn approval_prompt_is_spoken_and_answered_by_voice() {
     h.apply(actions);
     let actions = h.controller.reply_text("Let me check");
     h.apply(actions);
-    let actions = h.controller.approval_requested(9, "cargo check", false);
+    let actions = h.controller.approval_requested(9, "run cargo check", false);
     h.apply(actions);
     h.run_synthesis();
     h.finish_playback();
@@ -536,11 +536,13 @@ fn spoken_approvals_time_out_to_the_screen() {
 #[test]
 fn destructive_approvals_are_not_answered_by_voice() {
     let mut h = Harness::new();
-    let actions = h.controller.approval_requested(1, "rm -rf build", true);
+    let actions = h
+        .controller
+        .approval_requested(1, "run a command that deletes files", true);
     h.apply(actions);
     assert_eq!(
         h.log,
-        vec!["synth I want to run rm dash r f build. Please approve it on screen."]
+        vec!["synth I want to run a command that deletes files. Approve on screen."]
     );
     h.run_synthesis();
     h.finish_playback();

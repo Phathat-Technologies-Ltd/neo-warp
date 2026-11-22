@@ -63,5 +63,11 @@ is not a goal.
 - **Gating**: org flag `VoiceHandsFree` (default ON in org builds). It requires `VoiceInput`. When
   the flag is off, the toggle, palette entry, settings rows, and keybinding are hidden.
 
+- **One target**: the session is one global microphone, but only one input owns it: the focused
+  input of the active tab or pane in the active window. Only that input shows "Mic on", the live
+  footer state (Listening, Hearing, Thinking, Speaking), and receives transcripts; every other
+  input's footer shows the idle buttons. Focusing another tab, pane, or window moves the
+  indicator and the text target there, and a partial transcript left in the old input is removed.
+
 ## Non-goals
 Speaker identification, cloud STT, and listening that stays on across app restarts.

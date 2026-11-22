@@ -320,8 +320,8 @@ pub enum WorkspaceAction {
         /// Whether the download is of the speech output model rather than the speech model.
         speech_output: bool,
     },
-    /// Reverts a voice transcript correction by its id.
-    RevertVoiceCorrection(u64),
+    /// Reverts the voice transcript corrections with these ids.
+    RevertVoiceCorrection(Vec<u64>),
     /// Turns voice conversation mode on or off.
     ToggleVoiceConversation,
     /// Stops reading the current agent reply aloud in voice conversation mode.

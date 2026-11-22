@@ -51,5 +51,21 @@ agent's replies aloud, so a user can drive a terminal task entirely by voice.
 - **Gating**: org flag `VoiceConversation` (default ON in org builds). It requires `VoiceHandsFree`.
   When the flag is off, all of this UI is hidden.
 
+- **What is never spoken**: raw command text (arguments, flags, paths, globs, quoted strings),
+  command output, code, shell syntax, math, URLs, and numbers longer than three digits. Readouts
+  are layered:
+  1. The server prompt asks the agent for a `<spoken>` summary of one or two plain sentences, like
+     a colleague talking, with errors described as what happened and what to do next.
+  2. When a turn has a `<spoken>` summary, tool calls and their results are not spoken at all.
+     Otherwise each gets a short generic phrase from the tool kind and outcome: at most the program
+     name or a plain description ("Running a find command.", "Ran a find command: 14 folders.",
+     "The cargo command failed with 2 errors.").
+  3. Approval prompts describe the action, never its text: "I want to run a command that deletes
+     files. Approve on screen."
+  4. A final filter before synthesis drops any token that looks like code, shell syntax, math, a
+     path, a URL, a flag, or a long number; if nothing speakable remains, nothing is spoken.
+- **One pane**: replies are read only from the pane whose input is the hands-free target. When the
+  target moves to another tab or pane, the reply being read stops and that pane's replies are read.
+
 ## Non-goals
 Voice cloning, multilingual TTS in v1 (English only), and a wake word.

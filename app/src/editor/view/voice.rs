@@ -535,8 +535,11 @@ impl EditorView {
                 log::debug!("Transcribed voice input: {transcribe_response:?}");
                 #[cfg(not(target_family = "wasm"))]
                 {
-                    let (text, corrections) =
-                        self.correct_voice_transcript(&transcribe_response, ctx);
+                    let (text, corrections) = self.correct_voice_transcript(
+                        &transcribe_response,
+                        local_transcription::context_correction::CorrectionContext::Prose,
+                        ctx,
+                    );
                     self.user_insert(&text, ctx);
                     let buffer = self.buffer_text(ctx);
                     if let Some(start) = buffer.rfind(&text) {

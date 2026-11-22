@@ -382,3 +382,29 @@ fn discard_removes_the_partial_and_its_space() {
     let buffer = range.replace("ls", "secret");
     assert_eq!(range.commit(&buffer, ""), "ls");
 }
+
+#[test]
+fn voice_target_follows_focus_and_excludes_other_inputs() {
+    use warpui::{EntityId, WindowId};
+    let window = WindowId::from_usize(1);
+    let other_window = WindowId::from_usize(2);
+    let (left_pane, right_pane, other_tab) = (
+        EntityId::from_usize(10),
+        EntityId::from_usize(11),
+        EntityId::from_usize(12),
+    );
+    let mut target = VoiceTarget::default();
+    assert!(!target.is(window, left_pane));
+    assert!(target.focus(window, left_pane));
+    assert!(target.is(window, left_pane));
+    assert!(!target.is(window, right_pane));
+    assert!(!target.is(window, other_tab));
+    assert!(!target.focus(window, left_pane));
+    // Switching tabs, panes, or windows moves the single target.
+    assert!(target.focus(window, other_tab));
+    assert!(!target.is(window, left_pane));
+    assert!(target.is(window, other_tab));
+    assert!(target.focus(other_window, right_pane));
+    assert!(!target.is(window, right_pane));
+    assert_eq!(target.surface(), Some(right_pane));
+}

@@ -7,7 +7,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use local_transcription::context_correction::{
-    self, Correction, CorrectionLog, DEFAULT_THRESHOLD, LogEntry, Vocabulary, identifier_tokens,
+    self, Correction, CorrectionContext, CorrectionLog, DEFAULT_THRESHOLD, LogEntry, Vocabulary,
+    identifier_tokens,
 };
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
@@ -223,10 +224,12 @@ impl VoiceCorrections {
         &mut self,
         text: &str,
         vocabulary: &Vocabulary,
+        context: CorrectionContext,
         ctx: &mut ModelContext<Self>,
     ) -> (String, Vec<(Correction, u64)>) {
         self.accept_pending(ctx);
-        let result = context_correction::correct(text, vocabulary, &self.log, DEFAULT_THRESHOLD);
+        let result =
+            context_correction::correct(text, vocabulary, &self.log, DEFAULT_THRESHOLD, context);
         if result.corrections.is_empty() {
             return (result.text, Vec::new());
         }
@@ -333,6 +336,24 @@ impl Entity for VoiceCorrections {
 }
 
 impl SingletonEntity for VoiceCorrections {}
+
+/// The single compact toast for one utterance's corrections, such as "Corrected
+/// pyproject.toml, kubectl", or `None` when nothing meaningful changed (only case or
+/// punctuation).
+pub fn corrections_toast_text(corrections: &[(Correction, u64)]) -> Option<String> {
+    let letters = |text: &str| -> String {
+        text.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let changed: Vec<&str> = corrections
+        .iter()
+        .filter(|(correction, _)| letters(&correction.heard) != letters(&correction.corrected))
+        .map(|(correction, _)| correction.corrected.as_str())
+        .collect();
+    (!changed.is_empty()).then(|| format!("Corrected {}", changed.join(", ")))
+}
 
 /// A vocabulary shared by an input's transcripts until the pane context changes.
 pub type SharedVocabulary = Arc<Vocabulary>;

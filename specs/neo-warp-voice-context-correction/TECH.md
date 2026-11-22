@@ -23,6 +23,16 @@ Complexity: O(words × 4 × terms × spellings) Levenshtein on short strings, wh
 - Setting `agents.voice.context_correction` (`VoiceContextCorrection`, default true); `is_enabled` also requires `FeatureFlag::VoiceInput`.
 - Settings > Voice (`warp_agent_page.rs`): toggle, top 15 log entries with Pin/Disable/Delete, Export JSON.
 
+## Guards
+
+`correct` takes a `CorrectionContext` (`Command` for shell input, `Prose` otherwise). Candidates
+must be vocabulary terms (a symbol, digit, inner capital, or a word outside `COMMON_WORDS`),
+share at least 0.6 letter-for-letter similarity with the heard span, and differ from it beyond
+case. A single common word is never replaced; a span of only common words maps only to a
+same-length plain term (`git status`). `Prose` skips single words and plain terms. Terms starting
+with `-` are never added to the vocabulary. `corrections_toast_text` builds the single toast and
+returns `None` when only case or punctuation changed.
+
 ## Follow-ups
 
 - Identifiers from the last agent reply (needs an accessor from the agent view's latest exchange) and shell aliases (needs the session's alias table).

@@ -20,6 +20,16 @@ Applies to hands-free voice input and click-to-record (push-to-talk) voice input
 5. Settings > Voice lists the log (pinned first, then by count) with **Pin/Unpin** (personal dictionary: always map these words to this term), **Disable/Enable**, and **Delete**, plus **Export JSON**, which writes `warp-voice-corrections.json` to the downloads folder.
 6. Pinned mappings apply before any vocabulary match. A mapping that has been reverted at least as often as it was kept, or that is disabled, is not applied.
 
+7. Correction is conservative. It never changes everyday English words (including command names
+   that double as words, such as "can", "find", "list", "make", "current"), never substitutes a
+   flag (`--show-current`), path, or identifier for ordinary words ("what is the current hour"
+   stays as said), never drops spoken words ("can you" is never `can`), and never changes casing
+   or punctuation outside a replaced span. In shell input, spans that sound like on-screen terms
+   are corrected; in natural-language prompts only multi-word spans that clearly name a file,
+   directory, or identifier on screen are ("atm design analyzer" as `atm-design-analyzer`).
+8. Each utterance shows at most one compact toast listing its corrections, with one Revert link
+   for all of them, and none when nothing meaningful changed (only case or punctuation).
+
 ## Non-goals
 
 - No model, training, fine-tuning, or background learning job: corrections are lookups of the vocabulary, the counts, and the pinned dictionary.

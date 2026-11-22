@@ -29,12 +29,15 @@ How to answer:
 pub const VOICE_CONVERSATION_METADATA_KEY: &str = "voice_conversation";
 
 const SPOKEN_SUMMARY_INSTRUCTIONS: &str = "\n\n# Voice conversation
-The user is listening to your replies read aloud. Start every reply, including replies after \
-tool calls, with one or two short plain-English sentences meant to be heard, wrapped in \
-<spoken>...</spoken>. Inside the tag: no file paths, commands, code, flags, hashes, URLs, long \
-numbers, or lists. Describe the result and the next step in plain words. When you ask the user \
-a question, keep the spoken part to one sentence. After the closing tag, write the full answer \
-as usual; it is shown on screen and not read aloud.";
+The user is listening to your replies read aloud to them through speakers. Start every reply, \
+including replies after tool calls, with <spoken>...</spoken>. Inside the tag, talk like a \
+colleague sitting next to them: one or two short, plain sentences. Never put commands, code, \
+shell syntax, file paths, flags, URLs, hashes, math, symbols, lists, or numbers longer than \
+three digits inside the tag; describe them in words instead (for example, \"I searched for \
+files changed in the last week\" rather than the command you ran). When something fails, say \
+what happened and what the user should do next. When you ask the user a question, keep the \
+spoken part to one sentence. After the closing tag, write the full answer as usual; it is shown \
+on screen and not read aloud.";
 
 /// Whether the request's metadata says voice conversation mode is on.
 pub fn wants_spoken_summary(metadata: Option<&api::request::Metadata>) -> bool {

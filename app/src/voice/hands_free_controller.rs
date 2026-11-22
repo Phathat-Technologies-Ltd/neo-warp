@@ -516,6 +516,30 @@ impl PendingVoiceRange {
     }
 }
 
+/// The single input hands-free belongs to: the focused input of the active tab or pane in the
+/// active window, identified by its window and terminal surface.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VoiceTarget {
+    target: Option<(warpui::WindowId, warpui::EntityId)>,
+}
+
+impl VoiceTarget {
+    pub fn is(&self, window_id: warpui::WindowId, surface: warpui::EntityId) -> bool {
+        self.target == Some((window_id, surface))
+    }
+
+    pub fn surface(&self) -> Option<warpui::EntityId> {
+        self.target.map(|(_, surface)| surface)
+    }
+
+    /// Moves the target to a newly focused input. Returns whether it changed.
+    pub fn focus(&mut self, window_id: warpui::WindowId, surface: warpui::EntityId) -> bool {
+        let changed = !self.is(window_id, surface);
+        self.target = Some((window_id, surface));
+        changed
+    }
+}
+
 #[cfg(test)]
 #[path = "hands_free_controller_tests.rs"]
 mod tests;

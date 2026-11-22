@@ -15,13 +15,13 @@ use warpui::r#async::Timer;
 use warpui::platform::MicrophoneAccessState;
 use warpui::windowing::state::ApplicationStage;
 use warpui::windowing::{StateEvent, WindowManager};
-use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
+use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity, WindowId};
 use websocket::WebsocketMessage as _;
 
 use super::conversation::ConversationSession;
 use super::footer_controls::DictationMode;
 use super::hands_free_controller::{
-    HandsFreeController, HandsFreeEffect, HandsFreeOptions, HandsFreeState,
+    HandsFreeController, HandsFreeEffect, HandsFreeOptions, HandsFreeState, VoiceTarget,
 };
 use super::local_model::{ensure_ready_to_record, is_hands_free_enabled};
 use crate::server::server_api::ServerApiProvider;
@@ -53,6 +53,8 @@ pub struct HandsFreeSession {
     generation: u64,
     /// The window whose focused input receives effects, so one transcript is applied once.
     window_id: Option<WindowId>,
+    /// The one input (by terminal surface) that shows the session's state and receives its text.
+    target: VoiceTarget,
     /// Shared with the socket writer, which drops audio while the user types.
     audio_paused: Arc<AtomicBool>,
     /// What a click on a footer mic button does; shared so every footer agrees.
@@ -87,6 +89,34 @@ impl HandsFreeSession {
     /// The window whose focused input applies effects.
     pub fn window_id(&self) -> Option<WindowId> {
         self.window_id
+    }
+
+    /// Whether the input of `surface` in `window_id` is the session's target: only it shows
+    /// the live state and receives transcripts.
+    pub fn is_target(&self, window_id: WindowId, surface: EntityId) -> bool {
+        self.is_active() && self.target.is(window_id, surface)
+    }
+
+    /// The terminal surface whose input is the target, if one has claimed it.
+    pub fn target_surface(&self) -> Option<EntityId> {
+        self.target.surface()
+    }
+
+    /// Makes the focused input of `surface` in `window_id` the target, moving the indicator and
+    /// transcripts to it. The microphone session itself is unchanged.
+    pub fn focus_target(
+        &mut self,
+        window_id: WindowId,
+        surface: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.is_active() || !self.target.focus(window_id, surface) {
+            return;
+        }
+        self.window_id = Some(window_id);
+        log::info!("Hands-free: target moved to the focused input");
+        ctx.emit(HandsFreeEvent::StateChanged);
+        ctx.notify();
     }
 
     pub fn user_typed(&mut self, ctx: &mut ModelContext<Self>) {
@@ -212,6 +242,7 @@ impl HandsFreeSession {
         }
         self.watch_app(ctx);
         self.window_id = Some(window_id);
+        self.target = VoiceTarget::default();
         let settings = AISettings::as_ref(ctx);
         let options = HandsFreeOptions {
             auto_send_after: settings.hands_free_auto_send_after(),
@@ -359,6 +390,7 @@ impl HandsFreeSession {
         // socket.
         self.capture = None;
         self.generation += 1;
+        self.target = VoiceTarget::default();
         if self.controller.state().is_on() {
             self.controller.stop();
             ctx.emit(HandsFreeEvent::StateChanged);

@@ -14,8 +14,8 @@ use warpui::elements::{
     ParentElement, PositionedElementAnchor, PositionedElementOffsetBounds, SavePosition, Stack,
 };
 use warpui::{
-    AppContext, Element, Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
-    ViewHandle, WindowId,
+    AppContext, Element, Entity, EntityId, SingletonEntity as _, TypedActionView, View,
+    ViewContext, ViewHandle, WindowId,
 };
 
 use super::conversation::{ConversationSession, toggle_conversation};
@@ -166,6 +166,20 @@ pub fn conversation_visual(
     }
 }
 
+/// The hands-free state and conversation activity a footer shows: the live state only in the
+/// session's target input; every other footer shows idle buttons.
+pub fn visible_voice_state(
+    is_target: bool,
+    hands_free_state: HandsFreeState,
+    conversation_active: bool,
+) -> (HandsFreeState, bool) {
+    if is_target {
+        (hands_free_state, conversation_active)
+    } else {
+        (HandsFreeState::Off, false)
+    }
+}
+
 /// Runs a footer mic click. Returns `false` when the host should run its own recording flow.
 pub fn handle_mic_click(window_id: WindowId, ctx: &mut AppContext) -> bool {
     let session = HandsFreeSession::as_ref(ctx);
@@ -291,6 +305,8 @@ pub enum VoiceControlsAction {
 
 pub struct VoiceControls {
     style: VoiceControlsStyle,
+    /// The terminal surface whose input hosts these controls.
+    host: EntityId,
     /// Owned by the host footer, which also drives its single-recording state.
     mic_button: ViewHandle<ActionButton>,
     mode_button: ViewHandle<ActionButton>,
@@ -303,6 +319,7 @@ pub struct VoiceControls {
 impl VoiceControls {
     pub fn new(
         style: VoiceControlsStyle,
+        host: EntityId,
         mic_button: ViewHandle<ActionButton>,
         menu_positioning_provider: Arc<dyn MenuPositioningProvider>,
         ctx: &mut ViewContext<Self>,
@@ -350,6 +367,7 @@ impl VoiceControls {
 
         let mut me = Self {
             style,
+            host,
             mic_button,
             mode_button,
             mode_menu,
@@ -368,7 +386,13 @@ impl VoiceControls {
     fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
         let session = HandsFreeSession::as_ref(ctx);
         let mode = session.dictation_mode();
-        let mic = mic_visual(mode, is_hands_free_enabled(), session.state());
+        let conversation = ConversationSession::as_ref(ctx);
+        let (hands_free_state, conversation_active) = visible_voice_state(
+            session.is_target(ctx.window_id(), self.host),
+            session.state(),
+            conversation.is_active(),
+        );
+        let mic = mic_visual(mode, is_hands_free_enabled(), hands_free_state);
         let record_tooltip = AISettings::as_ref(ctx)
             .voice_input_toggle_key
             .value()
@@ -394,7 +418,7 @@ impl VoiceControls {
 
         let conversation = ConversationSession::as_ref(ctx);
         let visual = conversation_visual(
-            conversation.is_active(),
+            conversation_active,
             conversation.state(),
             conversation.is_muted(),
         );
