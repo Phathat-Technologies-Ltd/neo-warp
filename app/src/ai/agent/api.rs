@@ -267,8 +267,9 @@ impl RequestParams {
         let mcp_context = if FeatureFlag::MCPGroupedServerContext.is_enabled() {
             // Group MCP tools and resources by server
             let templatable_manager = TemplatableMCPServerManager::as_ref(app);
-            let active_servers = templatable_manager
-                .active_servers_for_session(
+            let servers: Vec<MCPServer> = templatable_manager
+                .session_server_tools(
+                    terminal_view_id,
                     session_context
                         .current_working_directory()
                         .as_deref()
@@ -276,25 +277,13 @@ impl RequestParams {
                     app,
                 )
                 .into_iter()
-                .filter(|server| {
-                    terminal_view_id.is_none_or(|pane| {
-                        templatable_manager.is_server_enabled_for_session(
-                            pane,
-                            server.installation_id(),
-                            app,
-                        )
-                    })
-                });
-
-            let servers: Vec<MCPServer> = active_servers
-                .into_iter()
-                .map(|server| MCPServer {
+                .map(|(server, tools)| MCPServer {
                     name: server.name().to_string(),
                     description: server.description().unwrap_or_default().to_string(),
                     id: server.installation_id().to_string(),
                     warp_id: server.warp_id().unwrap_or_default().to_string(),
                     resources: server.resources().to_vec(),
-                    tools: server.tools().to_vec(),
+                    tools,
                 })
                 .collect();
 

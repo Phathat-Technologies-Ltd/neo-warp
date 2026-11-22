@@ -294,7 +294,9 @@ use crate::terminal::input::cloud_mode_v2_history_menu::CloudModeV2HistoryMenuVi
 use crate::terminal::input::conversations::{
     InlineConversationMenuEvent, InlineConversationMenuView,
 };
-use crate::terminal::input::inline_history::{HISTORY_SCOPE_CYCLE_KEYSTROKE, InlineHistoryMenuView};
+use crate::terminal::input::inline_history::{
+    HISTORY_SCOPE_CYCLE_KEYSTROKE, InlineHistoryMenuView,
+};
 use crate::terminal::input::inline_menu::InlineMenuPositioner;
 use crate::terminal::input::models::{
     InlineModelSelectorEvent, InlineModelSelectorTab, InlineModelSelectorView,
@@ -2985,6 +2987,9 @@ impl Input {
             )
         });
 
+        agent_input_footer.update(ctx, |footer, ctx| {
+            footer.set_active_session(active_session.clone(), ctx);
+        });
         // Ambient view state (harness / host / auth selectors) is built in
         // `attach_ambient_agent_view_model`, the single wiring point shared by this constructor
         // and the lazy shared-session viewer path.
@@ -17106,7 +17111,11 @@ impl View for Input {
             ctx.set.insert("VoltronActive");
         }
 
-        if self.suggestions_mode_model.as_ref(app).is_inline_history_menu() {
+        if self
+            .suggestions_mode_model
+            .as_ref(app)
+            .is_inline_history_menu()
+        {
             ctx.set.insert(INLINE_HISTORY_MENU_OPEN_CONTEXT);
         }
 

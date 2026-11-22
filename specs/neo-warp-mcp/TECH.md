@@ -88,3 +88,44 @@ model.
   `MCP_SERVERS_ENABLED_IN_NEW_SESSIONS_FLAG` context flag set in the workspace keymap context.
 - Tests: `session_selection_tests.rs` (default, per-pane override) and footer tests for
   the menu items.
+
+## Stage 2 review fixes
+
+- `refresh_mcp_menu` sits above `update_usage_button`'s doc comment again.
+- `TemplatableMCPServerManager::session_server_tools(pane: Option<EntityId>, cwd, app)` is the one
+  place requests and the menu decide what a session sees; a `None` pane uses the default.
+- The footer takes the session's cwd from `ActiveSession::current_working_directory` (set with
+  `AgentInputFooter::set_active_session` from `terminal/input.rs`), the same source as
+  `SessionContext::from_session` in requests. It subscribes to `TemplatableMCPServerManager` and
+  rebuilds the menu while it's open.
+- `AgentToolbarItemKind::McpServers` renders nothing unless `MCPGroupedServerContext` is on.
+- Setting renamed `mcp_servers_enabled_by_default` (`McpServersEnabledByDefault`, flag
+  `MCP_SERVERS_ENABLED_BY_DEFAULT_FLAG`); not shipped yet, so no migration.
+
+## Stage 3: tool risk classes and access levels
+
+- `app/src/ai/mcp/tool_risk.rs`: `McpToolRisk { ReadOnly, Idempotent, External, Destructive }`
+  (ordered by risk), `McpToolRiskSource { User, Annotation, Heuristic }`,
+  `McpToolClass { risk: Option<McpToolRisk>, source: Option<_> }` (`None` risk = unclassified,
+  `effective_risk()` maps it to `Destructive`). `classify_tool(&rmcp::model::Tool)` applies
+  annotations then the word heuristic; `classify_tool_with_overrides(server, tool, overrides)`
+  applies the user override first. `McpAccessLevel { ReadOnly, ReadAndIdempotent,
+  AllButDestructive, All }` has `allows(&McpToolClass)` (compares `effective_risk()` with the
+  level's maximum risk), `next()`, and `label()`.
+- Overrides are the private, local-only `AISettings::mcp_tool_risk_overrides:
+  HashMap<String, McpToolRisk>`, keyed `"<installation uuid>/<tool name>"`
+  (`tool_risk::override_key`).
+- `SessionMcpSelection` stores per pane and server `{ enabled: Option<bool>, level:
+  Option<McpAccessLevel> }`. `select(pane, default_enabled, servers, overrides)` is the pure
+  function behind `session_server_tools`: it drops disabled servers and returns each remaining
+  server's tools filtered by its level. `RequestParams::new` builds `MCPServer.tools` from it.
+- Footer: `session_mcp_menu_items` adds an indented `Access: <level>` row after each enabled
+  server, dispatching `SetSessionMcpAccessLevel { server, level: level.next() }`.
+- Settings: `ServerCardView` takes `Vec<ServerCardTool { name, class }>`; chips are clickable
+  (one `MouseStateHandle` per tool, created with the card) and dispatch `CycleToolRisk(index)`.
+  The card updates its own chip and emits `ServerCardEvent::SetToolRisk(item, tool, risk)`; the
+  list page writes the override (cards aren't rebuilt, so the expanded list stays open).
+- Tests: `tool_risk_tests.rs` (annotation mapping incl. MCP defaults, heuristic words and
+  priority, camelCase splitting, unclassified, overrides, level filtering) and
+  `session_selection_tests.rs` (`select`: disabled servers dropped, `None` pane uses the default,
+  per-server levels).

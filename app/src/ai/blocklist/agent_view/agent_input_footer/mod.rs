@@ -63,6 +63,7 @@ use crate::ai::blocklist::usage::usage_popover_view::{
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::harness_availability::HarnessAvailabilityModel;
 use crate::ai::mcp::TemplatableMCPServerManager;
+use crate::ai::mcp::tool_risk::McpAccessLevel;
 use crate::appearance::Appearance;
 use crate::auth::{AuthManager, AuthStateProvider};
 use crate::completer::SessionContext;
@@ -99,6 +100,7 @@ use crate::terminal::input::models::InlineModelSelectorTab;
 use crate::terminal::input::{HandoffComposeState, MenuPositioning, MenuPositioningProvider};
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::local_shell::LocalShellState;
+use crate::terminal::model::session::active_session::ActiveSession;
 use crate::terminal::profile_model_selector::{ProfileModelSelector, ProfileModelSelectorEvent};
 use crate::terminal::session_settings::{
     SessionSettings, SessionSettingsChangedEvent, ToolbarChipSelection,
@@ -280,6 +282,8 @@ pub struct AgentInputFooter {
     mcp_button: ViewHandle<ActionButton>,
     mcp_menu: ViewHandle<Menu<AgentInputFooterAction>>,
     mcp_menu_open: bool,
+    /// Source of the cwd for the MCP menu, the same one agent requests use.
+    active_session: Option<ModelHandle<ActiveSession>>,
 }
 
 impl AgentInputFooter {
@@ -741,6 +745,11 @@ impl AgentInputFooter {
             MenuEvent::ItemSelected | MenuEvent::ItemHovered => {}
         });
 
+        ctx.subscribe_to_model(
+            &TemplatableMCPServerManager::handle(ctx),
+            |me, _, _, ctx| me.refresh_mcp_menu(ctx),
+        );
+
         let usage_popover = ctx.add_typed_action_view(|ctx| UsagePopoverView::new(None, ctx));
         ctx.subscribe_to_view(&usage_popover, |me, _, event, ctx| match event {
             UsagePopoverEvent::Close => {
@@ -1044,6 +1053,7 @@ impl AgentInputFooter {
             mcp_button,
             mcp_menu,
             mcp_menu_open: false,
+            active_session: None,
         };
         me.sync_fast_forward_button(ctx);
         me.sync_remote_control_button(ctx);
@@ -1060,6 +1070,15 @@ impl AgentInputFooter {
             );
         }
         me
+    }
+
+    pub fn set_active_session(
+        &mut self,
+        active_session: ModelHandle<ActiveSession>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.active_session = Some(active_session);
+        self.refresh_mcp_menu(ctx);
     }
 
     pub fn set_current_repo_path(
@@ -2313,16 +2332,16 @@ impl AgentInputFooter {
         }
     }
 
-    /// Refreshes the usage button's tooltip with the active conversation's
-    /// total cost — the same figure the popover's header shows.
     fn refresh_mcp_menu(&mut self, ctx: &mut ViewContext<Self>) {
-        let cwd = self
-            .terminal_model
-            .lock()
-            .block_list()
-            .active_block()
-            .pwd()
-            .map(PathBuf::from);
+        if !self.mcp_menu_open {
+            return;
+        }
+        let cwd = self.active_session.as_ref().and_then(|session| {
+            session
+                .as_ref(ctx)
+                .current_working_directory()
+                .map(PathBuf::from)
+        });
         let items = session_mcp_menu_items(session_mcp_servers(
             self.terminal_view_id,
             cwd.as_deref(),
@@ -2332,6 +2351,8 @@ impl AgentInputFooter {
             .update(ctx, |menu, ctx| menu.set_items(items, ctx));
     }
 
+    /// Refreshes the usage button's tooltip with the active conversation's
+    /// total cost — the same figure the popover's header shows.
     fn update_usage_button(&mut self, ctx: &mut ViewContext<Self>) {
         // Falls back to the bare label rather than keeping the previous
         // conversation's figure, which would attribute another conversation's
@@ -2553,7 +2574,10 @@ impl AgentInputFooter {
             AgentToolbarItemKind::FastForwardToggle => FeatureFlag::FastForwardAutoexecuteButton
                 .is_enabled()
                 .then(|| ChildView::new(&self.fast_forward_button).finish()),
-            AgentToolbarItemKind::McpServers => Some(self.render_mcp_button(app)),
+            // Without grouped server context the request can't be filtered per server.
+            AgentToolbarItemKind::McpServers => FeatureFlag::MCPGroupedServerContext
+                .is_enabled()
+                .then(|| self.render_mcp_button(app)),
             AgentToolbarItemKind::HandoffToCloud => {
                 if !AISettings::as_ref(app).is_cloud_handoff_enabled(app) || is_cloud_context {
                     return None;
@@ -2753,6 +2777,7 @@ struct SessionMcpServer {
     id: Uuid,
     name: String,
     enabled: bool,
+    level: McpAccessLevel,
 }
 
 fn session_mcp_servers(
@@ -2768,6 +2793,7 @@ fn session_mcp_servers(
             id: server.installation_id(),
             name: server.name().to_owned(),
             enabled: manager.is_server_enabled_for_session(pane, server.installation_id(), app),
+            level: manager.server_access_level_for_session(pane, server.installation_id()),
         })
         .collect()
 }
@@ -2782,19 +2808,28 @@ fn session_mcp_menu_items(servers: Vec<SessionMcpServer>) -> Vec<MenuItem<AgentI
     }
     servers
         .into_iter()
-        .map(|server| {
-            let item = MenuItemFields::new(server.name).with_on_select_action(
+        .flat_map(|server| {
+            let toggle = MenuItemFields::new(server.name).with_on_select_action(
                 AgentInputFooterAction::SetSessionMcpServerEnabled {
                     server: server.id,
                     enabled: !server.enabled,
                 },
             );
-            let item = if server.enabled {
-                item.with_icon(Icon::Check)
+            let toggle = if server.enabled {
+                toggle.with_icon(Icon::Check)
             } else {
-                item.with_indent()
+                toggle.with_indent()
             };
-            item.into_item()
+            let access = server.enabled.then(|| {
+                MenuItemFields::new(format!("Access: {}", server.level.label()))
+                    .with_indent()
+                    .with_on_select_action(AgentInputFooterAction::SetSessionMcpAccessLevel {
+                        server: server.id,
+                        level: server.level.next(),
+                    })
+                    .into_item()
+            });
+            std::iter::once(toggle.into_item()).chain(access)
         })
         .collect()
 }
@@ -2829,6 +2864,10 @@ pub enum AgentInputFooterAction {
     SetSessionMcpServerEnabled {
         server: Uuid,
         enabled: bool,
+    },
+    SetSessionMcpAccessLevel {
+        server: Uuid,
+        level: McpAccessLevel,
     },
 }
 
@@ -3029,9 +3068,7 @@ impl TypedActionView for AgentInputFooter {
             }
             AgentInputFooterAction::ToggleMcpMenu => {
                 self.mcp_menu_open = !self.mcp_menu_open;
-                if self.mcp_menu_open {
-                    self.refresh_mcp_menu(ctx);
-                }
+                self.refresh_mcp_menu(ctx);
                 ctx.notify();
             }
             AgentInputFooterAction::SetSessionMcpServerEnabled { server, enabled } => {
@@ -3040,6 +3077,15 @@ impl TypedActionView for AgentInputFooter {
                     manager.set_server_enabled_for_session(pane, *server, *enabled);
                 });
                 // Selecting an item closes the menu; reopen it so several servers can be toggled.
+                self.mcp_menu_open = true;
+                self.refresh_mcp_menu(ctx);
+                ctx.notify();
+            }
+            AgentInputFooterAction::SetSessionMcpAccessLevel { server, level } => {
+                let pane = self.terminal_view_id;
+                TemplatableMCPServerManager::handle(ctx).update(ctx, |manager, _| {
+                    manager.set_server_access_level_for_session(pane, *server, *level);
+                });
                 self.mcp_menu_open = true;
                 self.refresh_mcp_menu(ctx);
                 ctx.notify();

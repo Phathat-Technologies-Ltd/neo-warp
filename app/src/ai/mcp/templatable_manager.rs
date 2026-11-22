@@ -34,6 +34,7 @@ use crate::ai::mcp::session_selection::SessionMcpSelection;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::templatable::CloudTemplatableMCPServer;
 use crate::ai::mcp::templatable_installation::TemplatableMCPServerInstallation;
+use crate::ai::mcp::tool_risk::McpAccessLevel;
 use crate::ai::mcp::{FileBasedMCPManager, MCPServerState};
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::{StaticEnvVar, TransportType};
@@ -471,13 +472,55 @@ impl TemplatableMCPServerManager {
         server: Uuid,
         app: &warpui::AppContext,
     ) -> bool {
-        let default_enabled = *AISettings::as_ref(app).mcp_servers_enabled_in_new_sessions;
+        let default_enabled = *AISettings::as_ref(app).mcp_servers_enabled_by_default;
         self.session_selection
             .is_enabled(pane, server, default_enabled)
     }
 
     pub fn set_server_enabled_for_session(&mut self, pane: EntityId, server: Uuid, enabled: bool) {
         self.session_selection.set_enabled(pane, server, enabled);
+    }
+
+    pub fn server_access_level_for_session(&self, pane: EntityId, server: Uuid) -> McpAccessLevel {
+        self.session_selection.access_level(pane, server)
+    }
+
+    pub fn set_server_access_level_for_session(
+        &mut self,
+        pane: EntityId,
+        server: Uuid,
+        level: McpAccessLevel,
+    ) {
+        self.session_selection.set_access_level(pane, server, level);
+    }
+
+    /// The servers an agent session may use, each with the tools its access level allows.
+    pub fn session_server_tools(
+        &self,
+        pane: Option<EntityId>,
+        cwd: Option<&std::path::Path>,
+        app: &warpui::AppContext,
+    ) -> Vec<(&TemplatableMCPServerInfo, Vec<rmcp::model::Tool>)> {
+        let servers = self.active_servers_for_session(cwd, app);
+        let ai_settings = AISettings::as_ref(app);
+        let selected = self.session_selection.select(
+            pane,
+            *ai_settings.mcp_servers_enabled_by_default,
+            servers
+                .iter()
+                .map(|server| (server.installation_id(), server.tools().as_slice())),
+            &ai_settings.mcp_tool_risk_overrides,
+        );
+        let mut tools_by_server: HashMap<Uuid, Vec<rmcp::model::Tool>> =
+            selected.into_iter().collect();
+        servers
+            .into_iter()
+            .filter_map(|server| {
+                tools_by_server
+                    .remove(&server.installation_id())
+                    .map(|tools| (server, tools))
+            })
+            .collect()
     }
 }
 

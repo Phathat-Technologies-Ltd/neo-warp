@@ -23609,10 +23609,10 @@ impl Workspace {
         if *input_settings.show_agent_tips.value() {
             context.set.insert(flags::SHOW_AGENT_TIPS_FLAG);
         }
-        if *AISettings::as_ref(app).mcp_servers_enabled_in_new_sessions {
+        if *AISettings::as_ref(app).mcp_servers_enabled_by_default {
             context
                 .set
-                .insert(flags::MCP_SERVERS_ENABLED_IN_NEW_SESSIONS_FLAG);
+                .insert(flags::MCP_SERVERS_ENABLED_BY_DEFAULT_FLAG);
         }
         if *editor_settings.enable_autosuggestions {
             context.set.insert(flags::AUTOSUGGESTIONS_ENABLED_FLAG);

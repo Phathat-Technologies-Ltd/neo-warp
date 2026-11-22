@@ -475,7 +475,7 @@ fn cli_footer_omits_cloud_indicator_for_shared_local_viewer() {
 }
 
 #[test]
-fn mcp_menu_lists_servers_with_checks_and_toggle_actions() {
+fn mcp_menu_lists_servers_with_checks_access_rows_and_toggle_actions() {
     let on = Uuid::new_v4();
     let off = Uuid::new_v4();
     let items = session_mcp_menu_items(vec![
@@ -483,11 +483,13 @@ fn mcp_menu_lists_servers_with_checks_and_toggle_actions() {
             id: on,
             name: "github".to_owned(),
             enabled: true,
+            level: McpAccessLevel::ReadOnly,
         },
         SessionMcpServer {
             id: off,
             name: "linear".to_owned(),
             enabled: false,
+            level: McpAccessLevel::All,
         },
     ]);
     let fields: Vec<_> = items.iter().map(|item| item.fields().unwrap()).collect();
@@ -498,10 +500,19 @@ fn mcp_menu_lists_servers_with_checks_and_toggle_actions() {
         Some(AgentInputFooterAction::SetSessionMcpServerEnabled { server, enabled: false })
             if *server == on
     ));
-    assert_eq!(fields[1].label(), "linear");
-    assert_eq!(fields[1].icon(), None);
+    assert_eq!(fields.len(), 3, "only enabled servers get an access row");
+    assert_eq!(fields[1].label(), "Access: Read-only");
     assert!(matches!(
         fields[1].on_select_action(),
+        Some(AgentInputFooterAction::SetSessionMcpAccessLevel {
+            server,
+            level: McpAccessLevel::ReadAndIdempotent,
+        }) if *server == on
+    ));
+    assert_eq!(fields[2].label(), "linear");
+    assert_eq!(fields[2].icon(), None);
+    assert!(matches!(
+        fields[2].on_select_action(),
         Some(AgentInputFooterAction::SetSessionMcpServerEnabled { server, enabled: true })
             if *server == off
     ));

@@ -105,7 +105,7 @@ use crate::settings::{
     AwsBedrockCredentialsEnabled, CanUseWarpCreditsForFallback, EnableAiCommandSearchHashTrigger,
     GeminiEnterpriseCredentialsEnabled, GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory,
     InputSettings, IntelligentAutosuggestionsEnabled, LongRunningCommandSubmissionMode,
-    McpServersEnabledInNewSessions, NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled,
+    McpServersEnabledByDefault, NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled,
     OrchestrationMessageDisplayMode, PromptSubmissionMode, SharedBlockTitleGenerationEnabled,
     ShouldRenderUseAgentToolbarForUserCommands, ShouldShowOzUpdatesInZeroState, ShowAgentTips,
     ShowConversationHistory, ShowHintText, ThinkingDisplayMode, VOICE_INPUT_LANGUAGES,
@@ -212,12 +212,12 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
     ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
         vec![
             ToggleSettingActionPair::new(
-                "all MCP servers in new agent sessions",
+                "MCP servers by default in agent sessions",
                 builder(SettingsAction::WarpAgent(
-                    WarpAgentPageAction::ToggleMcpServersEnabledInNewSessions,
+                    WarpAgentPageAction::ToggleMcpServersEnabledByDefault,
                 )),
                 &(context.clone() & id!(flags::IS_ANY_AI_ENABLED)),
-                flags::MCP_SERVERS_ENABLED_IN_NEW_SESSIONS_FLAG,
+                flags::MCP_SERVERS_ENABLED_BY_DEFAULT_FLAG,
             )
             .with_group(bindings::BindingGroup::WarpAi),
         ],
@@ -2513,7 +2513,7 @@ impl WarpAgentPageView {
                 Box::new(ShowInputHintTextWidget::default()),
                 Box::new(AiCommandSearchHashTriggerWidget::default()),
                 Box::new(ShowAgentTipsWidget::default()),
-                Box::new(McpServersEnabledInNewSessionsWidget::default()),
+                Box::new(McpServersEnabledByDefaultWidget::default()),
                 Box::new(IncludeAgentCommandsInHistoryWidget::default()),
                 Box::new(AutoApproveBypassesCommandDenylistWidget::default()),
                 Box::new(PromptSubmissionModeWidget),
@@ -2745,7 +2745,7 @@ pub enum WarpAgentPageAction {
     ToggleShowInputHintText,
     ToggleAiCommandSearchHashTrigger,
     ToggleShowAgentTips,
-    ToggleMcpServersEnabledInNewSessions,
+    ToggleMcpServersEnabledByDefault,
     ToggleShowOzUpdatesInZeroState,
     SetThinkingDisplayMode(ThinkingDisplayMode),
     SetOrchestrationMessageDisplayMode(OrchestrationMessageDisplayMode),
@@ -3126,13 +3126,13 @@ impl TypedActionView for WarpAgentPageView {
                     );
                 });
             }
-            WarpAgentPageAction::ToggleMcpServersEnabledInNewSessions => {
+            WarpAgentPageAction::ToggleMcpServersEnabledByDefault => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     if let Err(e) = settings
-                        .mcp_servers_enabled_in_new_sessions
+                        .mcp_servers_enabled_by_default
                         .toggle_and_save_value(ctx)
                     {
-                        log::warn!("Failed to toggle MCP servers enabled in new sessions: {e:?}");
+                        log::warn!("Failed to toggle MCP servers enabled by default: {e:?}");
                     }
                 });
                 ctx.notify();
@@ -4064,15 +4064,15 @@ impl SettingsWidget for ShowAgentTipsWidget {
 }
 
 #[derive(Default)]
-struct McpServersEnabledInNewSessionsWidget {
+struct McpServersEnabledByDefaultWidget {
     toggle: SwitchStateHandle,
 }
 
-impl SettingsWidget for McpServersEnabledInNewSessionsWidget {
+impl SettingsWidget for McpServersEnabledByDefaultWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "mcp servers new sessions enabled default agent tools"
+        "mcp servers sessions enabled default agent tools"
     }
 
     fn render(
@@ -4082,10 +4082,10 @@ impl SettingsWidget for McpServersEnabledInNewSessionsWidget {
         app: &AppContext,
     ) -> Box<dyn Element> {
         let ai_settings = AISettings::as_ref(app);
-        render_ai_setting_toggle::<McpServersEnabledInNewSessions>(
-            "Enable all MCP servers in new sessions",
-            WarpAgentPageAction::ToggleMcpServersEnabledInNewSessions,
-            *ai_settings.mcp_servers_enabled_in_new_sessions,
+        render_ai_setting_toggle::<McpServersEnabledByDefault>(
+            "Enable MCP servers by default in agent sessions",
+            WarpAgentPageAction::ToggleMcpServersEnabledByDefault,
+            *ai_settings.mcp_servers_enabled_by_default,
             ai_settings.is_any_ai_enabled(app),
             self.toggle.clone(),
             &view.local_only_icon_tooltip_states,

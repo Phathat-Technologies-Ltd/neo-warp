@@ -64,3 +64,80 @@ MCP resources (`ReadMcpResource`), per-session server selection, and tool classi
 - The headless TUI has no picker yet; its requests follow the setting.
 - Older clients that send the flat (ungrouped) MCP tool list aren't filtered, since that list
   doesn't say which server a tool belongs to.
+
+### Stage 2 review fixes
+
+- The setting is now **Enable MCP servers by default in agent sessions** (Command Palette:
+  enable/disable "MCP servers by default in agent sessions"; TOML
+  `agents.mcp_servers.enabled_by_default`). It applies to every server the user hasn't toggled in a
+  pane, including in sessions that are already open; the old name implied it only affected new
+  sessions.
+- Requests that aren't tied to a pane also follow the setting, so turning it off never exposes
+  servers the user didn't turn on.
+- The menu lists the same servers the agent request sends: both use the session's working
+  directory, so file-based servers match. An open menu updates when a server starts, stops, or
+  changes its tools.
+- The MCP Servers button is hidden when grouped MCP context is off, since that request format
+  can't be filtered per server.
+- Choices still last for the app session only and are kept for closed panes (so an undone pane
+  close keeps them). Persisting them with pane restoration is deferred.
+
+## Stage 3: tool risk classes and session access levels
+
+### Risk classes
+
+Every tool of a running MCP server gets one of these classes, from safest to riskiest:
+
+- **Read-only**: only reads.
+- **Idempotent**: changes state, but calling it again with the same arguments has no further
+  effect (set, update, put).
+- **External**: reaches outside systems or the open world, or makes changes that aren't safe to
+  repeat (send, post, create, deploy).
+- **Destructive**: may delete or overwrite data.
+
+A tool that can't be classified is **unclassified** and is treated as destructive everywhere.
+
+How a class is chosen, first match wins:
+
+1. **User**: the class the user set for that tool in Settings.
+2. **Annotation**: the server's MCP tool annotations. `readOnlyHint: true` is read-only (even if
+   the tool is open-world, so "read GitHub issues" stays read-only). Otherwise, following the MCP
+   defaults, `destructiveHint` missing or `true` is destructive; `idempotentHint: true` with
+   `openWorldHint: false` is idempotent; anything else is external.
+3. **Heuristic**: words in the tool's name (split on `_`, `-`, `.`, and camelCase), then its
+   description. Destructive words (delete, remove, drop, destroy, purge, truncate, kill, wipe,
+   overwrite, revoke...) win over external (send, post, create, publish, deploy, push, execute,
+   run, email, message, comment, merge...), then idempotent (set, update, put, upsert, enable,
+   disable, rename, assign, label...), then read-only (get, list, read, search, fetch, query,
+   describe, show, view, find, lookup, count, status...).
+4. Otherwise unclassified.
+
+Classes are computed whenever the server's tool list is read, so a server that adds or changes
+tools is reclassified immediately. Only user choices are stored (locally, per server installation
+and tool name; not synced).
+
+### Settings
+
+In Settings > MCP servers, a running server's expanded tool list shows each tool with its class
+and where it came from, e.g. `create_issue · External (heuristic)`, or `· Unclassified`. Clicking a
+tool cycles its class: Read-only, Idempotent, External, Destructive, then back to automatic.
+
+### Session access levels
+
+In the footer's MCP Servers menu, each enabled server has an **Access** row under it showing its
+level; clicking cycles through:
+
+- **Read-only**: read-only tools only.
+- **Read + idempotent**: also idempotent tools.
+- **All but destructive**: everything except destructive and unclassified tools.
+- **All** (default, matching stage 2): every tool.
+
+Only tools within the level are sent to the agent, so it can't see or call the others; a
+destructive or unclassified tool is never offered below **All**. The level belongs to the pane
+like the on/off choice.
+
+### Out of scope for stage 3
+
+Classifying with the user's selected model through the embedded server (heuristics only for
+now); enforcing the level again when the client executes a tool call (the agent only learns tool
+names from the request, so this is defense in depth); levels for the flat MCP format.

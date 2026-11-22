@@ -1,6 +1,7 @@
 pub mod manager;
 pub mod session_selection;
 pub mod templatable_manager;
+pub mod tool_risk;
 
 #[cfg(not(target_family = "wasm"))]
 use std::collections::HashMap;
