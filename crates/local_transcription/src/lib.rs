@@ -13,7 +13,7 @@ mod state;
 pub use audio::{Audio, decode_wav};
 pub use model::{
     DownloadError, DownloadProgress, ModelFile, ModelSpec, ModelStatus, ModelStore,
-    parakeet_tdt_0_6b_v3,
+    ProgressThrottle, parakeet_tdt_0_6b_v3,
 };
 #[cfg(feature = "parakeet")]
 pub use parakeet::ParakeetTranscriber;

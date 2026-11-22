@@ -5,11 +5,12 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
 use local_transcription::{
     DownloadError, DownloadProgress, ModelAction, ModelEvent, ModelState, ModelStore,
-    parakeet_tdt_0_6b_v3,
+    ProgressThrottle, parakeet_tdt_0_6b_v3,
 };
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
@@ -64,6 +65,44 @@ pub struct LocalVoiceModel {
     cancel: Option<Arc<AtomicBool>>,
     /// The thread running the latest download, joined before deleting files it may still write.
     download_thread: Option<std::thread::JoinHandle<()>>,
+    /// The window showing the download's progress toast.
+    toast_window: Option<WindowId>,
+}
+
+/// How the speech model toast changes after a state transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToastUpdate {
+    ShowProgress(DownloadProgress),
+    UpdateProgress(DownloadProgress),
+    Ready,
+    Failed(String),
+    Dismiss,
+}
+
+fn toast_update(before: &ModelState, after: &ModelState) -> Option<ToastUpdate> {
+    match (before, after) {
+        (ModelState::Downloading(_), ModelState::Downloading(progress)) => {
+            Some(ToastUpdate::UpdateProgress(*progress))
+        }
+        (_, ModelState::Downloading(progress)) => Some(ToastUpdate::ShowProgress(*progress)),
+        (ModelState::Downloading(_), ModelState::Installed) => Some(ToastUpdate::Ready),
+        (ModelState::Downloading(_), ModelState::Failed(message)) => {
+            Some(ToastUpdate::Failed(message.clone()))
+        }
+        (ModelState::Downloading(_), ModelState::NotInstalled | ModelState::AwaitingConsent) => {
+            Some(ToastUpdate::Dismiss)
+        }
+        (
+            ModelState::NotInstalled
+            | ModelState::AwaitingConsent
+            | ModelState::Installed
+            | ModelState::Failed(_),
+            ModelState::NotInstalled
+            | ModelState::AwaitingConsent
+            | ModelState::Installed
+            | ModelState::Failed(_),
+        ) => None,
+    }
 }
 
 impl LocalVoiceModel {
@@ -75,6 +114,7 @@ impl LocalVoiceModel {
             state,
             cancel: None,
             download_thread: None,
+            toast_window: None,
         }
     }
 
@@ -97,6 +137,18 @@ impl LocalVoiceModel {
             // The files were deleted outside the app.
             self.apply(ModelEvent::Loaded(self.store.status()), ctx);
         }
+        let download_ended = self
+            .download_thread
+            .as_ref()
+            .is_some_and(|thread| thread.is_finished());
+        if matches!(self.state, ModelState::Downloading(_))
+            && download_ended
+            && self.store.is_installed()
+        {
+            // The thread finished but its completion update hasn't arrived; trust the disk.
+            self.cancel = None;
+            self.apply(ModelEvent::DownloadFinished, ctx);
+        }
         let asked =
             self.apply(ModelEvent::RecordingRequested, ctx) == Some(ModelAction::AskConsent);
         match &self.state {
@@ -109,8 +161,67 @@ impl LocalVoiceModel {
         }
     }
 
-    pub fn download(&mut self, ctx: &mut ModelContext<Self>) {
+    /// Starts the download, showing its progress in a toast in `window_id`.
+    pub fn download(&mut self, window_id: WindowId, ctx: &mut ModelContext<Self>) {
+        self.toast_window = Some(window_id);
         self.apply(ModelEvent::DownloadRequested, ctx);
+    }
+
+    /// Shows the running download's progress toast in `window_id`.
+    #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
+    fn show_progress_toast(&mut self, window_id: WindowId, ctx: &mut ModelContext<Self>) {
+        if let ModelState::Downloading(progress) = self.state {
+            if let Some(previous) = self.toast_window.replace(window_id) {
+                if previous != window_id {
+                    remove_toast(previous, ctx);
+                }
+            }
+            add_toast(progress_toast(progress), window_id, ctx);
+        }
+    }
+
+    fn sync_toast(&mut self, before: &ModelState, ctx: &mut ModelContext<Self>) {
+        let Some(window_id) = self.toast_window else {
+            return;
+        };
+        let Some(update) = toast_update(before, &self.state) else {
+            return;
+        };
+        match update {
+            ToastUpdate::ShowProgress(progress) => {
+                add_toast(progress_toast(progress), window_id, ctx);
+            }
+            ToastUpdate::UpdateProgress(progress) => {
+                ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+                    stack.update_toast_in_place(progress_toast(progress), window_id, ctx);
+                });
+            }
+            ToastUpdate::Ready => {
+                self.toast_window = None;
+                remove_toast(window_id, ctx);
+                ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+                    stack.add_ephemeral_toast(
+                        DismissibleToast::success("Speech model ready".to_owned()),
+                        window_id,
+                        ctx,
+                    );
+                });
+            }
+            ToastUpdate::Failed(message) => {
+                let toast =
+                    DismissibleToast::error(format!("The speech model download failed: {message}"))
+                        .with_link(
+                            ToastLink::new("Retry".to_owned())
+                                .with_onclick_action(WorkspaceAction::DownloadLocalVoiceModel),
+                        )
+                        .with_object_id(TOAST_ID.to_owned());
+                add_toast(toast, window_id, ctx);
+            }
+            ToastUpdate::Dismiss => {
+                self.toast_window = None;
+                remove_toast(window_id, ctx);
+            }
+        }
     }
 
     pub fn cancel_download(&mut self, ctx: &mut ModelContext<Self>) {
@@ -150,6 +261,7 @@ impl LocalVoiceModel {
             Some(ModelAction::AskConsent) | None => {}
         }
         if self.state != before {
+            self.sync_toast(&before, ctx);
             ctx.emit(LocalVoiceModelEvent::StateChanged);
             ctx.notify();
         }
@@ -214,8 +326,11 @@ impl LocalVoiceModel {
     }
 }
 
-/// Runs the download on the calling thread with its own runtime, reporting progress at most once
-/// per tenth of a percent.
+/// How often progress reaches the UI while the whole percent stays the same.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Runs the download on the calling thread with its own runtime, reporting progress as
+/// [`ProgressThrottle`] allows.
 fn download_blocking(
     store: &ModelStore,
     cancel: &AtomicBool,
@@ -226,11 +341,9 @@ fn download_blocking(
         .build()
         .map_err(|error| error.to_string())?;
     let client = reqwest::Client::new();
-    let mut last_permille = None;
+    let mut throttle = ProgressThrottle::new(PROGRESS_INTERVAL);
     let result = runtime.block_on(store.download(&client, cancel, |progress| {
-        let permille = progress.downloaded * 1000 / progress.total.max(1);
-        if last_permille != Some(permille) {
-            last_permille = Some(permille);
+        if throttle.should_report(progress, Instant::now()) {
             on_progress(progress);
         }
     }));
@@ -286,26 +399,40 @@ pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool
                         .with_onclick_action(WorkspaceAction::DownloadLocalVoiceModel),
                 )
         }
-        RecordingReadiness::Downloading(progress) => DismissibleToast::default(format!(
-            "The speech model is still downloading ({}).",
-            format_progress(progress)
-        )),
+        RecordingReadiness::Downloading(_) => {
+            model.update(ctx, |model, ctx| model.show_progress_toast(window_id, ctx));
+            return false;
+        }
     }
     .with_object_id(TOAST_ID.to_owned());
-    ToastStack::handle(ctx).update(ctx, |stack, ctx| {
-        stack.remove_toast_by_identifier(TOAST_ID.to_owned(), window_id, ctx);
-        stack.add_persistent_toast(toast, window_id, ctx);
-    });
+    add_toast(toast, window_id, ctx);
     false
 }
 
 const TOAST_ID: &str = "local-voice-model";
 
-/// Removes the persistent speech model prompt from `window_id`, if it's showing.
-pub fn dismiss_toast(window_id: WindowId, ctx: &mut AppContext) {
+/// Shows `toast` in `window_id` as the only speech model toast there.
+fn add_toast(toast: DismissibleToast<WorkspaceAction>, window_id: WindowId, ctx: &mut AppContext) {
+    ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+        stack.add_persistent_toast(toast, window_id, ctx);
+    });
+}
+
+fn remove_toast(window_id: WindowId, ctx: &mut AppContext) {
     ToastStack::handle(ctx).update(ctx, |stack, ctx| {
         stack.remove_toast_by_identifier(TOAST_ID.to_owned(), window_id, ctx);
     });
+}
+
+fn progress_toast(progress: DownloadProgress) -> DismissibleToast<WorkspaceAction> {
+    DismissibleToast::default(progress_message(progress)).with_object_id(TOAST_ID.to_owned())
+}
+
+fn progress_message(progress: DownloadProgress) -> String {
+    format!(
+        "Downloading the speech model: {}",
+        format_progress(progress)
+    )
 }
 
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
@@ -317,12 +444,16 @@ fn consent_prompt(display_name: &str, size: u64) -> String {
     )
 }
 
-/// Formats download progress as a percentage for the UI.
+/// Formats download progress for the UI, e.g. "42% (282 MB of 671 MB)".
 pub fn format_progress(progress: DownloadProgress) -> String {
-    if progress.total == 0 {
-        return "starting".to_owned();
+    match progress.percent() {
+        None => "starting".to_owned(),
+        Some(percent) => format!(
+            "{percent}% ({} of {})",
+            format_megabytes(progress.downloaded),
+            format_megabytes(progress.total)
+        ),
     }
-    format!("{}%", progress.downloaded * 100 / progress.total)
 }
 
 #[cfg(test)]

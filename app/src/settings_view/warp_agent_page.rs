@@ -3026,8 +3026,9 @@ impl TypedActionView for WarpAgentPageView {
             }
             #[cfg(not(target_family = "wasm"))]
             WarpAgentPageAction::DownloadLocalVoiceModel => {
+                let window_id = ctx.window_id();
                 crate::voice::local_model::LocalVoiceModel::handle(ctx)
-                    .update(ctx, |model, ctx| model.download(ctx));
+                    .update(ctx, |model, ctx| model.download(window_id, ctx));
             }
             #[cfg(not(target_family = "wasm"))]
             WarpAgentPageAction::CancelLocalVoiceModelDownload => {

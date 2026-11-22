@@ -144,3 +144,62 @@ fn parakeet_spec_is_pinned() {
     assert!(spec.files.iter().all(|file| file.sha256.len() == 64));
     assert_eq!(spec.total_size(), 670_479_942);
 }
+
+#[tokio::test]
+async fn progress_counts_bytes_across_files_against_the_total() {
+    let url = serve(Arc::default()).await;
+    let root = tempfile::tempdir().unwrap();
+    let mut spec = spec(&url, sha(BODY));
+    let mut second = spec.files[0].clone();
+    second.name = "second.bin".to_owned();
+    spec.files.push(second);
+    let store = ModelStore::new(root.path(), spec);
+    std::fs::create_dir_all(store.model_dir()).unwrap();
+    std::fs::write(store.model_dir().join("weights.bin.part"), &BODY[..8]).unwrap();
+
+    let mut reports = Vec::new();
+    store
+        .download(
+            &reqwest::Client::new(),
+            &AtomicBool::new(false),
+            |progress| reports.push(progress),
+        )
+        .await
+        .unwrap();
+    assert!(reports.iter().all(|progress| progress.total == 40));
+    assert_eq!(reports.first().map(|progress| progress.downloaded), Some(8));
+    assert!(
+        reports
+            .windows(2)
+            .all(|pair| pair[0].downloaded <= pair[1].downloaded)
+    );
+    // The second file's bytes add to the first file's rather than restarting from zero.
+    assert!(reports.iter().any(|progress| progress.downloaded > 20));
+    assert_eq!(reports.last().map(|progress| progress.downloaded), Some(40));
+}
+
+#[test]
+fn percent_is_whole_and_unknown_without_a_total() {
+    let progress = |downloaded, total| DownloadProgress { downloaded, total };
+    assert_eq!(progress(0, 0).percent(), None);
+    assert_eq!(progress(0, 670).percent(), Some(0));
+    assert_eq!(progress(550_000_000, 670_479_942).percent(), Some(82));
+    assert_eq!(progress(670, 670).percent(), Some(100));
+}
+
+#[test]
+fn throttle_reports_on_percent_change_interval_and_completion() {
+    let progress = |downloaded| DownloadProgress {
+        downloaded,
+        total: 1000,
+    };
+    let start = Instant::now();
+    let at = |millis| start + Duration::from_millis(millis);
+    let mut throttle = ProgressThrottle::new(Duration::from_millis(500));
+    assert!(throttle.should_report(progress(0), at(0)));
+    assert!(!throttle.should_report(progress(5), at(10)));
+    assert!(throttle.should_report(progress(10), at(20)));
+    assert!(!throttle.should_report(progress(15), at(100)));
+    assert!(throttle.should_report(progress(16), at(520)));
+    assert!(throttle.should_report(progress(1000), at(521)));
+}
