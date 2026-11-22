@@ -1,6 +1,7 @@
 //! Speaker verification for hands-free input, free of I/O so it can be tested: an [`AudioTap`]
 //! keeps the recent microphone audio, and a [`SpeakerGate`] holds each final transcript back until
-//! its audio is checked against the voiceprint, keeping later messages in order behind it.
+//! its audio is checked against the voiceprint, keeping later messages in order behind it. Partials
+//! are held until an early check on the utterance's first audio says who is speaking.
 
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -16,6 +17,9 @@ const TAP_SAMPLES: usize = 12 * SAMPLE_RATE as usize;
 const START_SLACK_SAMPLES: u64 = SAMPLE_RATE / 2;
 /// Audio used when no `SpeechStart` was seen for a final.
 const FALLBACK_SAMPLES: u64 = 3 * SAMPLE_RATE;
+/// Audio an utterance needs before its early check runs: enough for a usable embedding while
+/// keeping the wait for live text short.
+const EARLY_CHECK_SAMPLES: u64 = SAMPLE_RATE * 5 / 4;
 
 /// The most recent microphone audio as sent to the server, addressed by absolute sample index.
 #[derive(Debug, Default)]
@@ -54,10 +58,12 @@ impl AudioTap {
     }
 }
 
-/// A final transcript waiting for its speaker check.
+/// Audio waiting for a speaker check: a final transcript, or the start of an utterance whose
+/// partials are held.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyRequest {
     pub utterance: u64,
+    /// The final's text; empty for an early check.
     pub text: String,
     /// The utterance's audio in [`AudioTap`] sample indices.
     pub range: Range<u64>,
@@ -69,6 +75,9 @@ pub enum GateStep {
     Deliver(ServerMessage),
     /// Check the speaker of this final, then report the result with [`SpeakerGate::verdict`].
     Verify(VerifyRequest),
+    /// Check the speaker of an utterance in progress, then report the result with
+    /// [`SpeakerGate::early_verdict`].
+    EarlyVerify(VerifyRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,12 +89,29 @@ pub enum Verdict {
     Unavailable,
 }
 
+/// How far the speaker check of the utterance in progress has got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EarlyCheck {
+    /// Not enough audio yet; holds the latest partial.
+    Waiting {
+        held: Option<String>,
+    },
+    /// The early check is running; holds the latest partial.
+    Checking {
+        held: Option<String>,
+    },
+    Accepted,
+    Rejected,
+}
+
 #[derive(Debug, Default)]
 pub struct SpeakerGate {
     speech_start: Option<u64>,
     speech_end: Option<u64>,
     pending: Option<VerifyRequest>,
     queue: VecDeque<ServerMessage>,
+    /// The utterance whose partials are gated, with where its audio starts and its check state.
+    early: Option<(u64, u64, EarlyCheck)>,
 }
 
 impl SpeakerGate {
@@ -118,8 +144,13 @@ impl SpeakerGate {
                     .speech_start
                     .take()
                     .unwrap_or_else(|| end.saturating_sub(FALLBACK_SAMPLES));
+                let early = self.early.take().filter(|(id, ..)| *id == utterance);
                 if !verify || text.trim().is_empty() || is_stop_phrase(&text) {
                     return vec![GateStep::Deliver(ServerMessage::Final { utterance, text })];
+                }
+                if matches!(early, Some((_, _, EarlyCheck::Rejected))) {
+                    // Its partial was already cleared when the early check rejected it.
+                    return Vec::new();
                 }
                 let request = VerifyRequest {
                     utterance,
@@ -129,8 +160,83 @@ impl SpeakerGate {
                 self.pending = Some(request.clone());
                 vec![GateStep::Verify(request)]
             }
+            ServerMessage::Partial { utterance, text } if verify => {
+                self.gate_partial(utterance, text, now)
+            }
             message @ (ServerMessage::Partial { .. } | ServerMessage::Error { .. }) => {
                 vec![GateStep::Deliver(message)]
+            }
+        }
+    }
+
+    /// Holds a partial until the utterance's early check accepts its speaker, starting the check
+    /// once enough audio has arrived.
+    fn gate_partial(&mut self, utterance: u64, text: String, now: u64) -> Vec<GateStep> {
+        if self.early.as_ref().is_none_or(|(id, ..)| *id != utterance) {
+            let start = self
+                .speech_start
+                .unwrap_or_else(|| now.saturating_sub(START_SLACK_SAMPLES));
+            self.early = Some((utterance, start, EarlyCheck::Waiting { held: None }));
+        }
+        let Some((_, start, check)) = &mut self.early else {
+            unreachable!("set above");
+        };
+        match check {
+            EarlyCheck::Accepted => vec![GateStep::Deliver(ServerMessage::Partial {
+                utterance,
+                text,
+            })],
+            EarlyCheck::Rejected => Vec::new(),
+            EarlyCheck::Checking { held } => {
+                *held = Some(text);
+                Vec::new()
+            }
+            EarlyCheck::Waiting { .. } if now.saturating_sub(*start) >= EARLY_CHECK_SAMPLES => {
+                let range = *start..now;
+                *check = EarlyCheck::Checking { held: Some(text) };
+                vec![GateStep::EarlyVerify(VerifyRequest {
+                    utterance,
+                    text: String::new(),
+                    range,
+                })]
+            }
+            EarlyCheck::Waiting { held } => {
+                *held = Some(text);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Resolves the early check of `utterance`. A match releases its latest held partial; a
+    /// mismatch suppresses the rest of the utterance and delivers an empty final, which clears any
+    /// partial already shown. Returns the steps and whether the utterance was rejected.
+    pub fn early_verdict(&mut self, utterance: u64, verdict: Verdict) -> (Vec<GateStep>, bool) {
+        let Some((id, _, check)) = &mut self.early else {
+            return (Vec::new(), false);
+        };
+        if *id != utterance {
+            return (Vec::new(), false);
+        }
+        let EarlyCheck::Checking { held } = check else {
+            return (Vec::new(), false);
+        };
+        match verdict {
+            Verdict::Match | Verdict::Unavailable => {
+                let held = held.take();
+                *check = EarlyCheck::Accepted;
+                let steps = held
+                    .map(|text| GateStep::Deliver(ServerMessage::Partial { utterance, text }))
+                    .into_iter()
+                    .collect();
+                (steps, false)
+            }
+            Verdict::NoMatch => {
+                *check = EarlyCheck::Rejected;
+                let clear = GateStep::Deliver(ServerMessage::Final {
+                    utterance,
+                    text: String::new(),
+                });
+                (vec![clear], true)
             }
         }
     }

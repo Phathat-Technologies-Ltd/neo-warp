@@ -26,7 +26,7 @@ use super::hands_free_controller::{
     HandsFreeController, HandsFreeEffect, HandsFreeOptions, HandsFreeState, VoiceTarget,
 };
 use super::local_model::{ensure_ready_to_record, is_hands_free_enabled};
-use super::speaker_gate::{AudioTap, GateStep, SpeakerGate};
+use super::speaker_gate::{AudioTap, GateStep, SpeakerGate, VerifyRequest};
 use super::speaker_id::SpeakerProfile;
 use crate::server::server_api::ServerApiProvider;
 use crate::settings::AISettings;
@@ -194,31 +194,42 @@ impl HandsFreeSession {
         for step in steps {
             match step {
                 GateStep::Deliver(message) => self.handle_message(message, ctx),
-                GateStep::Verify(request) => {
-                    let samples = self
-                        .tap
-                        .lock()
-                        .map(|tap| tap.slice(request.range))
-                        .unwrap_or_default();
-                    let sensitivity = self.sensitivity;
-                    let verdict = SpeakerProfile::handle(ctx)
-                        .update(ctx, |profile, _| profile.verify(samples, sensitivity));
-                    let generation = self.generation;
-                    ctx.spawn(verdict, move |me, verdict, ctx| {
-                        if me.generation != generation {
-                            return;
-                        }
-                        let now = me.tap_total();
-                        let verify = me.should_verify(ctx);
-                        let (steps, rejected) = me.gate.verdict(verdict, now, verify);
-                        if rejected {
-                            me.show_rejection(ctx);
-                        }
-                        me.run_gate_steps(steps, ctx);
-                    });
-                }
+                GateStep::Verify(request) => self.run_check(request, false, ctx),
+                GateStep::EarlyVerify(request) => self.run_check(request, true, ctx),
             }
         }
+    }
+
+    /// Checks the speaker of `request` off the main thread and feeds the verdict back to the gate.
+    fn run_check(&mut self, request: VerifyRequest, early: bool, ctx: &mut ModelContext<Self>) {
+        let utterance = request.utterance;
+        let samples = self
+            .tap
+            .lock()
+            .map(|tap| tap.slice(request.range))
+            .unwrap_or_default();
+        let sensitivity = self.sensitivity;
+        let stage = if early { "early" } else { "final" };
+        let verdict = SpeakerProfile::handle(ctx).update(ctx, |profile, _| {
+            profile.verify(samples, sensitivity, utterance, stage)
+        });
+        let generation = self.generation;
+        ctx.spawn(verdict, move |me, verdict, ctx| {
+            if me.generation != generation {
+                return;
+            }
+            let (steps, rejected) = if early {
+                me.gate.early_verdict(utterance, verdict)
+            } else {
+                let now = me.tap_total();
+                let verify = me.should_verify(ctx);
+                me.gate.verdict(verdict, now, verify)
+            };
+            if rejected {
+                me.show_rejection(ctx);
+            }
+            me.run_gate_steps(steps, ctx);
+        });
     }
 
     fn show_rejection(&mut self, ctx: &mut ModelContext<Self>) {
@@ -424,7 +435,9 @@ impl HandsFreeSession {
         let settings = AISettings::as_ref(ctx);
         let mut denoise = DenoiseStage::new(*settings.voice_denoise);
         let sensitivity = Sensitivity::from_setting(&settings.voice_speaker_id_sensitivity);
-        let verify_speaker = SpeakerProfile::as_ref(ctx).is_verifying(ctx);
+        let profile = SpeakerProfile::as_ref(ctx);
+        profile.log_verification_status(sensitivity, ctx);
+        let verify_speaker = profile.is_verifying(ctx);
         let tap = Arc::new(Mutex::new(AudioTap::default()));
         let capture_tap = verify_speaker.then(|| tap.clone());
         let capture = LiveCapture::start(

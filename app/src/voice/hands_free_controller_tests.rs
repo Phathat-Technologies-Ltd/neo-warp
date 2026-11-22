@@ -169,9 +169,10 @@ fn an_empty_final_clears_a_shown_partial() {
     controller.on_message(partial(1, "uh"), now);
     assert_eq!(
         controller.on_message(final_(1, ""), now),
-        vec![HandsFreeEffect::Commit(String::new())]
+        vec![HandsFreeEffect::DiscardPartial]
     );
     assert!(controller.on_message(final_(2, ""), now).is_empty());
+    assert_eq!(controller.tick(now + Duration::from_secs(60)), None);
 }
 
 #[test]

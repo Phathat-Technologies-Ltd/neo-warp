@@ -210,6 +210,26 @@ impl SpeakerProfile {
             && SpeakerIdModel::as_ref(app).is_installed()
     }
 
+    /// Logs whether speaker checks are active and, if not, which condition is missing.
+    pub fn log_verification_status(&self, sensitivity: Sensitivity, app: &AppContext) {
+        log::info!(
+            "Speaker check: {} (feature available: {}, setting on: {}, voiceprint stored: {}, \
+             voiceprint for current model: {}, model installed: {}, sensitivity {sensitivity:?}, \
+             threshold {:.2})",
+            if self.is_verifying(app) {
+                "active"
+            } else {
+                "inactive"
+            },
+            is_speaker_id_enabled(),
+            *AISettings::as_ref(app).voice_speaker_id_enabled,
+            self.voiceprint.is_some(),
+            self.is_enrolled(),
+            SpeakerIdModel::as_ref(app).is_installed(),
+            sensitivity.threshold(),
+        );
+    }
+
     fn worker(&mut self) -> Result<&EmbedWorker, String> {
         if self.worker.is_none() {
             let factory: EmbedderFactory = Box::new(|| {
@@ -223,32 +243,57 @@ impl SpeakerProfile {
         Ok(self.worker.as_ref().expect("set above"))
     }
 
-    /// Checks whether `samples` were spoken by the enrolled user.
+    /// Checks whether the speech in `samples` was spoken by the enrolled user. Silence is trimmed
+    /// first, as it is for enrollment: the utterance range carries pre-roll and end-of-speech
+    /// hangover that otherwise dominate the embedding and pull the score down.
     pub fn verify(
         &mut self,
         samples: Vec<f32>,
         sensitivity: Sensitivity,
+        utterance: u64,
+        stage: &'static str,
     ) -> BoxFuture<'static, Verdict> {
+        let audio_secs = samples.len() as f32 / 16_000.0;
+        let speech = trim_silence(&samples).to_vec();
+        let speech_secs = speech.len() as f32 / 16_000.0;
+        let threshold = sensitivity.threshold();
         let Some(voiceprint) = self.voiceprint.clone() else {
+            log::info!(
+                "Speaker check (utterance {utterance}, {stage}): no voiceprint, let through"
+            );
             return Box::pin(async { Verdict::Unavailable });
         };
+        if speech.is_empty() {
+            log::info!(
+                "Speaker check (utterance {utterance}, {stage}): no speech above the silence \
+                 level in {audio_secs:.2}s of audio, let through"
+            );
+            return Box::pin(async { Verdict::Unavailable });
+        }
         let embedding = match self.worker() {
-            Ok(worker) => worker.embed(samples),
+            Ok(worker) => worker.embed(speech),
             Err(error) => Box::pin(async move { Err(error) }),
         };
         Box::pin(async move {
             match embedding.await {
                 Ok(embedding) => {
                     let similarity = voiceprint.similarity(&embedding);
-                    log::debug!("Speaker similarity {similarity:.3}");
-                    if similarity >= sensitivity.threshold() {
+                    let verdict = if similarity >= threshold {
                         Verdict::Match
                     } else {
                         Verdict::NoMatch
-                    }
+                    };
+                    log::info!(
+                        "Speaker check (utterance {utterance}, {stage}): score {similarity:.3}, \
+                         threshold {threshold:.2}, {verdict:?}, {audio_secs:.2}s audio, \
+                         {speech_secs:.2}s speech"
+                    );
+                    verdict
                 }
                 Err(error) => {
-                    log::warn!("Couldn't check the speaker: {error}");
+                    log::warn!(
+                        "Speaker check (utterance {utterance}, {stage}) couldn't run: {error}"
+                    );
                     Verdict::Unavailable
                 }
             }
