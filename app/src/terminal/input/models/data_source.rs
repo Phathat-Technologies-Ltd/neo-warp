@@ -416,10 +416,11 @@ impl ModelSearchItem {
             id: llm.id.clone(),
             upgrade_url: upgrade_url.to_owned(),
             provider: llm.provider,
-            spec: llm
-                .spec
-                .clone()
-                .or_else(|| ModelSpecs::as_ref(app).spec_for(llm)),
+            spec: llm.spec.clone().or_else(|| {
+                app.has_singleton_model::<ModelSpecs>()
+                    .then(|| ModelSpecs::as_ref(app).spec_for(llm))
+                    .flatten()
+            }),
             leading_icon,
             credential_icon,
             byo_key_source,
@@ -827,7 +828,7 @@ fn should_show_discount_chip(discount_percentage: Option<f32>, is_using_byok: bo
 
 /// Credits Artificial Analysis when its ratings fill the bars, as its terms require.
 fn model_specs_description(app: &AppContext) -> &'static str {
-    if ModelSpecs::as_ref(app).is_active() {
+    if app.has_singleton_model::<ModelSpecs>() && ModelSpecs::as_ref(app).is_active() {
         ::ai::model_specs::ATTRIBUTION
     } else {
         MODEL_SPECS_DESCRIPTION

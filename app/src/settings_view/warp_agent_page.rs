@@ -888,10 +888,12 @@ impl WarpAgentPageView {
         });
 
         #[cfg(not(target_family = "wasm"))]
-        ctx.subscribe_to_model(
-            &crate::voice::local_model::LocalVoiceModel::handle(ctx),
-            |_, _, _, ctx| ctx.notify(),
-        );
+        if ctx.has_singleton_model::<crate::voice::local_model::LocalVoiceModel>() {
+            ctx.subscribe_to_model(
+                &crate::voice::local_model::LocalVoiceModel::handle(ctx),
+                |_, _, _, ctx| ctx.notify(),
+            );
+        }
 
         ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |me, _handle, _event, ctx| {
             // Re-render if teams-related data changed that may affect whether features such as voice input are enabled.
