@@ -36,6 +36,7 @@ pub(crate) fn init() {
         OrganizationConfig::default()
     };
     if config.sign_in.is_some() {
+        // Before the embedded server starts: the voice and indexing flags decide what it serves.
         apply_org_flags(&OrgFlags::load(ChannelState::enable_debug_features()));
     }
     let server_url = match (&config.server_url, &config.sign_in) {
@@ -191,7 +192,7 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
 
 /// The on-device speech engine for `/ai/transcribe`, when local voice input is on.
 fn local_transcriber() -> Option<std::sync::Arc<dyn local_transcription::Transcriber>> {
-    if !FeatureFlag::NeoVoiceInput.is_enabled() {
+    if !FeatureFlag::VoiceInput.is_enabled() {
         return None;
     }
     crate::voice::local_model::mark_served_locally();

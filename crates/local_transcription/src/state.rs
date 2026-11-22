@@ -8,9 +8,6 @@ pub enum ModelState {
     NotInstalled,
     /// The user tried to record without the model; the UI is asking whether to download it.
     AwaitingConsent,
-    /// The user declined the prompt. Recording doesn't ask again until the app restarts; settings
-    /// still offers the download.
-    Declined,
     Downloading(DownloadProgress),
     Installed,
     Failed(String),
@@ -22,7 +19,6 @@ pub enum ModelEvent {
     Loaded(ModelStatus),
     RecordingRequested,
     ConsentGiven,
-    ConsentDeclined,
     /// The user pressed download, in settings or on the prompt.
     DownloadRequested,
     Progress(DownloadProgress),
@@ -66,7 +62,7 @@ impl ModelState {
             (Self::NotInstalled | Self::AwaitingConsent | Self::Failed(_), RecordingRequested) => {
                 (Self::AwaitingConsent, Some(AskConsent))
             }
-            (Self::Declined | Self::Downloading(_) | Self::Installed, RecordingRequested) => {
+            (Self::Downloading(_) | Self::Installed, RecordingRequested) => {
                 return None;
             }
 
@@ -77,13 +73,9 @@ impl ModelState {
                 }),
                 Some(StartDownload),
             ),
-            (Self::AwaitingConsent, ConsentDeclined) => (Self::Declined, None),
-            (_, ConsentGiven | ConsentDeclined) => return None,
+            (_, ConsentGiven) => return None,
 
-            (
-                Self::NotInstalled | Self::AwaitingConsent | Self::Declined | Self::Failed(_),
-                DownloadRequested,
-            ) => (
+            (Self::NotInstalled | Self::AwaitingConsent | Self::Failed(_), DownloadRequested) => (
                 Self::Downloading(DownloadProgress {
                     downloaded: 0,
                     total: 0,

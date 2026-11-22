@@ -32,19 +32,6 @@ fn recording_without_model_asks_then_downloads_on_consent() {
 }
 
 #[test]
-fn declining_stops_asking_but_settings_can_still_download() {
-    let mut state = ModelState::NotInstalled;
-    state.apply(ModelEvent::RecordingRequested);
-    assert_eq!(state.apply(ModelEvent::ConsentDeclined), None);
-    assert_eq!(state.apply(ModelEvent::RecordingRequested), None);
-    assert_eq!(state, ModelState::Declined);
-    assert_eq!(
-        state.apply(ModelEvent::DownloadRequested),
-        Some(ModelAction::StartDownload)
-    );
-}
-
-#[test]
 fn unanswered_prompt_is_shown_again() {
     let mut state = ModelState::NotInstalled;
     state.apply(ModelEvent::RecordingRequested);

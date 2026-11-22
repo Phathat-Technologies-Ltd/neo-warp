@@ -24732,8 +24732,11 @@ impl TypedActionView for Workspace {
             ViewLatestChangelog => self.view_latest_changelog(ctx),
             DownloadLocalVoiceModel => {
                 #[cfg(not(target_family = "wasm"))]
-                crate::voice::local_model::LocalVoiceModel::handle(ctx)
-                    .update(ctx, |model, ctx| model.download(ctx));
+                {
+                    crate::voice::local_model::dismiss_toast(ctx.window_id(), ctx);
+                    crate::voice::local_model::LocalVoiceModel::handle(ctx)
+                        .update(ctx, |model, ctx| model.download(ctx));
+                }
             }
             ViewPrivacyPolicy => self.view_privacy_policy(ctx),
             SendFeedback => self.send_feedback(ctx),

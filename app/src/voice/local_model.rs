@@ -34,7 +34,7 @@ pub fn mark_served_locally() {
 
 /// Whether voice input is transcribed on this machine, so the model UI should show.
 pub fn is_local_voice_enabled() -> bool {
-    FeatureFlag::NeoVoiceInput.is_enabled() && SERVED_LOCALLY.get().is_some()
+    FeatureFlag::VoiceInput.is_enabled() && SERVED_LOCALLY.get().is_some()
 }
 
 /// What starting a recording needs first.
@@ -45,8 +45,6 @@ pub enum RecordingReadiness {
     /// Ask the user to download the model.
     NeedsConsent,
     Downloading(DownloadProgress),
-    /// The user declined the prompt this session; point them at settings.
-    Declined,
 }
 
 pub enum LocalVoiceModelEvent {
@@ -64,6 +62,8 @@ pub struct LocalVoiceModel {
     /// Cancels the running download; replaced on each download so late updates from a cancelled
     /// one are recognized and dropped.
     cancel: Option<Arc<AtomicBool>>,
+    /// The thread running the latest download, joined before deleting files it may still write.
+    download_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl LocalVoiceModel {
@@ -74,6 +74,7 @@ impl LocalVoiceModel {
             store,
             state,
             cancel: None,
+            download_thread: None,
         }
     }
 
@@ -101,7 +102,6 @@ impl LocalVoiceModel {
         match &self.state {
             ModelState::Installed => RecordingReadiness::Ready,
             ModelState::Downloading(progress) => RecordingReadiness::Downloading(*progress),
-            ModelState::Declined => RecordingReadiness::Declined,
             ModelState::NotInstalled | ModelState::AwaitingConsent | ModelState::Failed(_) => {
                 debug_assert!(asked);
                 RecordingReadiness::NeedsConsent
@@ -129,14 +129,23 @@ impl LocalVoiceModel {
             Some(ModelAction::CancelDownload) => self.stop_download(),
             Some(ModelAction::DeleteFiles) => {
                 self.stop_download();
+                let download_thread = self.download_thread.take();
                 let store = self.store.clone();
-                // Files may still be open by a download thread that hasn't seen the cancel yet;
-                // deleting off the main thread also keeps a large delete from blocking the UI.
-                ctx.spawn(async move { store.remove() }, |_, result, _| {
-                    if let Err(error) = result {
-                        log::error!("Couldn't delete the voice model: {error}");
-                    }
-                });
+                // The cancelled download may still be writing, so wait for it to stop before
+                // deleting; both happen off the main thread to keep the UI responsive.
+                ctx.spawn(
+                    async move {
+                        if let Some(thread) = download_thread {
+                            let _ = thread.join();
+                        }
+                        store.remove()
+                    },
+                    |_, result, _| {
+                        if let Err(error) = result {
+                            log::error!("Couldn't delete the voice model: {error}");
+                        }
+                    },
+                );
             }
             Some(ModelAction::AskConsent) | None => {}
         }
@@ -168,10 +177,13 @@ impl LocalVoiceModel {
                 });
                 let _ = tx.unbounded_send(DownloadUpdate::Done(result));
             });
-        if let Err(error) = spawned {
-            self.cancel = None;
-            self.apply(ModelEvent::DownloadFailed(error.to_string()), ctx);
-            return;
+        match spawned {
+            Ok(thread) => self.download_thread = Some(thread),
+            Err(error) => {
+                self.cancel = None;
+                self.apply(ModelEvent::DownloadFailed(error.to_string()), ctx);
+                return;
+            }
         }
         ctx.spawn_stream_local(
             rx,
@@ -255,7 +267,7 @@ pub fn local_model_state(app: &AppContext) -> Option<ModelState> {
 }
 
 /// Checks that the local model can transcribe before a recording starts. When it can't, tells the
-/// user why in a toast (offering the download if they haven't been asked or declined) and returns
+/// user why in a toast (offering the download when it isn't installed) and returns
 /// `false`. Always `true` when voice isn't transcribed locally.
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
 pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool {
@@ -278,10 +290,6 @@ pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool
             "The speech model is still downloading ({}).",
             format_progress(progress)
         )),
-        RecordingReadiness::Declined => DismissibleToast::default(
-            "Voice input needs the speech model. Download it from Settings > AI > Voice."
-                .to_owned(),
-        ),
     }
     .with_object_id(TOAST_ID.to_owned());
     ToastStack::handle(ctx).update(ctx, |stack, ctx| {
@@ -291,8 +299,14 @@ pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool
     false
 }
 
-#[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
 const TOAST_ID: &str = "local-voice-model";
+
+/// Removes the persistent speech model prompt from `window_id`, if it's showing.
+pub fn dismiss_toast(window_id: WindowId, ctx: &mut AppContext) {
+    ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+        stack.remove_toast_by_identifier(TOAST_ID.to_owned(), window_id, ctx);
+    });
+}
 
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
 fn consent_prompt(display_name: &str, size: u64) -> String {

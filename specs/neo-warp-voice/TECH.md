@@ -34,7 +34,7 @@ locally keeps the client contract unchanged. The client keeps `ServerVoiceTransc
   `Installed` only with every file at its pinned size plus the marker, so launches never rehash
   671 MB. `remove` deletes the directory.
 - `ModelState` + `ModelEvent` -> `Option<ModelAction>`: the pure consent/download state machine
-  (`NotInstalled`, `AwaitingConsent`, `Declined`, `Downloading`, `Installed`, `Failed`). Actions
+  (`NotInstalled`, `AwaitingConsent`, `Downloading`, `Installed`, `Failed`). Actions
   are `AskConsent`, `StartDownload`, `CancelDownload`, `DeleteFiles`. `StartDownload` only comes
   from an explicit user event (`DownloadRequested`, `ConsentGiven`), never from a recording
   attempt.
@@ -74,8 +74,11 @@ standalone server doesn't build ONNX Runtime.
 
 ### App
 
-- `FeatureFlag::NeoVoiceInput` (`crates/warp_features`), in `DOGFOOD_FLAGS` and added by
-  `app/src/bin/neo_warp.rs`.
+- Gated by the product-area flag `FeatureFlag::VoiceInput` (org flag `voice_input`, see
+  `specs/neo-warp-flags`). `auth::organization::init` applies the org flags before starting the
+  embedded server. `AISettings::is_voice_input_enabled` and the Settings Voice category require the
+  flag, which hides the mic buttons, keybindings, palette and slash command entries, and the
+  Settings section, so nothing records, calls `/ai/transcribe`, or downloads the model.
 - `auth::organization::start_embedded_server` passes a `ParakeetTranscriber` over
   `voice::local_model::model_store()` (`<data_dir>/models/parakeet-tdt-0.6b-v3-int8`) when the
   flag is on, and records that voice is served locally. `is_local_voice_enabled()` = flag on and
@@ -84,10 +87,11 @@ standalone server doesn't build ONNX Runtime.
   actions, and emits `StateChanged`. Downloads run on a dedicated thread with a current-thread
   Tokio runtime (the store uses `tokio::fs` and `reqwest`), reporting progress over an unbounded
   channel at most once per 0.1%, consumed with `spawn_stream_local`. Each download gets a fresh
-  cancel flag; updates from a cancelled download are dropped by comparing flags.
+  cancel flag; updates from a cancelled download are dropped by comparing flags. Remove cancels
+  the download and joins its thread off the main thread before deleting, so no `.part` survives.
 - `ensure_ready_to_record` runs before `start_listening` in both recording paths. When not ready
   it shows a persistent toast (one at a time, by object id) with a **Download** link dispatching
-  `WorkspaceAction::DownloadLocalVoiceModel`, or a progress / go-to-settings message.
+  `WorkspaceAction::DownloadLocalVoiceModel` (which removes the toast), or a progress message.
 - Local transcription skips the Warp voice quota check (`AIRequestUsageModel::can_request_voice`).
 - Settings (`warp_agent_page.rs`, `VoiceWidget`): the Speech Model row and three page actions
   (download, cancel, remove); the page re-renders on `LocalVoiceModel` events.
@@ -105,7 +109,5 @@ standalone server doesn't build ONNX Runtime.
 
 ## Follow-ups
 
-- A "Not now" choice on the prompt (the state machine supports `ConsentDeclined`; toasts have one
-  link).
 - CoreML / CUDA execution providers via `parakeet-rs` features.
 - Unloading the model after idle time to return ~1 GB of memory.
