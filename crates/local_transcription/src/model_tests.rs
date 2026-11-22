@@ -63,9 +63,11 @@ async fn downloads_verifies_and_removes() {
 
     let mut last = None;
     store
-        .download(&reqwest::Client::new(), &AtomicBool::new(false), |progress| {
-            last = Some(progress)
-        })
+        .download(
+            &reqwest::Client::new(),
+            &AtomicBool::new(false),
+            |progress| last = Some(progress),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -97,9 +99,13 @@ async fn resumes_a_partial_file() {
 
     let mut first = None;
     store
-        .download(&reqwest::Client::new(), &AtomicBool::new(false), |progress| {
-            first.get_or_insert(progress);
-        })
+        .download(
+            &reqwest::Client::new(),
+            &AtomicBool::new(false),
+            |progress| {
+                first.get_or_insert(progress);
+            },
+        )
         .await
         .unwrap();
     assert_eq!(first.map(|progress| progress.downloaded), Some(8));

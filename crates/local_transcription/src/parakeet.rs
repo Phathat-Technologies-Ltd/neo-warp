@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use parakeet_rs::{ParakeetTDT, Transcriber as _};
+use parakeet_rs::{ExecutionConfig, ParakeetTDT, Transcriber as _};
 
 use crate::{Audio, ModelStore, TranscribeError, Transcriber};
 
@@ -22,7 +22,11 @@ impl ParakeetTranscriber {
 }
 
 impl Transcriber for ParakeetTranscriber {
-    fn transcribe(&self, audio: &Audio, _language: Option<&str>) -> Result<String, TranscribeError> {
+    fn transcribe(
+        &self,
+        audio: &Audio,
+        _language: Option<&str>,
+    ) -> Result<String, TranscribeError> {
         let mut model = self
             .model
             .lock()
@@ -32,8 +36,15 @@ impl Transcriber for ParakeetTranscriber {
             return Err(TranscribeError::ModelNotInstalled);
         }
         if model.is_none() {
-            let loaded = ParakeetTDT::from_pretrained(self.store.model_dir(), None)
-                .map_err(|error| TranscribeError::Engine(error.to_string()))?;
+            let engine_error =
+                |error: &dyn std::fmt::Display| TranscribeError::Engine(error.to_string());
+            let environment = parakeet_rs::ort::init()
+                .with_name("local_transcription")
+                .build()
+                .map_err(|error| engine_error(&error))?;
+            let config = ExecutionConfig::new().with_environment(environment);
+            let loaded = ParakeetTDT::from_pretrained(self.store.model_dir(), Some(config))
+                .map_err(|error| engine_error(&error))?;
             *model = Some(loaded);
         }
         let Some(model) = model.as_mut() else {

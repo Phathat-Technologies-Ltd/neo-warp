@@ -75,7 +75,8 @@ fn wav_base64() -> String {
 }
 
 async fn post(state: &Arc<AppState>, token: Option<&str>, body: Value) -> (StatusCode, Value) {
-    let mut request = Request::post("/ai/transcribe").header(header::CONTENT_TYPE, "application/json");
+    let mut request =
+        Request::post("/ai/transcribe").header(header::CONTENT_TYPE, "application/json");
     if let Some(token) = token {
         request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
     }

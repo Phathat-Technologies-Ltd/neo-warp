@@ -26,7 +26,8 @@ async fn transcribes_real_audio() {
 #[test]
 fn reports_missing_model() {
     let root = tempfile::tempdir().unwrap();
-    let transcriber = ParakeetTranscriber::new(ModelStore::new(root.path(), parakeet_tdt_0_6b_v3()));
+    let transcriber =
+        ParakeetTranscriber::new(ModelStore::new(root.path(), parakeet_tdt_0_6b_v3()));
     assert!(!transcriber.is_ready());
     let audio = Audio {
         samples: vec![0.0; 16000],

@@ -69,7 +69,9 @@ pub fn parakeet_tdt_0_6b_v3() -> ModelSpec {
 pub enum ModelStatus {
     NotInstalled,
     /// Some files, or partial files, from an interrupted download are on disk.
-    Partial { downloaded: u64 },
+    Partial {
+        downloaded: u64,
+    },
     Installed,
 }
 
@@ -173,8 +175,9 @@ impl ModelStore {
         let mut done_before = 0;
         for file in &self.spec.files {
             let final_path = self.dir.join(&file.name);
-            let have_final =
-                tokio::fs::metadata(&final_path).await.is_ok_and(|meta| meta.len() == file.size);
+            let have_final = tokio::fs::metadata(&final_path)
+                .await
+                .is_ok_and(|meta| meta.len() == file.size);
             if !have_final {
                 self.download_file(client, file, cancel, |file_downloaded| {
                     on_progress(DownloadProgress {
@@ -206,7 +209,9 @@ impl ModelStore {
         mut on_progress: impl FnMut(u64),
     ) -> Result<(), DownloadError> {
         let part_path = self.part_path(file);
-        let mut offset = tokio::fs::metadata(&part_path).await.map_or(0, |meta| meta.len());
+        let mut offset = tokio::fs::metadata(&part_path)
+            .await
+            .map_or(0, |meta| meta.len());
         if offset > file.size {
             tokio::fs::remove_file(&part_path).await?;
             offset = 0;

@@ -23,7 +23,7 @@ pub enum ModelEvent {
     RecordingRequested,
     ConsentGiven,
     ConsentDeclined,
-    /// The user pressed download in settings.
+    /// The user pressed download, in settings or on the prompt.
     DownloadRequested,
     Progress(DownloadProgress),
     DownloadFinished,
@@ -62,13 +62,13 @@ impl ModelState {
             (Self::Downloading(_), Loaded(_)) => return None,
             (_, Loaded(status)) => (Self::from_status(status), None),
 
-            (Self::NotInstalled | Self::Failed(_), RecordingRequested) => {
+            // The prompt may have been dismissed without an answer, so ask again.
+            (Self::NotInstalled | Self::AwaitingConsent | Self::Failed(_), RecordingRequested) => {
                 (Self::AwaitingConsent, Some(AskConsent))
             }
-            (
-                Self::AwaitingConsent | Self::Declined | Self::Downloading(_) | Self::Installed,
-                RecordingRequested,
-            ) => return None,
+            (Self::Declined | Self::Downloading(_) | Self::Installed, RecordingRequested) => {
+                return None;
+            }
 
             (Self::AwaitingConsent, ConsentGiven) => (
                 Self::Downloading(DownloadProgress {
@@ -80,14 +80,17 @@ impl ModelState {
             (Self::AwaitingConsent, ConsentDeclined) => (Self::Declined, None),
             (_, ConsentGiven | ConsentDeclined) => return None,
 
-            (Self::NotInstalled | Self::Declined | Self::Failed(_), DownloadRequested) => (
+            (
+                Self::NotInstalled | Self::AwaitingConsent | Self::Declined | Self::Failed(_),
+                DownloadRequested,
+            ) => (
                 Self::Downloading(DownloadProgress {
                     downloaded: 0,
                     total: 0,
                 }),
                 Some(StartDownload),
             ),
-            (Self::AwaitingConsent | Self::Downloading(_) | Self::Installed, DownloadRequested) => {
+            (Self::Downloading(_) | Self::Installed, DownloadRequested) => {
                 return None;
             }
 
