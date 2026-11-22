@@ -1829,6 +1829,9 @@ pub struct Input {
     /// The buffer as hands-free voice input last wrote it, to tell its edits from typing.
     #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
     hands_free_written: Option<String>,
+    /// The in-flight rebuild of the voice correction vocabulary.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    voice_vocabulary_refresh: Option<SpawnedFutureHandle>,
 
     attachment_chips: Vec<AttachmentChip>,
 
@@ -2482,6 +2485,7 @@ impl Input {
                     footer.set_voice_is_active(state.is_mic_on(), ctx);
                 });
                 if state.is_on() {
+                    self.refresh_voice_vocabulary(ctx);
                     if self.editor.as_ref(ctx).is_empty(ctx) {
                         let placeholder = if state.is_mic_on() {
                             format!("\u{25cf} Mic on \u{b7} {}...", state.label())
@@ -2516,6 +2520,7 @@ impl Input {
         );
         let is_shell = self.input_type(ctx) == InputType::Shell;
         let buffer = self.buffer_text(ctx);
+        let mut pending_corrections = None;
         let text = match effect {
             HandsFreeEffect::ShowPartial(text) => self.hands_free_range.replace(&buffer, text),
             HandsFreeEffect::Commit(text) => {
@@ -2526,9 +2531,16 @@ impl Input {
                 };
                 let (is_shell, text) = routed
                     .unwrap_or_else(|| (self.input_type(ctx) == InputType::Shell, text.clone()));
-                let committed = self
-                    .hands_free_range
-                    .commit(&buffer, &final_text_for_input(&text, is_shell));
+                let (final_text, corrections) = self.editor.update(ctx, |editor, ctx| {
+                    editor.correct_voice_transcript(&final_text_for_input(&text, is_shell), ctx)
+                });
+                let committed = self.hands_free_range.commit(&buffer, &final_text);
+                if !corrections.is_empty() {
+                    pending_corrections = committed
+                        .rfind(&final_text)
+                        .map(|start| (start, corrections));
+                }
+                self.refresh_voice_vocabulary(ctx);
                 if is_shell && !committed.trim().is_empty() && !is_low_risk_command(&committed) {
                     let window_id = ctx.window_id();
                     ToastStack::handle(ctx).update(ctx, |toasts, ctx| {
@@ -2564,8 +2576,64 @@ impl Input {
             }
         };
         self.hands_free_written = Some(text.clone());
-        self.editor
-            .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+        self.editor.update(ctx, |editor, ctx| {
+            editor.set_buffer_text(&text, ctx);
+            if let Some((start, corrections)) = pending_corrections {
+                editor.show_voice_corrections(start, &corrections, ctx);
+            }
+        });
+    }
+
+    /// Rebuilds, off the UI thread, the vocabulary voice transcripts in this input are corrected
+    /// towards: the pane's directory, repository, history, and latest output.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn refresh_voice_vocabulary(&mut self, ctx: &mut ViewContext<Self>) {
+        use crate::voice::context_correction::{self, PaneContext};
+
+        if !context_correction::is_enabled(ctx)
+            || !AISettings::as_ref(ctx).is_voice_input_enabled(ctx)
+            || self.voice_vocabulary_refresh.is_some()
+        {
+            return;
+        }
+        let mut pane = PaneContext {
+            cwd: self
+                .active_block_metadata
+                .as_ref()
+                .and_then(BlockMetadata::current_working_directory)
+                .map(std::path::PathBuf::from),
+            ..PaneContext::default()
+        };
+        if let Some(session_id) = self.active_block_session_id()
+            && let Some(commands) = History::as_ref(ctx).commands(session_id)
+        {
+            pane.history = commands
+                .iter()
+                .rev()
+                .take(300)
+                .map(|entry| entry.command.clone())
+                .collect();
+        }
+        // `try_lock` because this runs from event handlers whose callers may hold the lock; the
+        // output is optional context.
+        let output = self.model.try_lock().and_then(|model| {
+            model
+                .block_list()
+                .last_non_hidden_block()
+                .map(|block| block.output_to_string())
+        });
+        if let Some(output) = output {
+            pane.push_screen_text(&output);
+        }
+        self.voice_vocabulary_refresh = Some(ctx.spawn(
+            async move { std::sync::Arc::new(context_correction::build_vocabulary(&pane)) },
+            |me, vocabulary, ctx| {
+                me.voice_vocabulary_refresh = None;
+                me.editor.update(ctx, |editor, ctx| {
+                    editor.set_voice_vocabulary(Some(vocabulary), ctx);
+                });
+            },
+        ));
     }
 
     /// Switches the input to the mode a dictated utterance that starts the input belongs in, and
@@ -4486,6 +4554,8 @@ impl Input {
             hands_free_range: Default::default(),
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             hands_free_written: None,
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            voice_vocabulary_refresh: None,
             attachment_chips: Default::default(),
             is_processing_attached_images: false,
             prompt_suggestions_view,
@@ -16195,6 +16265,8 @@ impl Input {
         block_completed_event: BlockCompletedEvent,
         ctx: &mut ViewContext<Self>,
     ) {
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        self.refresh_voice_vocabulary(ctx);
         // We clear the input box after executing a command here instead of where we
         // execute a command to avoid the input box flashing when its contents are
         // cleared. For the multiline input box case, this also caused contents to go
@@ -17398,6 +17470,8 @@ impl View for Input {
                 ctx.focus(&self.editor);
                 ctx.notify();
             }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            self.refresh_voice_vocabulary(ctx);
             ctx.dispatch_typed_action(&PaneGroupAction::HandleFocusChange);
         }
     }

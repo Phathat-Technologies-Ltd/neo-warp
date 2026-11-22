@@ -2316,6 +2316,8 @@ pub(crate) fn initialize_app(
     ctx.add_singleton_model(|_| voice::local_model::LocalVoiceModel::new());
     #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
     ctx.add_singleton_model(|_| voice::hands_free::HandsFreeSession::default());
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    ctx.add_singleton_model(voice::context_correction::VoiceCorrections::new);
     #[cfg(not(target_family = "wasm"))]
     ctx.add_singleton_model(|ctx| {
         let engine = voice::local_model::SpeechOutputEngine::from_setting(

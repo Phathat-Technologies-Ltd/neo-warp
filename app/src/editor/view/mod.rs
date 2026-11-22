@@ -5,6 +5,8 @@ mod movement;
 mod snapshot;
 #[cfg(feature = "voice_input")]
 mod voice;
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+mod voice_correction;
 
 use core::f32;
 use std::borrow::Cow;
@@ -1887,6 +1889,13 @@ pub struct EditorView {
     #[cfg(feature = "voice_input")]
     voice_transcription_options: VoiceTranscriptionOptions,
 
+    /// Terms voice transcripts are corrected towards.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    voice_vocabulary: Option<crate::voice::context_correction::SharedVocabulary>,
+
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    voice_corrections_subscribed: bool,
+
     /// The mouse handle for the voice transcription icon.
     #[cfg(feature = "voice_input")]
     voice_transcription_button_mouse_handle: MouseStateHandle,
@@ -3248,6 +3257,10 @@ impl EditorView {
             interaction_state_before_voice: None,
             #[cfg(feature = "voice_input")]
             voice_transcription_options: Self::voice_options(ctx),
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            voice_vocabulary: None,
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            voice_corrections_subscribed: false,
             #[cfg(feature = "voice_input")]
             voice_new_feature_popup: Self::create_voice_new_feature_popup(ctx),
             is_ai_input: false,

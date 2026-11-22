@@ -19,6 +19,7 @@ mod ort_env;
 mod parakeet;
 #[cfg(feature = "silero")]
 mod silero;
+pub mod context_correction;
 pub mod speech;
 mod state;
 pub mod stream;
