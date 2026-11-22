@@ -1,55 +1,67 @@
 //! Model picker ratings from Artificial Analysis, for organization builds whose admin configured
-//! a key. Fetched at most once a day and cached on disk, so the free tier's daily quota holds.
+//! a key. Every install shares that key's small daily quota, so the list is fetched once and
+//! again only when a model appears that it hasn't seen, at most once a day.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use ::ai::model_specs::{BenchmarkedModel, Catalog};
 use serde::{Deserialize, Serialize};
-use warpui::r#async::Timer;
-use warpui::{Entity, ModelContext, SingletonEntity};
+use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
-use crate::ai::llms::{LLMInfo, LLMSpec};
+use crate::ai::llms::{LLMInfo, LLMPreferences, LLMPreferencesEvent, LLMSpec};
 use crate::auth;
 
 const CACHE_FILE: &str = "artificial-analysis-models.json";
-const REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const MIN_FETCH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Prefixes the app gives client-side models' IDs, which Artificial Analysis doesn't know.
 const ID_PREFIXES: &[&str] = &["cerebras:", "chatgpt:"];
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct CachedCatalog {
-    fetched_at: SystemTime,
+    fetched_at: Option<SystemTime>,
     models: Vec<BenchmarkedModel>,
+    /// Models the app offered that the last fetch didn't list. They don't trigger another fetch.
+    #[serde(default)]
+    unlisted: BTreeSet<String>,
 }
 
 pub struct ModelSpecs {
-    catalog: Option<Catalog>,
+    api_key: Option<String>,
     aliases: HashMap<String, String>,
+    catalog: Option<Catalog>,
+    unlisted: BTreeSet<String>,
+    /// When the list was last fetched or a fetch last failed.
+    last_attempt: Option<SystemTime>,
+    fetching: bool,
 }
 
 impl ModelSpecs {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
         let Some(config) = auth::organization::model_specs_config() else {
             return Self {
-                catalog: None,
+                api_key: None,
                 aliases: HashMap::new(),
+                catalog: None,
+                unlisted: BTreeSet::new(),
+                last_attempt: None,
+                fetching: false,
             };
         };
-        let cached = read_cache();
-        let next_refresh = cached
-            .as_ref()
-            .and_then(|cache| cache.fetched_at.elapsed().ok())
-            .map_or(Duration::ZERO, |age| REFRESH_INTERVAL.saturating_sub(age));
-        schedule_refresh(
-            config.artificial_analysis_api_key.clone(),
-            next_refresh,
-            ctx,
-        );
+        ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |me, _, event, ctx| {
+            if matches!(event, LLMPreferencesEvent::UpdatedAvailableLLMs) {
+                me.fetch_if_needed(ctx);
+            }
+        });
+        let cache = read_cache().unwrap_or_default();
         Self {
-            catalog: cached.map(|cache| Catalog::new(cache.models)),
+            api_key: Some(config.artificial_analysis_api_key.clone()),
             aliases: config.aliases.clone(),
+            catalog: (!cache.models.is_empty()).then(|| Catalog::new(cache.models)),
+            unlisted: cache.unlisted,
+            last_attempt: cache.fetched_at,
+            fetching: false,
         }
     }
 
@@ -61,52 +73,89 @@ impl ModelSpecs {
     /// Ratings for `llm`, when it matches a benchmarked model.
     pub fn spec_for(&self, llm: &LLMInfo) -> Option<LLMSpec> {
         let catalog = self.catalog.as_ref()?;
-        let id = llm.id.as_str();
-        let id = ID_PREFIXES
-            .iter()
-            .find_map(|prefix| id.strip_prefix(prefix))
-            .unwrap_or(id);
         catalog
-            .scores_for(id, &llm.display_name, &self.aliases)
+            .scores_for(benchmark_id(llm), &llm.display_name, &self.aliases)
             .map(|scores| LLMSpec {
                 cost: scores.cost,
                 quality: scores.quality,
                 speed: scores.speed,
             })
     }
+
+    /// Fetches the list when the app offers a model it hasn't seen yet, listed or not.
+    fn fetch_if_needed(&mut self, ctx: &mut ModelContext<Self>) {
+        let Some(api_key) = self.api_key.clone() else {
+            return;
+        };
+        if self.fetching
+            || self
+                .last_attempt
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age < MIN_FETCH_INTERVAL)
+        {
+            return;
+        }
+        let unseen = offered_models(ctx).into_iter().any(|llm| {
+            self.spec_for(&llm).is_none() && !self.unlisted.contains(benchmark_id(&llm))
+        });
+        if self.catalog.is_some() && !unseen {
+            return;
+        }
+        self.fetch(api_key, ctx);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn fetch(&mut self, api_key: String, ctx: &mut ModelContext<Self>) {
+        self.fetching = true;
+        ctx.spawn(
+            ::ai::model_specs::fetch_catalog(api_key),
+            |me, result, ctx| {
+                me.fetching = false;
+                me.last_attempt = Some(SystemTime::now());
+                let models = match result {
+                    Ok(models) => models,
+                    Err(error) => {
+                        log::warn!("Couldn't fetch model ratings: {error:#}");
+                        return;
+                    }
+                };
+                log::info!("Artificial Analysis lists {} models", models.len());
+                me.catalog = Some(Catalog::new(models.clone()));
+                me.unlisted = offered_models(ctx)
+                    .iter()
+                    .filter(|llm| me.spec_for(llm).is_none())
+                    .map(|llm| benchmark_id(llm).to_owned())
+                    .collect();
+                write_cache(&CachedCatalog {
+                    fetched_at: me.last_attempt,
+                    models,
+                    unlisted: me.unlisted.clone(),
+                });
+            },
+        );
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn fetch(&mut self, _: String, _: &mut ModelContext<Self>) {}
 }
 
-#[cfg(target_family = "wasm")]
-fn schedule_refresh(_: String, _: Duration, _: &mut ModelContext<ModelSpecs>) {}
+/// Every model the picker can offer.
+fn offered_models(app: &AppContext) -> Vec<LLMInfo> {
+    let preferences = LLMPreferences::as_ref(app);
+    preferences
+        .get_base_llm_choices_for_agent_mode_for_team_uid(None, app)
+        .chain(preferences.custom_llm_choices(app))
+        .cloned()
+        .collect()
+}
 
-#[cfg(not(target_family = "wasm"))]
-fn schedule_refresh(api_key: String, delay: Duration, ctx: &mut ModelContext<ModelSpecs>) {
-    ctx.spawn(
-        async move {
-            Timer::after(delay).await;
-            ::ai::model_specs::fetch_catalog(api_key.clone())
-                .await
-                .map(|models| (api_key, models))
-        },
-        |me, result, ctx| {
-            let api_key = match result {
-                Ok((api_key, models)) => {
-                    log::info!("Artificial Analysis lists {} models", models.len());
-                    write_cache(&models);
-                    me.catalog = Some(Catalog::new(models));
-                    api_key
-                }
-                Err(error) => {
-                    log::warn!("Couldn't refresh model ratings: {error:#}");
-                    match auth::organization::model_specs_config() {
-                        Some(config) => config.artificial_analysis_api_key.clone(),
-                        None => return,
-                    }
-                }
-            };
-            schedule_refresh(api_key, REFRESH_INTERVAL, ctx);
-        },
-    );
+/// The model's ID without the app's own prefixes.
+fn benchmark_id(llm: &LLMInfo) -> &str {
+    let id = llm.id.as_str();
+    ID_PREFIXES
+        .iter()
+        .find_map(|prefix| id.strip_prefix(prefix))
+        .unwrap_or(id)
 }
 
 fn cache_path() -> PathBuf {
@@ -120,16 +169,12 @@ fn read_cache() -> Option<CachedCatalog> {
         .ok()
 }
 
-fn write_cache(models: &[BenchmarkedModel]) {
-    let cache = CachedCatalog {
-        fetched_at: SystemTime::now(),
-        models: models.to_vec(),
-    };
+fn write_cache(cache: &CachedCatalog) {
     let path = cache_path();
     let result = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&path, serde_json::to_vec(&cache).unwrap_or_default()));
+        .and_then(|()| std::fs::write(&path, serde_json::to_vec(cache).unwrap_or_default()));
     if let Err(error) = result {
         log::warn!(
             "Couldn't cache model ratings at {}: {error}",

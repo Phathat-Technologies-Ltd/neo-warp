@@ -117,8 +117,14 @@ display_name = "Microsoft"
 
 The model picker can show each model's intelligence, speed, and cost from
 [Artificial Analysis](https://artificialanalysis.ai). Create a free Data API key there and add it
-to the same file. neo-warp fetches the ratings at most once a day and credits Artificial Analysis
-under the bars, as its terms require.
+to the same file; users don't need their own. neo-warp credits Artificial Analysis under the bars,
+as its terms require.
+
+Every install shares the key's free quota (100 requests a day; one fetch of the list takes about
+four). So each install fetches the list once, and again only when it offers a model the list
+hasn't covered yet, at most once a day. Models Artificial Analysis doesn't list don't trigger
+fetches. On the day you roll out to many people at once, installs beyond the quota show "?"
+until the next day.
 
 ```toml
 [model_specs]

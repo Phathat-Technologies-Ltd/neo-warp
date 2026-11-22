@@ -284,7 +284,7 @@ pub async fn fetch_catalog(api_key: String) -> anyhow::Result<Vec<BenchmarkedMod
     use anyhow::{Context, bail};
 
     const URL: &str = "https://artificialanalysis.ai/api/v2/language/models/free";
-    const MAX_PAGES: u32 = 10;
+    const MAX_PAGES: u32 = 20;
     let mut models = Vec::new();
     for page in 1..=MAX_PAGES {
         let response = http_client::Client::new()
