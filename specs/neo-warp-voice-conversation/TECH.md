@@ -66,7 +66,8 @@ becomes the primary model.
   canceller has the playback signal as its reference. Settings:
   - subtype `kAudioUnitSubType_VoiceProcessingIO`,
   - `kAUVoiceIOProperty_BypassVoiceProcessing` = 0,
-  - ducking of other audio turned off through `kAUVoiceIOProperty_OtherAudioDuckingConfiguration`.
+  - ducking of other audio set to the minimum through
+    `kAUVoiceIOProperty_OtherAudioDuckingConfiguration`.
 
   It is bound through `objc2-audio-toolbox` or `coreaudio-sys`. Hands-free capture and TTS playback
   both go through this unit.
@@ -188,24 +189,16 @@ off.
     the same turn stay silent until the next prompt.
   - Not done: a playback-correlated energy gate and a raised VAD threshold during playback (the
     server VAD config is fixed per socket).
-  - Real AEC is not implemented; nothing calls `set_echo_cancelled(true)` yet, so loudspeakers stay
-    half-duplex. The planned macOS path: open one `kAudioUnitSubType_VoiceProcessingIO` unit
-    (coreaudio-rs or AudioToolbox) that does both capture (input bus 1) and playback (output bus
-    0), replacing cpal for both `LiveCapture` and `SpeechOutput` while conversation mode runs, since
-    the canceller only removes audio played through the same unit. Its render callback pulls TTS
-    samples from a lock-free queue fed by `SpeechOutput::play` (resampled to the unit's rate) and
-    reports playback end; its input callback resamples to 16 kHz for `LiveChunk`. If the unit fails
-    to start, fall back to cpal and keep half-duplex. It was left out of this change because
-    sharing one unit between the hands-free and conversation sessions, device-change handling,
-    and testing on real hardware could not be done safely here. WebRTC AEC3 elsewhere is also
-    future work.
+  - Real AEC is the `voice_input::voice_processing` backend described under "Echo cancellation
+    (macOS voice-processing unit)" below; the conversation calls `set_echo_cancelled` from it.
 - **Spoken readout of results**: when a command action finishes (not cancelled), its result is
   spoken after the reply so far (`conversation_text::spoken_action_result`). Successful output of
   at most 2 lines and 120 characters is read ("Ran pwd: /tmp."); anything longer, or a failure,
   is only summarized (`summary::command_result_readout`, e.g. "Ran cargo check: 2 errors.").
   Follow-up replies of the same turn (after a tool call) are spoken too (`reply_started`).
 - **Not done in v1**:
-  - macOS VoiceProcessingIO echo cancellation (see the echo gate above).
+  - A Settings toggle and Command Palette entry for echo cancellation (TOML only for now), and
+    echo cancellation outside macOS.
   - Marking an interrupted reply in its block (it is logged), the footer Listening/Thinking/Speaking
     indicator (shown in the window header instead), the footer toggle button, and the TUI.
   - Commands without a risk classification other than `RequestCommandOutput` are announced and left
@@ -242,9 +235,50 @@ off.
   once and the audio is dropped. Fatal errors, or no audio for 2 s, rebuild the stream with backoff
   (250 ms doubling, 5 tries in a row; audio resets the count). Only when recovery gives up does
   hands-free stop with a toast.
-- **Echo cancellation, still not done**: VoiceProcessingIO needs one duplex AudioUnit for capture
-  and TTS playback, replacing both cpal paths (`LiveCapture` and `SpeechOutput`), plus format
-  handling for the processed input. That is too large to do safely alongside this pass, so the echo
-  gate stays and loudspeaker barge-in stays at 600 ms. To make "stop" reliable on speakers anyway,
-  short stop phrases (now also "enough" and "that's enough") are honoured even when they overlap
-  playback and never barged in; they are checked before the echo filter.
+- **Echo cancellation (macOS voice-processing unit)**: `voice_input::voice_processing`, compiled on
+  macOS with the `voice_input/voice_processing` feature (enabled by the app's `voice_input`
+  feature), behind the setting `agents.voice.conversation_echo_cancellation` (off by default).
+  - One `kAudioUnitSubType_VoiceProcessingIO` unit (coreaudio-rs) owns the default microphone (bus
+    1, client format 16 kHz mono f32) and speaker (bus 0, 24 kHz mono f32; the unit converts to the
+    hardware rates, and any other rate it reports is resampled with `LinearResampler`). Other-audio
+    ducking is set to the minimum where `kAUVoiceIOProperty_OtherAudioDuckingConfiguration` exists
+    (macOS 14+). The unit also gives noise suppression and enables the macOS Mic Modes menu (Voice
+    Isolation etc.).
+  - The unit is a process-wide engine that runs while any lease is held: `CaptureLease` (from
+    `LiveCapture`) installs the microphone sink; `OutputLease` (from `SpeechOutput`) feeds speech
+    through `PlaybackQueue`, a fixed 2^20-sample lock-free SPSC `SampleRing` (flushed for barge-in)
+    plus a try-locked end-of-clip slot. Callbacks never block or take the engine lock; no threads
+    are added beyond the Core Audio I/O thread and the existing capture supervisor.
+  - Backend choice: `set_voice_processing_wanted` (on at conversation start when the setting is on,
+    off at stop) sets the `BackendSelector`; both `LiveCapture` and `SpeechOutput::open` go through
+    `open_with_fallback`, which uses cpal when the unit isn't wanted, unsupported, or fails to
+    start, and skips the unit after 2 failed starts until it is wanted again. Changing the
+    preference sends `Signal::Reopen` to every capture supervisor, which rebuilds the microphone
+    on the new backend without spending recovery retries, so hands-free keeps its socket.
+  - Device changes: a Core Audio listener on the default input/output device sets a restart flag
+    and reopens captures; the unit is rebuilt on its next use (capture reopen or `play`). If the
+    unit stops and can't restart, `SpeechOutput::play` moves to a cpal stream so clips still
+    finish, and the capture stalls and is reopened on cpal by the supervisor.
+  - `voice_input::is_echo_cancelling()` is true only while the unit runs with both a capture and an
+    output attached. The conversation refreshes `set_echo_cancelled` from it on speech start, on
+    each clip played and on each final, so loudspeaker barge-in takes 200 ms and overlapping finals
+    are kept; the TTS-text similarity filter stays as a safety net.
+  - Tests: ring buffer (order, padding, capacity, wraparound, flush, cross-thread), playback end
+    and stop semantics, selector and fallback state machine with fake openers, reopen
+    registration, and supervisor reopen without retries. The Core Audio code itself is only
+    compile-checked.
+  - Manual verification (MacBook speakers, no headphones): set
+    `agents.voice.conversation_echo_cancellation = true`; start voice conversation; the log shows
+    "using the echo-cancelling voice-processing unit" for the microphone and speech output. Ask
+    for a long answer and say "wait, stop" over it: playback stops within ~0.3 s and the utterance
+    becomes the next prompt. Let a reply play without speaking: nothing of it is transcribed. Check
+    Control Center shows Mic Mode. Switch output to headphones and back mid-conversation: speech
+    continues and the log shows the unit restarting. Turn the setting off: logs show cpal and the
+    600 ms half-duplex behaviour returns. Check other apps' audio is only lightly ducked.
+  - Unverified on hardware in this change: real echo suppression quality, VPIO behaviour with
+    Bluetooth headsets (it can switch them to the HFP profile), aggregate devices, and whether the
+    unit's `kAudioDevicePropertyBufferFrameSize` query in `set_input_callback` succeeds on every
+    device (if not, the start fails and cpal is used).
+- To make "stop" reliable on speakers without echo cancellation, short stop phrases (also "enough"
+  and "that's enough") are honoured even when they overlap playback and never barged in; they are
+  checked before the echo filter.

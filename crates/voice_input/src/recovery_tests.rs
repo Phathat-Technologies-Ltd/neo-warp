@@ -130,6 +130,33 @@ fn a_stalled_stream_that_cannot_reopen_reports_failure() {
 }
 
 #[test]
+fn reopen_rebuilds_the_stream_without_using_up_retries() {
+    let opens = Arc::new(Mutex::new(0));
+    let streams = FakeStreams {
+        opens: opens.clone(),
+        fail_reopens: false,
+    };
+    let (tx, rx) = mpsc::channel();
+    let supervisor = std::thread::spawn(move || {
+        supervise(
+            |heartbeat| streams.open(heartbeat),
+            rx,
+            timing(),
+            |result| assert!(result.is_ok()),
+            |error| panic!("recovery gave up: {error}"),
+        );
+    });
+    // More reopens than the rebuild limit, as when the backend is toggled repeatedly.
+    for _ in 0..6 {
+        tx.send(Signal::Reopen).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    tx.send(Signal::Stop).unwrap();
+    supervisor.join().unwrap();
+    assert!(*opens.lock().unwrap() >= 4, "{}", *opens.lock().unwrap());
+}
+
+#[test]
 fn a_failed_first_open_is_reported_to_the_caller() {
     let (_tx, rx) = mpsc::channel();
     let mut started = None;

@@ -8,8 +8,11 @@ use anyhow::Context as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::recovery::{Heartbeat, RecoveryTiming, Signal, StreamFault, supervise};
+use crate::voice_processing::{
+    self, AudioBackend, CaptureLease, CaptureRegistration, open_with_fallback,
+};
 
-const TARGET_RATE: f64 = 16_000.0;
+const TARGET_RATE: f64 = voice_processing::CAPTURE_RATE;
 /// Audio callbacks between progress logs (roughly ten seconds at typical buffer sizes).
 const CALLBACKS_PER_LOG: u64 = 1000;
 
@@ -26,6 +29,7 @@ pub struct LiveChunk {
 /// that rebuilds it when it fails or stalls.
 pub struct LiveCapture {
     signal_tx: mpsc::Sender<Signal>,
+    _registration: CaptureRegistration,
 }
 
 impl Drop for LiveCapture {
@@ -36,7 +40,9 @@ impl Drop for LiveCapture {
 
 impl LiveCapture {
     /// Opens the default input device and calls `on_chunk` from the audio thread for each chunk.
-    /// `on_failed` is called once if the microphone breaks and can't be reopened.
+    /// `on_failed` is called once if the microphone breaks and can't be reopened. The microphone is
+    /// on the echo-cancelling unit while [`voice_processing::set_voice_processing_wanted`] is on
+    /// and the unit works, and moves between backends when that changes.
     pub fn start(
         on_chunk: impl FnMut(LiveChunk) + Send + 'static,
         on_failed: impl FnOnce(String) + Send + 'static,
@@ -49,7 +55,7 @@ impl LiveCapture {
             .name("hands-free-capture".to_owned())
             .spawn(move || {
                 supervise(
-                    |heartbeat| open_stream(on_chunk.clone(), heartbeat, fault_tx.clone()),
+                    |heartbeat| open_capture(on_chunk.clone(), heartbeat, fault_tx.clone()),
                     signal_rx,
                     RecoveryTiming::default(),
                     move |result| {
@@ -60,8 +66,45 @@ impl LiveCapture {
             })
             .context("failed to start the capture thread")?;
         started_rx.recv().context("the capture thread exited")??;
-        Ok(Self { signal_tx })
+        let registration = CaptureRegistration::new(signal_tx.clone());
+        Ok(Self {
+            signal_tx,
+            _registration: registration,
+        })
     }
+}
+
+/// An open microphone on either backend; dropping it closes the microphone.
+enum CaptureStream {
+    Cpal(#[allow(dead_code)] cpal::Stream),
+    VoiceProcessing(#[allow(dead_code)] CaptureLease),
+}
+
+/// Opens the microphone on the preferred backend, falling back to cpal.
+fn open_capture<F>(
+    on_chunk: Arc<Mutex<F>>,
+    heartbeat: Heartbeat,
+    fault_tx: mpsc::Sender<Signal>,
+) -> anyhow::Result<CaptureStream>
+where
+    F: FnMut(LiveChunk) + Send + 'static,
+{
+    let (stream, backend) = voice_processing::with_selector(|selector| {
+        open_with_fallback(
+            selector,
+            voice_processing::is_supported(),
+            || {
+                let mut on_mono = chunk_emitter(on_chunk.clone(), heartbeat.clone(), TARGET_RATE);
+                voice_processing::acquire_capture(Box::new(move |mono: &[f32]| on_mono(mono)))
+                    .map(CaptureStream::VoiceProcessing)
+            },
+            || open_stream(on_chunk.clone(), heartbeat.clone(), fault_tx).map(CaptureStream::Cpal),
+        )
+    })?;
+    if backend == AudioBackend::VoiceProcessing {
+        log::info!("Hands-free microphone: using the echo-cancelling voice-processing unit");
+    }
+    Ok(stream)
 }
 
 /// Opens and starts an input stream on the default device.
@@ -90,43 +133,8 @@ where
         config.sample_rate(),
         config.sample_format()
     );
-    let mut resampler = LinearResampler::new(f64::from(config.sample_rate()), TARGET_RATE);
-    let mut callbacks: u64 = 0;
-    let mut peak_level: f32 = 0.0;
-    let on_mono = move |mono: Vec<f32>| {
-        heartbeat.fetch_add(1, Ordering::Relaxed);
-        let samples = resampler.process(&mono);
-        callbacks += 1;
-        if callbacks == 1 {
-            log::info!(
-                "Hands-free microphone: first audio callback ({} frames in, {} samples out)",
-                mono.len(),
-                samples.len()
-            );
-        }
-        if samples.is_empty() {
-            return;
-        }
-        let chunk = to_chunk(&samples);
-        peak_level = peak_level.max(chunk.level);
-        if callbacks.is_multiple_of(CALLBACKS_PER_LOG) {
-            if peak_level == 0.0 {
-                // macOS delivers zeros instead of failing when the app lacks microphone access.
-                log::warn!(
-                    "Hands-free microphone: {callbacks} audio callbacks of pure silence; check \
-                     microphone access and the input device"
-                );
-            }
-            log::info!(
-                "Hands-free microphone: {callbacks} audio callbacks, peak level {peak_level:.3} \
-                 since the last report"
-            );
-            peak_level = 0.0;
-        }
-        if let Ok(mut on_chunk) = on_chunk.lock() {
-            on_chunk(chunk);
-        }
-    };
+    let mut on_mono = chunk_emitter(on_chunk, heartbeat, f64::from(config.sample_rate()));
+    let on_mono = move |mono: Vec<f32>| on_mono(&mono);
     let sample_format = config.sample_format();
     let config: cpal::StreamConfig = config.into();
     let stream = match sample_format {
@@ -146,6 +154,63 @@ where
     }?;
     stream.play().context("failed to start the input stream")?;
     Ok(stream)
+}
+
+/// Returns a callback that turns mono audio at `from_rate` into [`LiveChunk`]s for `on_chunk`,
+/// beating `heartbeat` and logging progress.
+fn chunk_emitter<F>(
+    on_chunk: Arc<Mutex<F>>,
+    heartbeat: Heartbeat,
+    from_rate: f64,
+) -> impl FnMut(&[f32]) + Send + 'static
+where
+    F: FnMut(LiveChunk) + Send + 'static,
+{
+    let mut resampler =
+        (from_rate != TARGET_RATE).then(|| LinearResampler::new(from_rate, TARGET_RATE));
+    let mut callbacks: u64 = 0;
+    let mut peak_level: f32 = 0.0;
+    move |mono: &[f32]| {
+        heartbeat.fetch_add(1, Ordering::Relaxed);
+        let resampled;
+        let samples = match resampler.as_mut() {
+            Some(resampler) => {
+                resampled = resampler.process(mono);
+                resampled.as_slice()
+            }
+            None => mono,
+        };
+        callbacks += 1;
+        if callbacks == 1 {
+            log::info!(
+                "Hands-free microphone: first audio callback ({} frames in, {} samples out)",
+                mono.len(),
+                samples.len()
+            );
+        }
+        if samples.is_empty() {
+            return;
+        }
+        let chunk = to_chunk(samples);
+        peak_level = peak_level.max(chunk.level);
+        if callbacks.is_multiple_of(CALLBACKS_PER_LOG) {
+            if peak_level == 0.0 {
+                // macOS delivers zeros instead of failing when the app lacks microphone access.
+                log::warn!(
+                    "Hands-free microphone: {callbacks} audio callbacks of pure silence; check \
+                     microphone access and the input device"
+                );
+            }
+            log::info!(
+                "Hands-free microphone: {callbacks} audio callbacks, peak level {peak_level:.3} \
+                 since the last report"
+            );
+            peak_level = 0.0;
+        }
+        if let Ok(mut on_chunk) = on_chunk.lock() {
+            on_chunk(chunk);
+        }
+    }
 }
 
 /// Builds an input stream for samples of type `T`, downmixing each callback to mono `f32`. Stream

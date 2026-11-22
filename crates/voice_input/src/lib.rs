@@ -23,6 +23,8 @@ pub use live::{LinearResampler, LiveCapture, LiveChunk};
 pub mod recovery;
 mod speaker_output;
 pub use speaker_output::SpeechOutput;
+pub mod voice_processing;
+pub use voice_processing::{AudioBackend, is_echo_cancelling, set_voice_processing_wanted};
 
 const DEFAULT_CHUNK_SIZE: u32 = 512;
 // We only support mono for now.
