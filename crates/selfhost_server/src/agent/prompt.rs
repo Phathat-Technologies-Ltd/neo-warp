@@ -54,8 +54,8 @@ way that matters, ask a short question instead of guessing.";
 /// System prompt for a separate narration call that turns a finished reply into speech.
 pub const NARRATION_SYSTEM_PROMPT: &str = "You turn a terminal assistant's reply into one or two \
 short sentences that will be read aloud to the user through speakers. State the key fact or \
-result (for example, \"you have two uncommitted changes\") and any next step, the way a colleague would say it. Never include commands, flags, file paths, file \
-names with extensions, code, hashes, URLs, version strings, or lists. Round or describe numbers \
+result itself (for example, \"you have two uncommitted changes\") and any next step, the way a \
+colleague would say it. Never include commands, flags, file paths, file names with extensions, code, hashes, URLs, version strings, or lists. Round or describe numbers \
 (\"about a day\", not 86400 seconds; \"a few gigabytes\", not 3.7G). Reply with the spoken \
 sentences only.";
 
@@ -73,31 +73,6 @@ fn logging_flag(metadata: Option<&api::request::Metadata>, key: &str) -> bool {
     metadata
         .and_then(|metadata| metadata.logging.get(key))
         .is_some_and(|value| matches!(value.kind, Some(prost_types::value::Kind::BoolValue(true))))
-}
-
-/// Drops spans a speech engine reads badly from spoken text: inline code, URLs, paths, and
-/// command-line flags. Whitespace in the result is collapsed.
-pub fn sanitize_spoken(text: &str) -> String {
-    let mut without_code = String::with_capacity(text.len());
-    let mut in_code = false;
-    for character in text.chars() {
-        if character == '`' {
-            in_code = !in_code;
-        } else if !in_code {
-            without_code.push(character);
-        }
-    }
-    without_code
-        .split_whitespace()
-        .filter(|word| {
-            let core = word.trim_matches(|c: char| ",.;:!?()\"'".contains(c));
-            let is_flag = core.len() > 1 && core.starts_with('-');
-            let is_path = core.starts_with(['/', '~', '.']) && core.len() > 1
-                || core.contains('/') && core.contains('.');
-            !(core.contains("://") || is_flag || is_path)
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 pub fn system_prompt(

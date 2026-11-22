@@ -20,6 +20,12 @@ pub const VOICE_CONVERSATION_METADATA_KEY: &str = "voice_conversation";
 /// Whether voice conversation mode is on, so agent requests ask for a spoken summary.
 pub static VOICE_CONVERSATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// The request metadata key that tells the agent the prompt came from speech recognition.
+pub const DICTATED_METADATA_KEY: &str = "dictated";
+
+/// Set when hands-free voice submits an agent prompt; the next agent request consumes it.
+pub static NEXT_PROMPT_DICTATED: AtomicBool = AtomicBool::new(false);
+
 pub async fn generate_multi_agent_output(
     server_api: Arc<ServerApi>,
     mut params: RequestParams,
@@ -62,6 +68,15 @@ pub async fn generate_multi_agent_output(
     if VOICE_CONVERSATION_ACTIVE.load(Ordering::Relaxed) {
         logging_metadata.insert(
             VOICE_CONVERSATION_METADATA_KEY.to_owned(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::BoolValue(true)),
+            },
+        );
+    }
+
+    if NEXT_PROMPT_DICTATED.swap(false, Ordering::Relaxed) {
+        logging_metadata.insert(
+            DICTATED_METADATA_KEY.to_owned(),
             prost_types::Value {
                 kind: Some(prost_types::value::Kind::BoolValue(true)),
             },

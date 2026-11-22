@@ -2612,6 +2612,10 @@ impl Input {
                 self.hands_free_range.clear();
                 self.hands_free_written = None;
                 if !buffer.trim().is_empty() {
+                    if !is_shell {
+                        crate::ai::agent::api::NEXT_PROMPT_DICTATED
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
                     self.input_enter(ctx);
                 }
                 return;

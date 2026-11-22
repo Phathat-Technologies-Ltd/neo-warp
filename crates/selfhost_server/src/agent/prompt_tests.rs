@@ -60,17 +60,3 @@ fn dictated_instructions_follow_the_dictated_flag() {
     assert!(system_prompt(None, false, true).contains("came from speech recognition"));
     assert!(!system_prompt(None, true, false).contains("speech recognition"));
 }
-
-#[test]
-fn sanitize_spoken_drops_code_paths_urls_and_flags() {
-    assert_eq!(
-        sanitize_spoken(
-            "Run `cargo build --release` in ~/dev/warp, see https://x.io or ./out.log, use -v."
-        ),
-        "Run in see or use"
-    );
-    assert_eq!(
-        sanitize_spoken("The build passed, about a day ago."),
-        "The build passed, about a day ago."
-    );
-}
