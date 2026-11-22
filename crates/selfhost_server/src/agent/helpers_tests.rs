@@ -35,6 +35,29 @@ fn cache_keeps_only_model_and_credentials_per_user() {
 }
 
 #[test]
+fn cache_keeps_earlier_fields_a_later_request_leaves_empty() {
+    let cache = ModelSettingsCache::default();
+    cache.record("ada", Some(&settings("claude-haiku-5-5", "sk-ant-ada")));
+    cache.record("ada", Some(&api::request::Settings::default()));
+    let partial = api::request::Settings {
+        model_config: Some(api::request::settings::ModelConfig {
+            base: "claude-opus-5-5".to_owned(),
+            ..Default::default()
+        }),
+        api_keys: Some(Default::default()),
+        ..Default::default()
+    };
+    cache.record("ada", Some(&partial));
+
+    let ada = cache.latest("ada").unwrap();
+    assert_eq!(ada.model_config.unwrap().base, "claude-opus-5-5");
+    assert_eq!(ada.api_keys.unwrap().anthropic, "sk-ant-ada");
+
+    cache.record("bob", Some(&api::request::Settings::default()));
+    assert!(cache.latest("bob").is_none());
+}
+
+#[test]
 fn cache_forgets_expired_settings() {
     let cache = ModelSettingsCache::default();
     cache.record("ada", Some(&settings("claude-haiku-5-5", "sk-ant-ada")));

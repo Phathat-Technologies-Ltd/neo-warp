@@ -67,11 +67,11 @@ async fn unusable_replies_are_bad_prompts() {
 }
 
 #[tokio::test]
-async fn provider_failures_map_to_client_errors() {
+async fn transient_failures_are_other_and_missing_keys_are_provider_errors() {
     let provider = TextProvider::new(vec![Err("boom")]);
     assert_eq!(
         search(&settings(), "list files", None, &provider.factory()).await,
-        Err(Failure::AiProviderError)
+        Err(Failure::Other)
     );
 
     let mut no_key = settings();

@@ -53,19 +53,28 @@ pub struct ModelSettingsCache {
 }
 
 impl ModelSettingsCache {
-    /// Remembers the model choice and credentials from `settings` for `uid`.
+    /// Remembers the model choice and credentials from `settings` for `uid`. Fields `settings`
+    /// leaves empty keep their earlier value, so a request that carries only part of the settings
+    /// can't erase credentials a fuller one supplied.
     pub fn record(&self, uid: &str, settings: Option<&api::request::Settings>) {
         let Some(settings) = settings else {
             return;
         };
-        let kept = api::request::Settings {
-            model_config: settings.model_config.clone(),
-            api_keys: settings.api_keys.clone(),
-            custom_model_providers: settings.custom_model_providers.clone(),
-            ..Default::default()
-        };
-        self.lock()
-            .insert(uid.to_owned(), (SystemTime::now(), kept));
+        let mut entries = self.lock();
+        let mut kept = entries
+            .get(uid)
+            .map(|(_, earlier)| earlier.clone())
+            .unwrap_or_default();
+        merge_non_empty(&mut kept.model_config, &settings.model_config);
+        merge_non_empty(&mut kept.api_keys, &settings.api_keys);
+        merge_non_empty(
+            &mut kept.custom_model_providers,
+            &settings.custom_model_providers,
+        );
+        if kept == api::request::Settings::default() {
+            return;
+        }
+        entries.insert(uid.to_owned(), (SystemTime::now(), kept));
     }
 
     /// The settings last recorded for `uid`, unless they have expired.
@@ -95,6 +104,12 @@ impl ModelSettingsCache {
         self.entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+fn merge_non_empty<T: Clone + Default + PartialEq>(kept: &mut Option<T>, incoming: &Option<T>) {
+    if let Some(value) = incoming.as_ref().filter(|value| **value != T::default()) {
+        *kept = Some(value.clone());
     }
 }
 
