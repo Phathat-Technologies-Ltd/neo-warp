@@ -1,0 +1,27 @@
+[package]
+name = "local_transcription"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[features]
+# Runs NVIDIA Parakeet TDT 0.6B v3 through ONNX Runtime. Off by default so crates that only need
+# the trait and the model store don't build ONNX Runtime.
+parakeet = ["dep:parakeet-rs"]
+
+[dependencies]
+futures.workspace = true
+hex.workspace = true
+hound = "3.5.1"
+log.workspace = true
+parakeet-rs = { version = "0.4.4", default-features = false, features = ["cpu", "ort-defaults", "api-28"], optional = true }
+reqwest = { workspace = true, features = ["stream"] }
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }

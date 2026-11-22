@@ -24730,6 +24730,11 @@ impl TypedActionView for Workspace {
             JoinSlack => self.join_slack(ctx),
             ViewUserDocs => self.view_user_docs(ctx),
             ViewLatestChangelog => self.view_latest_changelog(ctx),
+            DownloadLocalVoiceModel => {
+                #[cfg(not(target_family = "wasm"))]
+                crate::voice::local_model::LocalVoiceModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.download(ctx));
+            }
             ViewPrivacyPolicy => self.view_privacy_policy(ctx),
             SendFeedback => self.send_feedback(ctx),
             #[cfg(not(target_family = "wasm"))]

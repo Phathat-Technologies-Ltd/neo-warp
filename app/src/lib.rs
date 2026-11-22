@@ -2312,6 +2312,8 @@ pub(crate) fn initialize_app(
     ctx.add_singleton_model(|_| {
         VoiceTranscriber::new(Arc::new(ServerVoiceTranscriber::new(server_api.clone())))
     });
+    #[cfg(not(target_family = "wasm"))]
+    ctx.add_singleton_model(|_| voice::local_model::LocalVoiceModel::new());
 
     let notebooks = cloud_objects
         .iter()

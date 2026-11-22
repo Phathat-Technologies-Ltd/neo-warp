@@ -1922,7 +1922,13 @@ impl AgentInputFooter {
 
         match self.cli_voice_input_lifecycle.state() {
             VoiceInputLifecycleState::Idle => {
-                if !crate::ai::AIRequestUsageModel::as_ref(ctx).can_request_voice() {
+                #[cfg(not(target_family = "wasm"))]
+                if !crate::voice::local_model::ensure_ready_to_record(ctx.window_id(), ctx) {
+                    return;
+                }
+
+                if !crate::voice::is_voice_transcribed_locally()
+                    && !crate::ai::AIRequestUsageModel::as_ref(ctx).can_request_voice() {
                     self.show_cli_voice_error_toast("Voice input limit reached", ctx);
                     return;
                 }

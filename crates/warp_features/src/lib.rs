@@ -913,6 +913,10 @@ pub enum FeatureFlag {
     /// server, configured by an IT-deployed `organization.toml`.
     OrganizationSignIn,
 
+    /// Gates neo-warp's local voice transcription: the embedded server answers voice input with
+    /// a speech model downloaded on demand to the user's machine.
+    NeoVoiceInput,
+
     /// Gates Gemini Enterprise (GEAP) BYOLLM, which lets users
     /// route eliglible models to GEAP instead of Warp-managed inference.
     GeminiEnterprise,
@@ -1090,6 +1094,7 @@ pub const LOCAL_FLAGS: &[FeatureFlag] = &[FeatureFlag::LocalClaudeCodexChildHarn
 /// time, these will move on to PREVIEW_FLAGS before being launched.
 pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::OrganizationSignIn,
+    FeatureFlag::NeoVoiceInput,
     FeatureFlag::LogExpensiveFramesInSentry,
     FeatureFlag::ToggleBootstrapBlock,
     FeatureFlag::CreatingSharedSessions,
