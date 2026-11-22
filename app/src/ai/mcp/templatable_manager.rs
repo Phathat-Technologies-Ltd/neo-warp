@@ -24,18 +24,20 @@ use simple_logger::SimpleLogger;
 use uuid::Uuid;
 #[cfg(not(target_family = "wasm"))]
 use warpui::ModelSpawner;
-use warpui::{Entity, SingletonEntity};
+use warpui::{Entity, EntityId, SingletonEntity};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_sdk::driver::git_credentials::restricted::{
     active_restricted_child_environment, protected_environment_key,
 };
+use crate::ai::mcp::session_selection::SessionMcpSelection;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::templatable::CloudTemplatableMCPServer;
 use crate::ai::mcp::templatable_installation::TemplatableMCPServerInstallation;
 use crate::ai::mcp::{FileBasedMCPManager, MCPServerState};
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::{StaticEnvVar, TransportType};
+use crate::settings::AISettings;
 
 #[cfg(not(target_family = "wasm"))]
 type ReconnectResultSender =
@@ -105,6 +107,7 @@ pub struct TemplatableMCPServerManager {
     /// UUIDs of MCP servers started via the Oz CLI. We track these so they can be distinguished from
     /// file-based ephemeral MCP servers, which are directory-scoped.
     cli_spawned_server_uuids: HashSet<Uuid>,
+    session_selection: SessionMcpSelection,
     /// UUIDs of built-in Warp-hosted servers (e.g. the Factory MCP), which are
     /// spawned automatically from in-code definitions and authenticated with
     /// the logged-in user's session credentials.
@@ -436,6 +439,45 @@ impl TemplatableMCPServerManager {
             .iter()
             .filter_map(|uuid| self.active_servers.get(uuid).map(|info| (*uuid, info)))
             .collect()
+    }
+
+    /// Every active server an agent session in `cwd` can reach (installed, file-based servers in
+    /// scope for `cwd`, CLI-spawned, and built-in), ordered by name so requests list them stably.
+    pub fn active_servers_for_session(
+        &self,
+        cwd: Option<&std::path::Path>,
+        app: &warpui::AppContext,
+    ) -> Vec<&TemplatableMCPServerInfo> {
+        let mut servers: HashMap<Uuid, &TemplatableMCPServerInfo> =
+            self.get_active_templatable_servers();
+        if let Some(cwd) = cwd {
+            servers.extend(self.get_active_file_based_servers(cwd, app));
+        }
+        servers.extend(self.get_active_cli_spawned_servers());
+        servers.extend(self.get_active_builtin_servers());
+        let mut servers: Vec<_> = servers.into_values().collect();
+        servers.sort_by(|a, b| {
+            a.name()
+                .cmp(b.name())
+                .then_with(|| a.installation_id().cmp(&b.installation_id()))
+        });
+        servers
+    }
+
+    /// Whether the agent in `pane` may use `server`.
+    pub fn is_server_enabled_for_session(
+        &self,
+        pane: EntityId,
+        server: Uuid,
+        app: &warpui::AppContext,
+    ) -> bool {
+        let default_enabled = *AISettings::as_ref(app).mcp_servers_enabled_in_new_sessions;
+        self.session_selection
+            .is_enabled(pane, server, default_enabled)
+    }
+
+    pub fn set_server_enabled_for_session(&mut self, pane: EntityId, server: Uuid, enabled: bool) {
+        self.session_selection.set_enabled(pane, server, enabled);
     }
 }
 

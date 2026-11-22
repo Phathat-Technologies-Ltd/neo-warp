@@ -443,6 +443,7 @@ impl TemplatableMCPServerManager {
             pending_oauth_csrf: Default::default(),
             authorization_urls: Default::default(),
             cli_spawned_server_uuids: Default::default(),
+            session_selection: Default::default(),
             builtin_server_uuids: Default::default(),
             builtin_server_token: Default::default(),
             server_loggers: Default::default(),

@@ -1,4 +1,5 @@
 pub mod manager;
+pub mod session_selection;
 pub mod templatable_manager;
 
 #[cfg(not(target_family = "wasm"))]

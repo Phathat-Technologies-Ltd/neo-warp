@@ -2070,6 +2070,19 @@ define_settings_group!(AISettings, settings: [
         description: "Whether third-party file-based MCP servers are automatically detected.",
     }
 
+    // Whether a session's agent starts with every running MCP server enabled. Turning it off
+    // makes new sessions opt in to servers from the agent input footer.
+    mcp_servers_enabled_in_new_sessions: McpServersEnabledInNewSessions {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.mcp_servers.enabled_in_new_sessions",
+        description: "Whether new agent sessions start with every running MCP server enabled.",
+    }
+
     // Controls how agent thinking/reasoning traces are displayed.
     thinking_display_mode: ThinkingDisplayMode,
 

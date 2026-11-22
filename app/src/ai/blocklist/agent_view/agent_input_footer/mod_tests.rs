@@ -473,3 +473,45 @@ fn cli_footer_omits_cloud_indicator_for_shared_local_viewer() {
         });
     });
 }
+
+#[test]
+fn mcp_menu_lists_servers_with_checks_and_toggle_actions() {
+    let on = Uuid::new_v4();
+    let off = Uuid::new_v4();
+    let items = session_mcp_menu_items(vec![
+        SessionMcpServer {
+            id: on,
+            name: "github".to_owned(),
+            enabled: true,
+        },
+        SessionMcpServer {
+            id: off,
+            name: "linear".to_owned(),
+            enabled: false,
+        },
+    ]);
+    let fields: Vec<_> = items.iter().map(|item| item.fields().unwrap()).collect();
+    assert_eq!(fields[0].label(), "github");
+    assert_eq!(fields[0].icon(), Some(Icon::Check));
+    assert!(matches!(
+        fields[0].on_select_action(),
+        Some(AgentInputFooterAction::SetSessionMcpServerEnabled { server, enabled: false })
+            if *server == on
+    ));
+    assert_eq!(fields[1].label(), "linear");
+    assert_eq!(fields[1].icon(), None);
+    assert!(matches!(
+        fields[1].on_select_action(),
+        Some(AgentInputFooterAction::SetSessionMcpServerEnabled { server, enabled: true })
+            if *server == off
+    ));
+}
+
+#[test]
+fn mcp_menu_without_servers_has_one_disabled_item() {
+    let items = session_mcp_menu_items(vec![]);
+    assert_eq!(items.len(), 1);
+    let fields = items[0].fields().unwrap();
+    assert_eq!(fields.label(), "No MCP servers running");
+    assert!(fields.is_disabled());
+}

@@ -48,3 +48,43 @@ Upstream Warp already has everything needed in `warp_multi_agent_api`:
 `turn_tests.rs` round trip with the scripted provider: an MCP tool is offered, the model's call
 becomes a `CallMcpTool` with the right `server_id` and args, and the client's result reaches the
 model.
+
+## Stage 1 follow-ups (`crates/selfhost_server/src/agent/mcp.rs`)
+
+- `unique_name(base, key, used)`: on a collision the suffix is `_<8 hex digits>` of FNV-1a over
+  `key` (`server_id\0tool_name`, or the tool name for flat tools) plus an attempt counter, instead
+  of an order-dependent `_2`. FNV-1a is used because `DefaultHasher` isn't stable across Rust
+  releases. The base is still cut so name plus suffix fit in 64 ASCII bytes.
+- `server_label` falls back to the sanitized server id when the sanitized name has no ASCII
+  alphanumerics.
+- `json_to_value` documents that numbers go through `f64` (the only protobuf `Value` number).
+- Tests: order independence of collision suffixes, the 64-character cut with a suffix, the id
+  fallback, that every MCP name carries the `mcp__` prefix (so it can't shadow a built-in), and the
+  precision loss above 2^53.
+
+## Stage 2: per-session MCP server selection (client)
+
+- `app/src/ai/mcp/session_selection.rs`: `SessionMcpSelection` maps a terminal pane's
+  `EntityId` to per-server (`installation_id`) overrides. `is_enabled(pane, server, default)`
+  returns the override or the default. It lives on `TemplatableMCPServerManager` (already a
+  singleton in every app and test harness, so no new model registration), which exposes
+  `is_server_enabled_for_session` and `set_server_enabled_for_session`. Entries for closed panes
+  are kept (a few bytes each) since entity ids aren't reused. The default is the new `AISettings::mcp_servers_enabled_in_new_sessions`
+  (`agents.mcp_servers.enabled_in_new_sessions`, default `true`).
+- `TemplatableMCPServerManager::active_servers_for_session(cwd, app)` gathers the servers that
+  `RequestParams::new` used to collect inline (installed, file-based for `cwd`, CLI-spawned,
+  built-in), de-duplicated by UUID and sorted by name then UUID. Sorting also makes the request's
+  server order stable instead of following `HashMap` iteration order.
+- `RequestParams::new` (`app/src/ai/agent/api.rs`) keeps only servers enabled for
+  `terminal_view_id`; requests without a pane keep every server. The flat legacy path is
+  unchanged.
+- Footer (`agent_input_footer`): new `AgentToolbarItemKind::McpServers` (agent view only, hidden
+  from session viewers, in `default_right` and `all_available`). It renders an `ActionButton` and,
+  while open, a `Menu<AgentInputFooterAction>` anchored to it like the usage popover.
+  `ToggleMcpMenu` rebuilds the items from `session_mcp_servers(pane, cwd)` (cwd from the active
+  block); `SetSessionMcpServerEnabled { server, enabled }` writes the override and reopens the menu.
+- Settings: `McpServersEnabledInNewSessionsWidget` on the Warp Agent page, a
+  `ToggleSettingActionPair` for the Command Palette, and the
+  `MCP_SERVERS_ENABLED_IN_NEW_SESSIONS_FLAG` context flag set in the workspace keymap context.
+- Tests: `session_selection_tests.rs` (default, per-pane override) and footer tests for
+  the menu items.

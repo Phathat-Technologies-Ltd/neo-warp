@@ -73,9 +73,84 @@ fn tools_are_namespaced_per_server_and_unique() {
     let names = names(&tools);
     assert_eq!(names[0], "mcp__GitHub_Enterprise__search");
     assert_eq!(names[1], "mcp__GitHub_Enterprise__get_issue");
-    assert_eq!(names[2], "mcp__GitHub_Enterprise__search_2");
+    assert!(names[2].starts_with("mcp__GitHub_Enterprise__search_"));
+    assert_ne!(names[2], names[0]);
     assert!(names[3].len() <= MAX_NAME_LEN && names[4].len() <= MAX_NAME_LEN);
+    assert_eq!(names[3].len(), MAX_NAME_LEN);
+    assert_eq!(names[4].len(), MAX_NAME_LEN);
     assert_ne!(names[3], names[4]);
+}
+
+#[test]
+fn colliding_names_survive_servers_being_reordered_or_added() {
+    let a = server("s1", "github", vec![tool("search", None)]);
+    let b = server("s2", "github", vec![tool("search", None)]);
+    let c = server("s3", "github", vec![tool("search", None)]);
+    let model_name_for = |servers: Vec<api::request::mcp_context::McpServer>, id: &str| {
+        let context = api::request::McpContext {
+            servers,
+            ..Default::default()
+        };
+        let tools = McpTools::from_request(&request(context, &[api::ToolType::CallMcpTool]));
+        tools
+            .tools
+            .iter()
+            .find(|tool| tool.server_id == id)
+            .map(|tool| tool.model_name.clone())
+            .unwrap()
+    };
+    let before = model_name_for(vec![a.clone(), b.clone()], "s2");
+    let after = model_name_for(vec![c, a, b], "s2");
+    assert_eq!(before, after);
+}
+
+#[test]
+fn unnamed_servers_fall_back_to_their_id() {
+    let context = api::request::McpContext {
+        servers: vec![
+            server("srv-1", "", vec![tool("t", None)]),
+            server("srv-2", "日本", vec![tool("t", None)]),
+        ],
+        ..Default::default()
+    };
+    let tools = McpTools::from_request(&request(context, &[api::ToolType::CallMcpTool]));
+    assert_eq!(names(&tools), ["mcp__srv-1__t", "mcp__srv-2__t"]);
+}
+
+#[test]
+fn mcp_names_cannot_shadow_built_in_tools() {
+    let built_ins = [
+        "run_shell_command",
+        "read_files",
+        "edit_file",
+        "write_file",
+        "grep",
+        "find_files",
+    ];
+    let context = api::request::McpContext {
+        servers: vec![server(
+            "s1",
+            "",
+            built_ins.iter().map(|name| tool(name, None)).collect(),
+        )],
+        #[allow(deprecated)]
+        tools: built_ins.iter().map(|name| tool(name, None)).collect(),
+        ..Default::default()
+    };
+    let tools = McpTools::from_request(&request(context, &[api::ToolType::CallMcpTool]));
+    for name in names(&tools) {
+        assert!(name.starts_with(NAME_PREFIX), "{name}");
+        assert!(!built_ins.contains(&name.as_str()));
+    }
+}
+
+#[test]
+fn integers_beyond_f64_precision_are_rounded() {
+    let Value::Object(args) = json!({ "id": 9_007_199_254_740_993_u64 }) else {
+        unreachable!();
+    };
+    let round_tripped = struct_to_json(json_to_struct(args));
+    assert_eq!(round_tripped["id"].as_f64(), Some(9_007_199_254_740_992.0));
 }
 
 #[test]

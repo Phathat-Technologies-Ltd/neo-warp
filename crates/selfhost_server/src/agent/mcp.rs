@@ -52,14 +52,12 @@ impl McpTools {
                 }
                 identity
             });
+            let server_label = server_label(&server.name, &server.id);
             for tool in &server.tools {
-                let base = format!(
-                    "{NAME_PREFIX}{}__{}",
-                    sanitize(&server.name),
-                    sanitize(&tool.name)
-                );
+                let base = format!("{NAME_PREFIX}{server_label}__{}", sanitize(&tool.name));
+                let key = format!("{}\0{}", server.id, tool.name);
                 tools.push(McpTool::new(
-                    unique_name(base, &mut used),
+                    unique_name(base, &key, &mut used),
                     tool,
                     Some(&server.name),
                     server.id.clone(),
@@ -71,7 +69,7 @@ impl McpTools {
         for tool in &context.tools {
             let base = format!("{NAME_PREFIX}{}", sanitize(&tool.name));
             tools.push(McpTool::new(
-                unique_name(base, &mut used),
+                unique_name(base, &tool.name, &mut used),
                 tool,
                 None,
                 String::new(),
@@ -144,18 +142,42 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
-fn unique_name(base: String, used: &mut HashSet<String>) -> String {
+/// The sanitized server name, or the server id when the name has no usable characters.
+fn server_label(name: &str, id: &str) -> String {
+    let label = sanitize(name);
+    if label.chars().any(|c| c.is_ascii_alphanumeric()) {
+        label
+    } else {
+        sanitize(id)
+    }
+}
+
+/// `base` cut to the name limit. On a collision, a suffix derived from `key` (the server id and
+/// tool name) rather than from list order, so a tool keeps its name when other servers are added,
+/// removed, or reordered between turns and earlier calls in the conversation still resolve.
+fn unique_name(base: String, key: &str, used: &mut HashSet<String>) -> String {
     let base: String = base.chars().take(MAX_NAME_LEN).collect();
     let mut name = base.clone();
-    let mut n = 2;
+    let mut attempt = 0u32;
     while used.contains(&name) {
-        let suffix = format!("_{n}");
+        let suffix = format!("_{:08x}", stable_hash(key, attempt));
+        // `base` is ASCII after `sanitize`, so any byte offset is a char boundary.
         let keep = MAX_NAME_LEN.saturating_sub(suffix.len()).min(base.len());
         name = format!("{}{suffix}", &base[..keep]);
-        n += 1;
+        attempt += 1;
     }
     used.insert(name.clone());
     name
+}
+
+/// FNV-1a, which unlike `DefaultHasher` is fixed across Rust releases.
+fn stable_hash(key: &str, attempt: u32) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in key.bytes().chain(attempt.to_le_bytes()) {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
 }
 
 /// The text the model sees for an MCP tool result, and whether the call failed.
@@ -238,6 +260,8 @@ fn json_to_struct(value: Map<String, Value>) -> prost_types::Struct {
     }
 }
 
+/// Numbers become `f64` because that is the only number `prost_types::Value` holds, so integers
+/// beyond 2^53 lose precision.
 fn json_to_value(value: Value) -> prost_types::Value {
     let kind = match value {
         Value::Null => Kind::NullValue(0),
