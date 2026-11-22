@@ -65,6 +65,25 @@ impl CallMCPToolExecutor {
                 return false;
             };
 
+            // A call the session doesn't allow is rejected without running, so there is nothing
+            // to ask the user about.
+            let manager = TemplatableMCPServerManager::as_ref(ctx);
+            let rejected = (*server_id)
+                .or_else(|| manager.server_from_tool(name.to_owned()).copied())
+                .is_some_and(|server| {
+                    manager
+                        .check_session_tool_call(
+                            Some(self.terminal_view_id),
+                            server,
+                            name.as_str(),
+                            ctx,
+                        )
+                        .is_err()
+                });
+            if rejected {
+                return true;
+            }
+
             BlocklistAIPermissions::as_ref(ctx).can_call_mcp_tool(
                 server_id.as_ref(),
                 name.as_str(),
@@ -117,6 +136,27 @@ impl CallMCPToolExecutor {
             // It is possible for both to exist in some tricky race conditions, but in those cases
             // we shouldn't care about the legacy servers.
             let templatable_mcp_manager = TemplatableMCPServerManager::as_ref(ctx);
+
+            // The request only advertises tools the session allows, but the model can still name
+            // others, so the session's selection is enforced again here.
+            let resolved_server = (*server_id).or_else(|| {
+                templatable_mcp_manager
+                    .server_from_tool(name.to_owned())
+                    .copied()
+            });
+            if let Some(server) = resolved_server
+                && let Err(reason) = templatable_mcp_manager.check_session_tool_call(
+                    Some(self.terminal_view_id),
+                    server,
+                    name.as_str(),
+                    ctx,
+                )
+            {
+                log::info!("Rejected MCP tool call outside the session's selection: {reason}");
+                return ActionExecution::Sync(AIAgentActionResultType::CallMCPTool(
+                    CallMCPToolResult::Error(format!("tool not allowed in this session: {reason}")),
+                ));
+            }
 
             // Coerce whole-number f64 args to i64 for fields declared as `"type": "integer"`
             // in the tool's input schema. MCP tool args round-trip through

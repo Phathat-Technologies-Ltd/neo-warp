@@ -749,6 +749,9 @@ impl AgentInputFooter {
             &TemplatableMCPServerManager::handle(ctx),
             |me, _, _, ctx| me.refresh_mcp_menu(ctx),
         );
+        TemplatableMCPServerManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.start_session(terminal_view_id, ctx);
+        });
 
         let usage_popover = ctx.add_typed_action_view(|ctx| UsagePopoverView::new(None, ctx));
         ctx.subscribe_to_view(&usage_popover, |me, _, event, ctx| match event {
@@ -2793,7 +2796,7 @@ fn session_mcp_servers(
             id: server.installation_id(),
             name: server.name().to_owned(),
             enabled: manager.is_server_enabled_for_session(pane, server.installation_id(), app),
-            level: manager.server_access_level_for_session(pane, server.installation_id()),
+            level: manager.server_access_level_for_session(pane, server.installation_id(), app),
         })
         .collect()
 }

@@ -29,7 +29,7 @@ use warpui::platform::keyboard::KeyCode;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, UpdateModel, WeakViewHandle};
 
 use crate::ai::execution_profiles::ExecutionProfilesConfig;
-use crate::ai::mcp::tool_risk::McpToolRisk;
+use crate::ai::mcp::tool_risk::{McpAccessLevel, McpToolRisk};
 use crate::ai::request_usage_model::RequestLimitInfo;
 use crate::auth::AuthStateProvider;
 use crate::settings::PrivacySettings;
@@ -2071,17 +2071,31 @@ define_settings_group!(AISettings, settings: [
         description: "Whether third-party file-based MCP servers are automatically detected.",
     }
 
-    // Whether an MCP server the user hasn't toggled in a session is enabled for it. It applies to
-    // existing sessions too; turning it off makes sessions opt in from the agent input footer.
-    mcp_servers_enabled_by_default: McpServersEnabledByDefault {
+    // Whether a new session's agent starts with every running MCP server enabled. Sessions keep
+    // the value they started with; turning it off makes new sessions opt in from the agent input
+    // footer.
+    mcp_servers_enabled_in_new_sessions: McpServersEnabledInNewSessions {
         type: bool,
         default: true,
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         surface: settings::SettingSurfaces::GUI,
         private: false,
-        toml_path: "agents.mcp_servers.enabled_by_default",
-        description: "Whether MCP servers not toggled in an agent session are enabled for it.",
+        toml_path: "agents.mcp_servers.enabled_in_new_sessions",
+        description: "Whether new agent sessions start with every running MCP server enabled.",
+    }
+
+    // The access level new sessions start with for each MCP server. Sessions keep the value they
+    // started with.
+    mcp_default_access_level_in_new_sessions: McpDefaultAccessLevelInNewSessions {
+        type: McpAccessLevel,
+        default: McpAccessLevel::All,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.mcp_servers.default_access_level_in_new_sessions",
+        description: "Which MCP tool risk classes new agent sessions may use from each server.",
     }
 
     // User-chosen MCP tool risk classes, keyed "<installation uuid>/<tool name>". Local-only

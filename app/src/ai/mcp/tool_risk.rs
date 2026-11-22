@@ -68,7 +68,7 @@ pub struct McpToolClass {
 }
 
 impl McpToolClass {
-    const UNCLASSIFIED: Self = Self {
+    pub const UNCLASSIFIED: Self = Self {
         risk: None,
         source: None,
     };
@@ -128,11 +128,13 @@ pub fn classify_tool(tool: &Tool) -> McpToolClass {
     }) {
         return McpToolClass::new(risk, McpToolRiskSource::Annotation);
     }
-    classify_words(&tool.name)
-        .or_else(|| tool.description.as_deref().and_then(classify_words))
-        .map_or(McpToolClass::UNCLASSIFIED, |risk| {
-            McpToolClass::new(risk, McpToolRiskSource::Heuristic)
-        })
+    let text = match tool.description.as_deref() {
+        Some(description) => format!("{} {description}", tool.name),
+        None => tool.name.to_string(),
+    };
+    classify_words(&text).map_or(McpToolClass::UNCLASSIFIED, |risk| {
+        McpToolClass::new(risk, McpToolRiskSource::Heuristic)
+    })
 }
 
 /// Maps MCP annotations to a class, applying the spec's defaults for missing hints
@@ -278,7 +280,22 @@ fn split_words(text: &str) -> Vec<String> {
 }
 
 /// Which tool classes a session may use from a server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "Which MCP tool risk classes an agent session may use.",
+    rename_all = "snake_case"
+)]
 pub enum McpAccessLevel {
     ReadOnly,
     ReadAndIdempotent,
@@ -288,6 +305,13 @@ pub enum McpAccessLevel {
 }
 
 impl McpAccessLevel {
+    pub const ALL: [Self; 4] = [
+        Self::ReadOnly,
+        Self::ReadAndIdempotent,
+        Self::AllButDestructive,
+        Self::All,
+    ];
+
     fn max_risk(self) -> McpToolRisk {
         match self {
             Self::ReadOnly => McpToolRisk::ReadOnly,

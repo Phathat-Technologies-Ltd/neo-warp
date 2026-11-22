@@ -129,3 +129,32 @@ model.
   priority, camelCase splitting, unclassified, overrides, level filtering) and
   `session_selection_tests.rs` (`select`: disabled servers dropped, `None` pane uses the default,
   per-server levels).
+
+## Stage 3 review fixes
+
+- Call-time enforcement: `CallMCPToolExecutor::execute` resolves the server (`server_id`, or
+  `server_from_tool` for flat calls) and calls
+  `TemplatableMCPServerManager::check_session_tool_call(Some(terminal_view_id), server, name, app)`
+  before any schema coercion or peer lookup; on `Err(reason)` it returns
+  `CallMCPToolResult::Error("tool not allowed in this session: {reason}")` synchronously.
+  `should_autoexecute` returns `true` for such calls so they're refused without a permission
+  prompt. The check is `SessionMcpSelection::check_tool_call`, which classifies the server's
+  advertised `Tool` (or treats a missing one as unclassified, i.e. destructive) with the same
+  `classify_tool_with_overrides` and `McpAccessLevel::allows` the request filter uses.
+- Embedded server: `McpTools::to_warp_tool` only maps names built from this turn's
+  `mcp_context`; anything else falls through to `tools::to_warp_tool`, which refuses unknown
+  names, so the call is dropped and never sent to the client. Covered by
+  `calls_to_tools_not_advertised_this_turn_are_refused`.
+- Per-pane snapshot: `SessionMcpSelection` keeps `PaneSelection { defaults:
+  Option<SessionMcpDefaults { enabled, level }>, servers }`. `start_session(pane, defaults)` sets
+  the snapshot once (`get_or_insert`); `TemplatableMCPServerManager::start_session(pane, app)` is
+  called from `AgentInputFooter::new`. All lookups take the current settings as
+  `current_defaults`, used only when there's no pane or the pane never started.
+- Setting renamed back to `mcp_servers_enabled_in_new_sessions`
+  (`McpServersEnabledInNewSessions`, `MCP_SERVERS_ENABLED_IN_NEW_SESSIONS_FLAG`). New
+  `mcp_default_access_level_in_new_sessions: McpAccessLevel` (synced, default `All`), shown as a
+  dropdown (`McpDefaultAccessLevelWidget`) on the Warp Agent page. `McpAccessLevel` now derives
+  serde, `JsonSchema`, and `SettingsValue`, and has `ALL`.
+- `classify_tool` runs the word heuristic over `"{name} {description}"` instead of the name first.
+- Tests: `session_selection_tests.rs` adds the snapshot, disabled-server, level, override, and
+  unclassified/unadvertised call checks; `tool_risk_tests.rs` adds description-over-name cases.

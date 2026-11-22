@@ -312,3 +312,24 @@ fn results_render_text_resources_and_errors() {
     let (text, failed) = result_text(&error);
     assert!(failed && text.contains("boom"));
 }
+
+#[test]
+fn calls_to_tools_not_advertised_this_turn_are_refused() {
+    let context = api::request::McpContext {
+        servers: vec![server("s1", "GitHub", vec![tool("list_issues", None)])],
+        ..Default::default()
+    };
+    let tools = McpTools::from_request(&request(context, &[api::ToolType::CallMcpTool]));
+    assert!(
+        tools
+            .to_warp_tool("mcp__GitHub__list_issues", None)
+            .is_some()
+    );
+
+    // The client left delete_issue out of this turn's context, so neither its namespaced nor its
+    // raw name becomes a client tool call.
+    for name in ["mcp__GitHub__delete_issue", "delete_issue"] {
+        assert!(tools.to_warp_tool(name, None).is_none());
+        assert!(crate::agent::tools::to_warp_tool(name, None).is_err());
+    }
+}

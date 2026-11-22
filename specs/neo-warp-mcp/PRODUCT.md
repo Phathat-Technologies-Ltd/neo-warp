@@ -141,3 +141,24 @@ like the on/off choice.
 Classifying with the user's selected model through the embedded server (heuristics only for
 now); enforcing the level again when the client executes a tool call (the agent only learns tool
 names from the request, so this is defense in depth); levels for the flat MCP format.
+
+## Stage 3 review fixes
+
+- **Enforced at call time.** Even if the agent names a tool it wasn't offered, Warp refuses to run
+  a tool call whose server is disabled in the pane, or whose tool is above the pane's access level
+  (an unclassified tool, or one the server doesn't list, counts as destructive). The MCP server is
+  never contacted; the agent gets the error "tool not allowed in this session: <reason>", and the
+  user isn't asked to approve a call that would be refused. The embedded agent server also refuses
+  model calls to MCP tools that weren't in that turn's request.
+- **Defaults apply to new sessions only.** The setting is again **Enable all MCP servers in new
+  sessions** (Command Palette: enable/disable "all MCP servers in new agent sessions"; TOML
+  `agents.mcp_servers.enabled_in_new_sessions`). A pane takes a snapshot of the defaults when its
+  agent input is created, so changing the setting later doesn't change open panes. Requests not
+  tied to a pane use the current settings.
+- **Default access level.** New setting **MCP access level in new agent sessions** (Settings >
+  Agents > Input; TOML `agents.mcp_servers.default_access_level_in_new_sessions`; default **All**).
+  Each pane snapshots it with the enabled default, and each server's level in the pane starts from
+  it until changed in the footer menu.
+- **Heuristic is more conservative.** The heuristic reads the tool's name and description
+  together and picks the riskiest class any word signals, so `get_branch` described as "can
+  delete stale branches" is destructive.

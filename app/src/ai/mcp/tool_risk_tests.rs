@@ -101,6 +101,23 @@ fn heuristic_falls_back_to_the_description() {
 }
 
 #[test]
+fn heuristic_reads_the_description_even_when_the_name_looks_read_only() {
+    let risk = |name, description| classify_tool(&tool(name, description)).risk;
+    assert_eq!(
+        risk("get_branch", "Gets a branch, or can delete it when stale."),
+        Some(McpToolRisk::Destructive)
+    );
+    assert_eq!(
+        risk("list_jobs", "Lists jobs and can trigger a rerun."),
+        Some(McpToolRisk::External)
+    );
+    assert_eq!(
+        risk("list_jobs", "Lists jobs in a project."),
+        Some(McpToolRisk::ReadOnly)
+    );
+}
+
+#[test]
 fn unclassified_tools_are_treated_as_destructive() {
     let class = classify_tool(&tool("frobnicate", "Does a thing."));
     assert_eq!(class.risk, None);
