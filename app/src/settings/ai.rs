@@ -2367,7 +2367,9 @@ impl AISettings {
     }
 
     pub fn is_prompt_suggestions_enabled(&self, app: &warpui::AppContext) -> bool {
-        self.is_active_ai_enabled(app) && *self.prompt_suggestions_enabled_internal
+        FeatureFlag::AiPromptSuggestions.is_enabled()
+            && self.is_active_ai_enabled(app)
+            && *self.prompt_suggestions_enabled_internal
     }
 
     pub fn is_rule_suggestions_enabled(&self, app: &warpui::AppContext) -> bool {

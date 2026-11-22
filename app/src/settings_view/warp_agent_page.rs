@@ -219,7 +219,8 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 &(context.clone() & id!(flags::IS_ANY_AI_ENABLED)),
                 flags::AI_COMMAND_SEARCH_HASH_TRIGGER_FLAG,
             )
-            .with_group(bindings::BindingGroup::WarpAi),
+            .with_group(bindings::BindingGroup::WarpAi)
+            .with_enabled(|| FeatureFlag::AiCommandSearch.is_enabled()),
         ],
         app,
     );
@@ -247,7 +248,8 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 &(context.clone() & id!(flags::IS_ACTIVE_AI_ENABLED)),
                 flags::PROMPT_SUGGESTIONS_FLAG,
             )
-            .with_group(bindings::BindingGroup::WarpAi),
+            .with_group(bindings::BindingGroup::WarpAi)
+            .with_enabled(|| FeatureFlag::AiPromptSuggestions.is_enabled()),
         ],
         app,
     );
@@ -3678,7 +3680,7 @@ impl SettingsWidget for PromptSuggestionsWidget {
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
-        is_prompt_suggestions_toggleable(app)
+        FeatureFlag::AiPromptSuggestions.is_enabled() && is_prompt_suggestions_toggleable(app)
     }
 
     fn render(
@@ -3971,6 +3973,10 @@ impl SettingsWidget for AiCommandSearchHashTriggerWidget {
 
     fn search_terms(&self) -> &str {
         "# hash pound trigger ai command search shorthand shell comment"
+    }
+
+    fn should_render(&self, _app: &AppContext) -> bool {
+        FeatureFlag::AiCommandSearch.is_enabled()
     }
 
     fn render(

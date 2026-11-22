@@ -51,6 +51,9 @@ Responses API such as ChatGPT's Codex backend) with the same credential rules. N
 `AppState` gains `ai_settings: ModelSettingsCache`, a `Mutex<HashMap<uid, (Instant, Settings)>>`.
 `/ai/multi-agent` and `/ai/passive-suggestions` record a copy of the request settings reduced to
 `model_config`, `api_keys` and `custom_model_providers`, keyed by the signed-in user's `uid`.
+Recording merges: a field the request leaves unset or empty keeps its earlier value, and a request
+with all three empty records nothing, so a sparse request never erases credentials a fuller one
+supplied.
 `latest(uid)` returns them if they are under 12 hours old. Memory only: the cache dies with the
 process, and it holds nothing a request from that same user didn't send this session. On the
 embedded server that is the local user's own credentials. A standalone shared server would hold
@@ -101,21 +104,25 @@ logs nothing alarming.
   placeholders. Parsing takes the outermost `[...]`. Commands with an empty `command` are dropped,
   and so are parameters whose `{{id}}` doesn't appear in the command.
 - Error mapping: `InvalidApiKey` → `AI_PROVIDER_ERROR`, `Unavailable` → `RATE_LIMITED`,
-  `Internal` → `AI_PROVIDER_ERROR`, nothing parseable → `BAD_PROMPT`, empty prompt →
-  `BAD_PROMPT`.
+  `Internal` (transient: network, unexpected reply) → `OTHER`, nothing parseable → `BAD_PROMPT`,
+  empty prompt → `BAD_PROMPT`. Both `BAD_PROMPT` cases are logged at info level.
 
 ## Feature flags
 
-The flag plumbing comes from the neo-flags work. This change needs two `FeatureFlag` variants
-in `crates/warp_features/src/lib.rs`:
+The `FeatureFlag` variants `AiPromptSuggestions` and `AiCommandSearch` come from the neo-flags
+work (`PRODUCT_AREA_FLAGS`, on by default, set from the organization flag file).
 
-- `AiPromptSuggestions` (`ai_prompt_suggestions`): when off, `is_prompt_suggestions_enabled` in
-  `maa.rs` and the legacy model return false, and the Settings toggle, the chip UI and any
-  command-palette entry for prompt suggestions are hidden. When on in organization builds, also
-  enable `PromptSuggestionsViaMAA`, so suggestions take the path that carries credentials.
-- `AiCommandSearch` (`ai_command_search`): when off, the `#` AI command search entry, its
-  command-palette entry and its keybinding are hidden, and `generate_commands_from_natural_language`
-  is not called.
+- `AiPromptSuggestions` (`ai_prompt_suggestions`): `AISettings::is_prompt_suggestions_enabled`
+  requires it, so `maa.rs` and the legacy model send no requests and no chips appear. The Settings
+  `PromptSuggestionsWidget` and the prompt-suggestions command-palette toggle are hidden.
+- `PromptSuggestionsViaMAA` is in `app/src/bin/neo_warp.rs`'s additional features, so
+  organization builds take the credentialed `/ai/passive-suggestions` path. The legacy
+  `/ai/generate_am_query_suggestions` handler stays as a fallback when that flag is turned off.
+- `AiCommandSearch` (`ai_command_search`): when off, `Input::show_ai_command_search` returns
+  early (covering the keybinding, tips and context menu), the `#` trigger and its hint text are
+  ignored, the "Open AI Command Suggestions" keybinding/palette entry is disabled, the input
+  context-menu item and the Settings `#` trigger toggle and its palette entry are hidden, so
+  `generate_commands_from_natural_language` is never called.
 
 The server doesn't check the flags. A client with a flag off never calls the endpoint.
 
@@ -129,8 +136,9 @@ scripted `Provider`, like `turn_tests.rs`:
 - `NONE` reply, deprecated trigger, and missing credential → only `Init` and `Finished(Done)`.
 - Command search reply wrapped in fences → parsed commands. Parameters not referenced in the
   command are dropped. Invalid JSON → `BAD_PROMPT`.
-- The cache returns the latest settings per user, keeps only model and credential fields, and
-  expires old entries.
+- The cache returns the latest settings per user, keeps only model and credential fields, keeps
+  earlier fields a later request leaves empty, and expires old entries.
+- A provider error from command search maps to `OTHER`; a missing key maps to `AI_PROVIDER_ERROR`.
 - Router tests in `lib_tests.rs`: `GenerateCommands` without remembered settings deserializes
   through the client's `cynic` types as `GenerateCommandsFailure(AiProviderError)`, and the legacy
   endpoint answers `suggestion: null`.

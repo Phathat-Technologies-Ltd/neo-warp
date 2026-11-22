@@ -2296,6 +2296,7 @@ pub fn init(app: &mut AppContext) {
             "Open AI Command Suggestions",
             InputAction::ShowAiCommandSearch,
         )
+        .with_enabled(|| FeatureFlag::AiCommandSearch.is_enabled())
         .with_context_predicate(
             id!("Input")
                 & !id!(SharedSessionStatus::reader().as_keymap_context())
@@ -7512,7 +7513,9 @@ impl Input {
                 self.editor.update(ctx, |editor, ctx| {
                     editor.set_placeholder_text(hint_text, ctx);
                 });
-            } else if *InputSettings::as_ref(ctx).enable_ai_command_search_hash_trigger {
+            } else if FeatureFlag::AiCommandSearch.is_enabled()
+                && *InputSettings::as_ref(ctx).enable_ai_command_search_hash_trigger
+            {
                 self.editor.update(ctx, |editor, ctx| {
                     editor.set_placeholder_text(AI_COMMAND_SEARCH_HINT_TEXT, ctx);
                 });
@@ -10953,7 +10956,8 @@ impl Input {
                     }
                 }
 
-                if AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
+                if FeatureFlag::AiCommandSearch.is_enabled()
+                    && AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
                     && *InputSettings::as_ref(ctx).enable_ai_command_search_hash_trigger
                     && self.editor_starts_with_command_search_trigger(ctx)
                     && *edit_origin == EditOrigin::UserTyped
@@ -16707,6 +16711,9 @@ impl Input {
     /// inserting a leading #, which is the trigger when typed manually by the
     /// user).
     fn show_ai_command_search(&mut self, ctx: &mut ViewContext<Input>) {
+        if !FeatureFlag::AiCommandSearch.is_enabled() {
+            return;
+        }
         // Should not show ai command search for read-only viewers
         if self.model.lock().shared_session_status().is_reader() {
             return;

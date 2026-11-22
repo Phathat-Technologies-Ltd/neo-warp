@@ -26,6 +26,7 @@ pub(super) enum Failure {
     AiProviderError,
     BadPrompt,
     RateLimited,
+    Other,
 }
 
 impl Failure {
@@ -34,6 +35,7 @@ impl Failure {
             Self::AiProviderError => "AI_PROVIDER_ERROR",
             Self::BadPrompt => "BAD_PROMPT",
             Self::RateLimited => "RATE_LIMITED",
+            Self::Other => "OTHER",
         }
     }
 }
@@ -130,6 +132,7 @@ pub(super) async fn search(
 ) -> Result<Vec<GeneratedCommand>, Failure> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
+        log::info!("Command search refused: empty prompt");
         return Err(Failure::BadPrompt);
     }
     let user = match os {
@@ -146,11 +149,12 @@ pub(super) async fn search(
             TurnError::Unavailable => Failure::RateLimited,
             TurnError::Internal(message) => {
                 log::warn!("Command search failed: {message}");
-                Failure::AiProviderError
+                Failure::Other
             }
         })?;
     let commands = parse_commands(&reply);
     if commands.is_empty() {
+        log::info!("Command search found no usable command in the model's reply");
         return Err(Failure::BadPrompt);
     }
     Ok(commands)
