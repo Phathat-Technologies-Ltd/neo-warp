@@ -497,3 +497,68 @@ fn recognizes_headphone_devices() {
     assert!(is_headphone_device_name("External Headphones"));
     assert!(!is_headphone_device_name("MacBook Pro Speakers"));
 }
+
+#[test]
+fn stop_speaking_drops_the_rest_of_the_reply_and_speaks_the_next() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("One. Two. Three. ");
+    h.apply(actions);
+    h.run_synthesis();
+    assert!(h.controller.is_speaking());
+    h.log.clear();
+    let now = h.now;
+    let actions = h.controller.stop_speaking(now);
+    h.apply(actions);
+    assert_eq!(h.log, vec!["stop"]);
+    assert_eq!(h.controller.state(), ConversationState::Listening);
+    assert!(!h.controller.is_speaking());
+
+    // More text of the stopped reply is not read.
+    let actions = h.controller.reply_text("Four. ");
+    h.apply(actions);
+    assert!(h.controller.stop_speaking(now).is_empty());
+    h.run_synthesis();
+    assert_eq!(h.log, vec!["stop"]);
+
+    // The follow-up reply is spoken normally.
+    h.controller.reply_started();
+    let actions = h.controller.reply_text("Done. ");
+    h.apply(actions);
+    h.run_synthesis();
+    assert_eq!(h.log, vec!["stop", "synth Done.", "play Done."]);
+}
+
+#[test]
+fn mute_silences_readout_until_unmuted() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("One. Two. ");
+    h.apply(actions);
+    h.run_synthesis();
+    h.log.clear();
+    let now = h.now;
+    let actions = h.controller.set_muted(true, now);
+    h.apply(actions);
+    assert_eq!(h.log, vec!["stop"]);
+    assert!(h.controller.is_muted());
+    assert_eq!(h.controller.state(), ConversationState::Thinking);
+
+    let actions = h.controller.reply_text("Three. ");
+    h.apply(actions);
+    let actions = h.controller.speak("Ran cargo check: ok.".to_owned());
+    h.apply(actions);
+    let actions = h.controller.approval_requested(1, "cargo test", false);
+    h.apply(actions);
+    h.run_synthesis();
+    assert_eq!(h.log, vec!["stop"]);
+
+    let actions = h.controller.set_muted(false, now);
+    h.apply(actions);
+    let actions = h.controller.reply_text("Four. ");
+    h.apply(actions);
+    h.run_synthesis();
+    assert_eq!(h.log, vec!["stop", "synth Four.", "play Four."]);
+}

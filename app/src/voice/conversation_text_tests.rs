@@ -1,4 +1,5 @@
 use super::*;
+use crate::ai::agent::{AIAgentOutputMessage, AIAgentText, MessageId};
 
 fn command(command: &str, is_risky: Option<bool>) -> AIAgentActionType {
     AIAgentActionType::RequestCommandOutput {
@@ -79,5 +80,58 @@ fn command_results_are_read_when_short_and_summarized_when_long() {
             RequestCommandOutputResult::CancelledBeforeExecution
         )),
         None
+    );
+}
+
+fn reply(markdown: &str) -> AIAgentOutput {
+    let text = AIAgentText::from(warp_multi_agent_api::message::AgentOutput {
+        text: markdown.to_owned(),
+    });
+    AIAgentOutput {
+        messages: vec![AIAgentOutputMessage {
+            id: MessageId::new("m".to_owned()),
+            message: AIAgentOutputMessageType::Text(text),
+            citations: Vec::new(),
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn speaks_only_the_spoken_block_and_hides_it_from_the_screen() {
+    let output = reply(
+        "<spoken>I fixed the failing test.</spoken>\n\nEdited `app/src/lib.rs` and ran `cargo test`.",
+    );
+    assert_eq!(
+        spoken_reply_text(&output, true),
+        "I fixed the failing test."
+    );
+    let AIAgentOutputMessageType::Text(text) = &output.messages[0].message else {
+        panic!("expected a text message");
+    };
+    let shown = text
+        .sections
+        .iter()
+        .filter_map(|section| match section {
+            AIAgentTextSection::PlainText { text } => Some(text.text().to_owned()),
+            AIAgentTextSection::Code { .. }
+            | AIAgentTextSection::Table { .. }
+            | AIAgentTextSection::Image { .. }
+            | AIAgentTextSection::MermaidDiagram { .. } => None,
+        })
+        .collect::<String>();
+    assert!(!shown.contains("spoken"), "{shown}");
+    assert!(shown.contains("cargo test"), "{shown}");
+}
+
+#[test]
+fn replies_without_a_spoken_block_use_the_filtered_readout() {
+    let output = reply(
+        "Updated `crates/voice_input/src/live.rs` so capture recovers.\n\n```rust\nfn x() {}\n```\n\n\
+         Run cargo test -p voice_input next. Then check the logs.",
+    );
+    assert_eq!(
+        spoken_reply_text(&output, true),
+        "Updated so capture recovers. Run cargo test next."
     );
 }

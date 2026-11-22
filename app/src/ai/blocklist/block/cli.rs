@@ -1094,7 +1094,7 @@ impl View for CLISubagentView {
 
             for output_message in output.messages.iter() {
                 match &output_message.message {
-                    AIAgentOutputMessageType::Text(AIAgentText { sections })
+                    AIAgentOutputMessageType::Text(AIAgentText { sections, .. })
                         if !are_all_text_sections_empty(sections) =>
                     {
                         let text_color = blended_colors::text_main(theme, theme.surface_1());

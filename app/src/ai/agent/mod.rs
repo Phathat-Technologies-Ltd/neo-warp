@@ -1787,6 +1787,9 @@ impl AIAgentTextSection {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AIAgentText {
     pub sections: Vec<AIAgentTextSection>,
+    /// The `<spoken>` summary that opens the reply in voice conversation mode. It is read aloud
+    /// and kept out of `sections`, which are shown on screen.
+    pub spoken: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]

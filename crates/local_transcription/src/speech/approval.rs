@@ -81,7 +81,14 @@ pub fn is_stop_phrase(text: &str) -> bool {
             .map(String::as_str)
             .collect::<Vec<_>>()
             .as_slice(),
-        ["stop"] | ["stop", "talking"] | ["stop", "it"] | ["be", "quiet"] | ["quiet"] | ["shush"]
+        ["stop"]
+            | ["stop", "talking"]
+            | ["stop", "it"]
+            | ["be", "quiet"]
+            | ["quiet"]
+            | ["shush"]
+            | ["enough"]
+            | ["that's", "enough"]
     )
 }
 

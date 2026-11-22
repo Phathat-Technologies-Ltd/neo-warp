@@ -1,8 +1,13 @@
 //! Continuous microphone capture for hands-free input: 16 kHz mono PCM delivered in small chunks
 //! as it is recorded, with nothing kept in memory or written to disk.
 
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, mpsc};
+
 use anyhow::Context as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+use crate::recovery::{Heartbeat, RecoveryTiming, Signal, StreamFault, supervise};
 
 const TARGET_RATE: f64 = 16_000.0;
 
@@ -15,65 +20,129 @@ pub struct LiveChunk {
     pub level: f32,
 }
 
-/// An open microphone; dropping it closes the microphone.
+/// An open microphone; dropping it closes the microphone. The stream lives on a supervisor thread
+/// that rebuilds it when it fails or stalls.
 pub struct LiveCapture {
-    _stream: cpal::Stream,
+    signal_tx: mpsc::Sender<Signal>,
+}
+
+impl Drop for LiveCapture {
+    fn drop(&mut self) {
+        let _ = self.signal_tx.send(Signal::Stop);
+    }
 }
 
 impl LiveCapture {
     /// Opens the default input device and calls `on_chunk` from the audio thread for each chunk.
-    pub fn start(mut on_chunk: impl FnMut(LiveChunk) + Send + 'static) -> anyhow::Result<Self> {
-        let device = cpal::default_host()
-            .default_input_device()
-            .context("no default input device")?;
-        let config = device
-            .default_input_config()
-            .context("failed to get the default input config")?;
-        let channels = usize::from(config.channels().max(1));
-        let mut resampler = LinearResampler::new(f64::from(config.sample_rate()), TARGET_RATE);
-        let on_mono = move |mono: Vec<f32>| {
-            let samples = resampler.process(&mono);
-            if !samples.is_empty() {
-                on_chunk(to_chunk(&samples));
-            }
-        };
-        let sample_format = config.sample_format();
-        let config: cpal::StreamConfig = config.into();
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => build_stream::<f32>(&device, &config, channels, on_mono),
-            cpal::SampleFormat::I16 => build_stream::<i16>(&device, &config, channels, on_mono),
-            cpal::SampleFormat::U16 => build_stream::<u16>(&device, &config, channels, on_mono),
-            cpal::SampleFormat::I32 => build_stream::<i32>(&device, &config, channels, on_mono),
-            other => anyhow::bail!("unsupported microphone sample format {other:?}"),
-        }?;
-        stream.play().context("failed to start the input stream")?;
-        Ok(Self { _stream: stream })
+    /// `on_failed` is called once if the microphone breaks and can't be reopened.
+    pub fn start(
+        on_chunk: impl FnMut(LiveChunk) + Send + 'static,
+        on_failed: impl FnOnce(String) + Send + 'static,
+    ) -> anyhow::Result<Self> {
+        let (signal_tx, signal_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let on_chunk = Arc::new(Mutex::new(on_chunk));
+        let fault_tx = signal_tx.clone();
+        std::thread::Builder::new()
+            .name("hands-free-capture".to_owned())
+            .spawn(move || {
+                supervise(
+                    |heartbeat| open_stream(on_chunk.clone(), heartbeat, fault_tx.clone()),
+                    signal_rx,
+                    RecoveryTiming::default(),
+                    move |result| {
+                        let _ = started_tx.send(result);
+                    },
+                    on_failed,
+                );
+            })
+            .context("failed to start the capture thread")?;
+        started_rx.recv().context("the capture thread exited")??;
+        Ok(Self { signal_tx })
     }
 }
 
-/// Builds an input stream for samples of type `T`, downmixing each callback to mono `f32`.
+/// Opens and starts an input stream on the default device.
+fn open_stream<F>(
+    on_chunk: Arc<Mutex<F>>,
+    heartbeat: Heartbeat,
+    fault_tx: mpsc::Sender<Signal>,
+) -> anyhow::Result<cpal::Stream>
+where
+    F: FnMut(LiveChunk) + Send + 'static,
+{
+    let device = cpal::default_host()
+        .default_input_device()
+        .context("no default input device")?;
+    let config = device
+        .default_input_config()
+        .context("failed to get the default input config")?;
+    let channels = usize::from(config.channels().max(1));
+    let mut resampler = LinearResampler::new(f64::from(config.sample_rate()), TARGET_RATE);
+    let on_mono = move |mono: Vec<f32>| {
+        heartbeat.fetch_add(1, Ordering::Relaxed);
+        let samples = resampler.process(&mono);
+        if !samples.is_empty()
+            && let Ok(mut on_chunk) = on_chunk.lock()
+        {
+            on_chunk(to_chunk(&samples));
+        }
+    };
+    let sample_format = config.sample_format();
+    let config: cpal::StreamConfig = config.into();
+    let stream = match sample_format {
+        cpal::SampleFormat::F32 => {
+            build_stream::<f32>(&device, &config, channels, on_mono, fault_tx)
+        }
+        cpal::SampleFormat::I16 => {
+            build_stream::<i16>(&device, &config, channels, on_mono, fault_tx)
+        }
+        cpal::SampleFormat::U16 => {
+            build_stream::<u16>(&device, &config, channels, on_mono, fault_tx)
+        }
+        cpal::SampleFormat::I32 => {
+            build_stream::<i32>(&device, &config, channels, on_mono, fault_tx)
+        }
+        other => anyhow::bail!("unsupported microphone sample format {other:?}"),
+    }?;
+    stream.play().context("failed to start the input stream")?;
+    Ok(stream)
+}
+
+/// Builds an input stream for samples of type `T`, downmixing each callback to mono `f32`. Stream
+/// errors are reported to the supervisor.
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: usize,
     mut on_mono: impl FnMut(Vec<f32>) + Send + 'static,
+    fault_tx: mpsc::Sender<Signal>,
 ) -> anyhow::Result<cpal::Stream>
 where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
-    let mut logged_error = false;
+    let mut logged_glitch = false;
     device
         .build_input_stream(
             *config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 on_mono(downmix(data, channels));
             },
-            move |error| {
-                if !logged_error {
-                    logged_error = true;
-                    log::error!("Hands-free microphone stream error: {error}");
+            move |error: cpal::Error| {
+                let fault = StreamFault::classify(error.kind());
+                match fault {
+                    // Glitches can repeat many times a second; one log line is enough.
+                    StreamFault::Transient if logged_glitch => {}
+                    StreamFault::Transient => {
+                        logged_glitch = true;
+                        log::warn!("Hands-free microphone glitch, audio dropped: {error}");
+                    }
+                    StreamFault::Fatal => {
+                        log::error!("Hands-free microphone stream error: {error}");
+                    }
                 }
+                let _ = fault_tx.send(Signal::Fault(fault));
             },
             None,
         )

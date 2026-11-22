@@ -21730,6 +21730,7 @@ impl Workspace {
                 .with_margin_right(8.)
                 .finish(),
             );
+            self.add_voice_readout_controls(target, appearance, ctx);
         }
 
         let is_online = NetworkStatus::as_ref(ctx).is_online();
@@ -22209,6 +22210,55 @@ impl Workspace {
             .finish(),
         )
         .finish()
+    }
+
+    /// The Stop button while a reply is read aloud and the Mute toggle, next to the mic indicator
+    /// in voice conversation mode.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn add_voice_readout_controls(
+        &self,
+        target: &mut Flex,
+        appearance: &Appearance,
+        ctx: &AppContext,
+    ) {
+        let conversation = crate::voice::conversation::ConversationSession::as_ref(ctx);
+        if !conversation.is_active() {
+            return;
+        }
+        let font = appearance.ui_font_family();
+        let color = appearance.theme().foreground();
+        let text_button =
+            |label: &'static str, mouse_state: &MouseStateHandle, action: WorkspaceAction| {
+                Container::new(
+                    Hoverable::new(mouse_state.clone(), move |_| {
+                        Text::new_inline(label, font, 12.)
+                            .with_color(color.into())
+                            .finish()
+                    })
+                    .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
+                    .with_cursor(Cursor::PointingHand)
+                    .finish(),
+                )
+                .with_margin_right(8.)
+                .finish()
+            };
+        if conversation.is_speaking() {
+            target.add_child(text_button(
+                "\u{25a0} Stop",
+                &self.mouse_states.voice_stop_speaking_button,
+                WorkspaceAction::StopVoiceSpeaking,
+            ));
+        }
+        let mute_label = if conversation.is_muted() {
+            "Unmute"
+        } else {
+            "Mute"
+        };
+        target.add_child(text_button(
+            mute_label,
+            &self.mouse_states.voice_mute_button,
+            WorkspaceAction::ToggleVoiceReadoutMute,
+        ));
     }
 
     fn render_offline_button(&self, appearance: &Appearance) -> Box<dyn Element> {
@@ -23454,10 +23504,19 @@ impl Workspace {
                 context
                     .set
                     .insert(flags::VOICE_CONVERSATION_AVAILABLE_CONTEXT_FLAG);
-                if crate::voice::conversation::ConversationSession::as_ref(app).is_active() {
+                let conversation = crate::voice::conversation::ConversationSession::as_ref(app);
+                if conversation.is_active() {
                     context
                         .set
                         .insert(flags::VOICE_CONVERSATION_ACTIVE_CONTEXT_FLAG);
+                    if conversation.is_muted() {
+                        context.set.insert(flags::VOICE_READOUT_MUTED_CONTEXT_FLAG);
+                    }
+                }
+                if conversation.is_speaking() {
+                    context
+                        .set
+                        .insert(flags::VOICE_CONVERSATION_SPEAKING_CONTEXT_FLAG);
                 }
             }
         }
@@ -24907,6 +24966,16 @@ impl TypedActionView for Workspace {
                     let window_id = ctx.window_id();
                     crate::voice::conversation::toggle_conversation(window_id, ctx);
                 }
+            }
+            StopVoiceSpeaking => {
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                crate::voice::conversation::ConversationSession::handle(ctx)
+                    .update(ctx, |session, ctx| session.stop_speaking(ctx));
+            }
+            ToggleVoiceReadoutMute => {
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                crate::voice::conversation::ConversationSession::handle(ctx)
+                    .update(ctx, |session, ctx| session.toggle_muted(ctx));
             }
             ViewPrivacyPolicy => self.view_privacy_policy(ctx),
             SendFeedback => self.send_feedback(ctx),

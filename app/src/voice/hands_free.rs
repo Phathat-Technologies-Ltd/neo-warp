@@ -161,9 +161,16 @@ impl HandsFreeSession {
             return Err("Microphone access is denied".to_owned());
         }
         let (audio_tx, audio_rx) = mpsc::unbounded::<LiveChunk>();
-        let capture = LiveCapture::start(move |chunk| {
-            let _ = audio_tx.unbounded_send(chunk);
-        })
+        let (update_tx, update_rx) = mpsc::unbounded();
+        let failure_tx = update_tx.clone();
+        let capture = LiveCapture::start(
+            move |chunk| {
+                let _ = audio_tx.unbounded_send(chunk);
+            },
+            move |error| {
+                let _ = failure_tx.unbounded_send(SocketUpdate::Closed(Some(error)));
+            },
+        )
         .map_err(|error| format!("Couldn't open the microphone: {error:#}"))?;
         self.generation += 1;
         self.capture = Some(capture);
@@ -177,7 +184,6 @@ impl HandsFreeSession {
         let language = settings.voice_input_language_code().map(str::to_owned);
         self.controller.start(options);
 
-        let (update_tx, update_rx) = mpsc::unbounded();
         let server_api = ServerApiProvider::as_ref(ctx).get();
         let generation = self.generation;
         ctx.spawn(

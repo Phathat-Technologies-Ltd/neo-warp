@@ -335,7 +335,7 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                         {
                             continue;
                         }
-                        AIAgentOutputMessageType::Text(AIAgentText { sections })
+                        AIAgentOutputMessageType::Text(AIAgentText { sections, .. })
                             if !are_all_text_sections_empty(sections) =>
                         {
                             let theme = appearance.theme();
@@ -391,7 +391,7 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                             has_rendered_first_text_section = true;
                         }
                         AIAgentOutputMessageType::Reasoning {
-                            text: AIAgentText { sections },
+                            text: AIAgentText { sections, .. },
                             finished_duration,
                         } if !are_all_text_sections_empty(sections)
                             && props.thinking_display_mode.should_render() =>
@@ -419,7 +419,7 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                         // mode is off), we still need to advance text_section_index to
                         // stay in sync with all_text()-based link detection.
                         AIAgentOutputMessageType::Reasoning {
-                            text: AIAgentText { sections },
+                            text: AIAgentText { sections, .. },
                             ..
                         } if !are_all_text_sections_empty(sections) => {
                             text_section_index += sections.len();

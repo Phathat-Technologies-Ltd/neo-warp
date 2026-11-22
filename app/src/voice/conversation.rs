@@ -3,6 +3,7 @@
 //! speech-to-text.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use futures::channel::{mpsc, oneshot};
 use instant::Instant;
@@ -24,6 +25,7 @@ use super::local_model::{
     SpeechOutputEngine, SpeechOutputModel, ensure_speech_output_ready, is_conversation_enabled,
     speech_output_store,
 };
+use crate::ai::agent::api::VOICE_CONVERSATION_ACTIVE;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType, CancellationReason};
 use crate::ai::blocklist::{
@@ -119,6 +121,36 @@ impl ConversationSession {
         self.controller.state()
     }
 
+    /// Whether a reply is being read aloud, so Esc and the Stop button stop it.
+    pub fn is_speaking(&self) -> bool {
+        self.is_active() && self.controller.is_speaking()
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.controller.is_muted()
+    }
+
+    /// Stops reading the current reply aloud. Returns whether anything was being read.
+    pub fn stop_speaking(&mut self, ctx: &mut ModelContext<Self>) -> bool {
+        if !self.is_speaking() {
+            return false;
+        }
+        let actions = self.controller.stop_speaking(Instant::now());
+        self.apply(actions, ctx);
+        ctx.emit(ConversationEvent::StateChanged);
+        ctx.notify();
+        true
+    }
+
+    /// Mutes or unmutes the readout; conversation mode stays on either way.
+    pub fn toggle_muted(&mut self, ctx: &mut ModelContext<Self>) {
+        let muted = !self.controller.is_muted();
+        let actions = self.controller.set_muted(muted, Instant::now());
+        self.apply(actions, ctx);
+        ctx.emit(ConversationEvent::StateChanged);
+        ctx.notify();
+    }
+
     /// Whether `window_id` is where conversation mode runs.
     pub fn is_in_window(&self, window_id: WindowId) -> bool {
         self.is_active() && self.window_id == Some(window_id)
@@ -161,6 +193,7 @@ impl ConversationSession {
         self.window_id = Some(window_id);
         self.controller.start(options);
         self.controller.set_headphones(headphones);
+        VOICE_CONVERSATION_ACTIVE.store(true, Ordering::Relaxed);
         ctx.emit(ConversationEvent::StateChanged);
         ctx.notify();
         Ok(())
@@ -172,6 +205,7 @@ impl ConversationSession {
         }
         let actions = self.controller.stop();
         self.apply(actions, ctx);
+        VOICE_CONVERSATION_ACTIVE.store(false, Ordering::Relaxed);
         self.output = None;
         self.speaker = None;
         self.surface = None;

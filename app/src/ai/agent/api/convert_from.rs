@@ -31,6 +31,7 @@ use crate::ai::agent::{
 };
 use crate::ai::artifact_download::sanitized_basename;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
+use local_transcription::speech::spoken::split_spoken_block;
 
 impl TryFrom<api::Attachment> for AIAgentAttachment {
     type Error = anyhow::Error;
@@ -418,22 +419,21 @@ impl ConvertAPIMessageToClientOutputMessage for api::Message {
                             AIAgentText {
                                 sections: parse_markdown_into_text_and_code_sections(
                                     &conv_summary.summary,
-                                ),
-                            }
+                                ), spoken: None }
                         } else {
-                            AIAgentText { sections: vec![] }
+                            AIAgentText { sections: vec![], spoken: None }
                         };
                         (text, SummarizationType::ConversationSummary, token_count)
                     }
                     Some(api::message::summarization::SummaryType::ToolCallResultSummary(_)) => (
-                        AIAgentText { sections: vec![] },
+                        AIAgentText { sections: vec![], spoken: None },
                         SummarizationType::ToolCallResultSummary,
                         None,
                     ),
                     None => {
                         // Default to ConversationSummary if not specified
                         (
-                            AIAgentText { sections: vec![] },
+                            AIAgentText { sections: vec![], spoken: None },
                             SummarizationType::ConversationSummary,
                             None,
                         )
@@ -611,8 +611,10 @@ impl ConvertAPIMessageToClientOutputMessage for api::Message {
 
 impl From<api::message::AgentOutput> for AIAgentText {
     fn from(value: api::message::AgentOutput) -> Self {
+        let (spoken, display) = split_spoken_block(&value.text);
         AIAgentText {
-            sections: parse_markdown_into_text_and_code_sections(value.text.as_str()),
+            sections: parse_markdown_into_text_and_code_sections(display),
+            spoken,
         }
     }
 }
@@ -621,6 +623,7 @@ impl From<api::message::AgentReasoning> for AIAgentText {
     fn from(value: api::message::AgentReasoning) -> Self {
         AIAgentText {
             sections: parse_markdown_into_text_and_code_sections(value.reasoning.as_str()),
+            spoken: None,
         }
     }
 }

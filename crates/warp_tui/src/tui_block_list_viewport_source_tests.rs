@@ -988,6 +988,7 @@ fn completed_markdown_status(markdown: &str) -> AIBlockOutputStatus {
                     sections: vec![AIAgentTextSection::PlainText {
                         text: markdown.to_owned().into(),
                     }],
+                    spoken: None,
                 }),
                 citations: Vec::new(),
             }],
@@ -1023,6 +1024,7 @@ fn finished_reasoning_status(body: &str) -> AIBlockOutputStatus {
                         sections: vec![AIAgentTextSection::PlainText {
                             text: body.to_owned().into(),
                         }],
+                        spoken: None,
                     },
                     finished_duration: Some(Duration::from_secs(2)),
                 },
@@ -1050,6 +1052,7 @@ fn plain_text_output_status(text: &str) -> AIBlockOutputStatus {
                     sections: vec![AIAgentTextSection::PlainText {
                         text: text.to_owned().into(),
                     }],
+                    spoken: None,
                 }),
                 citations: Vec::new(),
             }],

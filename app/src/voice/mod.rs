@@ -22,7 +22,12 @@ pub fn mic_indicator_label(app: &warpui::AppContext) -> Option<String> {
     }
     let conversation = conversation::ConversationSession::as_ref(app);
     Some(if conversation.is_active() {
-        format!("\u{25cf} Mic on \u{b7} {}", conversation.state().label())
+        let state = if conversation.is_muted() {
+            format!("{} (muted)", conversation.state().label())
+        } else {
+            conversation.state().label().to_owned()
+        };
+        format!("\u{25cf} Mic on \u{b7} {state}")
     } else {
         "\u{25cf} Mic on".to_owned()
     })

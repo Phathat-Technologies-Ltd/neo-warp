@@ -20,6 +20,7 @@ use warpui_core::{Entity, ModelContext, SingletonEntity};
 
 mod live;
 pub use live::{LinearResampler, LiveCapture, LiveChunk};
+pub mod recovery;
 mod speaker_output;
 pub use speaker_output::SpeechOutput;
 
