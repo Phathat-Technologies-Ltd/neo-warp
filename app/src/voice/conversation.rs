@@ -79,11 +79,15 @@ impl ConversationSession {
             |_, _| {},
         );
         ctx.subscribe_to_model(&HandsFreeSession::handle(ctx), |me, session, event, ctx| {
-            if matches!(event, HandsFreeEvent::StateChanged)
-                && me.is_active()
-                && !session.as_ref(ctx).is_active()
-            {
+            if !matches!(event, HandsFreeEvent::StateChanged) || !me.is_active() {
+                return;
+            }
+            let session = session.as_ref(ctx);
+            if !session.is_active() {
                 me.stop(ctx);
+            } else if !session.state().is_mic_on() {
+                // Paused because Warp isn't the active app: nothing is spoken over other apps.
+                me.stop_speaking(ctx);
             }
         });
         ctx.subscribe_to_model(

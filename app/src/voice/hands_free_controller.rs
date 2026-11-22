@@ -19,16 +19,29 @@ pub enum HandsFreeState {
     Hearing,
     /// An utterance ended and its final transcript is pending.
     Transcribing,
+    /// The session is on but the microphone is closed because Warp isn't the active app.
+    Paused,
 }
 
 impl HandsFreeState {
     /// Whether the microphone is open.
     pub fn is_mic_on(self) -> bool {
         match self {
-            HandsFreeState::Off => false,
+            HandsFreeState::Off | HandsFreeState::Paused => false,
             HandsFreeState::Listening | HandsFreeState::Hearing | HandsFreeState::Transcribing => {
                 true
             }
+        }
+    }
+
+    /// Whether the session is on, including while paused.
+    pub fn is_on(self) -> bool {
+        match self {
+            HandsFreeState::Off => false,
+            HandsFreeState::Listening
+            | HandsFreeState::Hearing
+            | HandsFreeState::Transcribing
+            | HandsFreeState::Paused => true,
         }
     }
 
@@ -38,6 +51,7 @@ impl HandsFreeState {
             HandsFreeState::Listening => "Listening",
             HandsFreeState::Hearing => "Hearing",
             HandsFreeState::Transcribing => "Transcribing",
+            HandsFreeState::Paused => "Mic paused",
         }
     }
 }
@@ -71,11 +85,28 @@ pub enum HandsFreeEffect {
     Commit(String),
     InsertNewline,
     ClearInput,
+    /// Remove the pending voice text of an utterance that will never finish.
+    DiscardPartial,
     /// Send the input because the user said a send command.
     Send,
     /// Send the input because the auto-send pause passed. Inputs that run shell commands ignore
     /// it, so a misheard utterance never runs without an explicit command.
     AutoSend,
+}
+
+impl HandsFreeEffect {
+    /// The effect's name without its text, for logs.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            HandsFreeEffect::ShowPartial(_) => "partial",
+            HandsFreeEffect::Commit(_) => "commit",
+            HandsFreeEffect::InsertNewline => "newline",
+            HandsFreeEffect::ClearInput => "clear",
+            HandsFreeEffect::DiscardPartial => "discard",
+            HandsFreeEffect::Send => "send",
+            HandsFreeEffect::AutoSend => "auto-send",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -108,6 +139,27 @@ impl HandsFreeController {
 
     pub fn stop(&mut self) {
         *self = Self::default();
+    }
+
+    /// Closes the microphone without ending the session. The open utterance is discarded, and
+    /// transcripts are ignored until [`Self::resume`].
+    pub fn pause(&mut self) -> Vec<HandsFreeEffect> {
+        if !self.state.is_mic_on() {
+            return Vec::new();
+        }
+        self.state = HandsFreeState::Paused;
+        self.auto_send_at = None;
+        match self.showing.take() {
+            Some(_) => vec![HandsFreeEffect::DiscardPartial],
+            None => Vec::new(),
+        }
+    }
+
+    /// Reopens the microphone after [`Self::pause`].
+    pub fn resume(&mut self) {
+        if self.state == HandsFreeState::Paused {
+            self.state = HandsFreeState::Listening;
+        }
     }
 
     /// The user typed into the input (or edited it outside hands-free).
@@ -235,7 +287,8 @@ pub fn sends_input(effect: &HandsFreeEffect, is_shell: bool, buffer: &str) -> bo
         HandsFreeEffect::ShowPartial(_)
         | HandsFreeEffect::Commit(_)
         | HandsFreeEffect::InsertNewline
-        | HandsFreeEffect::ClearInput => false,
+        | HandsFreeEffect::ClearInput
+        | HandsFreeEffect::DiscardPartial => false,
     }
 }
 

@@ -12,6 +12,8 @@ use local_transcription::stream::{ClientMessage, ServerMessage, VadOptions};
 use voice_input::{LiveCapture, LiveChunk};
 use warpui::r#async::Timer;
 use warpui::platform::MicrophoneAccessState;
+use warpui::windowing::state::ApplicationStage;
+use warpui::windowing::{StateEvent, WindowManager};
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
 use websocket::WebsocketMessage as _;
 
@@ -22,6 +24,7 @@ use super::hands_free_controller::{
 use super::local_model::{ensure_ready_to_record, is_hands_free_enabled};
 use crate::server::server_api::ServerApiProvider;
 use crate::settings::AISettings;
+use crate::system::{SystemStats, SystemStatsEvent};
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
@@ -47,6 +50,8 @@ pub struct HandsFreeSession {
     window_id: Option<WindowId>,
     /// Shared with the socket writer, which drops audio while the user types.
     audio_paused: Arc<AtomicBool>,
+    /// Whether the session follows app activation and system sleep.
+    watching_app: bool,
 }
 
 impl HandsFreeSession {
@@ -54,8 +59,9 @@ impl HandsFreeSession {
         self.controller.state()
     }
 
+    /// Whether the session is on, including while paused because Warp isn't the active app.
     pub fn is_active(&self) -> bool {
-        self.controller.state().is_mic_on()
+        self.controller.state().is_on()
     }
 
     /// The window whose focused input applies effects.
@@ -95,7 +101,18 @@ impl HandsFreeSession {
         }
         let message = self.route_to_conversation(message, ctx);
         let before = self.controller.state();
+        let is_transcript = matches!(
+            message,
+            ServerMessage::Partial { .. } | ServerMessage::Final { .. }
+        );
         let effects = self.controller.on_message(message, Instant::now());
+        if is_transcript && effects.is_empty() {
+            log::info!(
+                "Hands-free: transcript produced no edit (paused for typing: {}, state: {:?})",
+                self.controller.is_paused(),
+                self.controller.state()
+            );
+        }
         for effect in effects {
             ctx.emit(HandsFreeEvent::Effect(effect));
         }
@@ -160,6 +177,94 @@ impl HandsFreeSession {
         ) {
             return Err("Microphone access is denied".to_owned());
         }
+        self.watch_app(ctx);
+        self.window_id = Some(window_id);
+        let settings = AISettings::as_ref(ctx);
+        let options = HandsFreeOptions {
+            auto_send_after: settings.hands_free_auto_send_after(),
+            voice_commands: *settings.hands_free_voice_commands,
+        };
+        self.controller.start(options);
+        if let Err(message) = self.open_microphone(ctx) {
+            self.controller.stop();
+            return Err(message);
+        }
+        log::info!(
+            "Hands-free: session {} started (auto-send: {:?})",
+            self.generation,
+            options.auto_send_after
+        );
+        ctx.emit(HandsFreeEvent::StateChanged);
+        ctx.notify();
+        Ok(())
+    }
+
+    /// Pauses the session while Warp isn't the active app, resumes it when Warp is again, and
+    /// ends it before the system sleeps.
+    fn watch_app(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.watching_app {
+            return;
+        }
+        self.watching_app = true;
+        ctx.subscribe_to_model(&WindowManager::handle(ctx), |me, _, event, ctx| {
+            let StateEvent::ValueChanged { current, previous } = event;
+            if current.stage == previous.stage {
+                return;
+            }
+            match current.stage {
+                ApplicationStage::Active => me.resume(ctx),
+                ApplicationStage::Inactive | ApplicationStage::Terminating => me.pause(ctx),
+                ApplicationStage::Starting => {}
+            }
+        });
+        ctx.subscribe_to_model(&SystemStats::handle(ctx), |me, _, event, ctx| match event {
+            SystemStatsEvent::CpuWillSleep => {
+                if me.is_active() {
+                    log::info!("Hands-free: stopping because the system is going to sleep");
+                    me.stop(ctx);
+                }
+            }
+            SystemStatsEvent::CpuWasAwakened => {}
+        });
+    }
+
+    /// Closes the microphone while Warp isn't the active app. The open utterance is discarded and
+    /// nothing said meanwhile reaches the input.
+    pub fn pause(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.controller.state().is_mic_on() {
+            return;
+        }
+        log::info!("Hands-free: pausing because Warp is no longer the active app");
+        // Dropping the capture closes the microphone; the new generation drops the socket's
+        // remaining messages, including the open utterance's final.
+        self.capture = None;
+        self.generation += 1;
+        for effect in self.controller.pause() {
+            ctx.emit(HandsFreeEvent::Effect(effect));
+        }
+        ctx.emit(HandsFreeEvent::StateChanged);
+        ctx.notify();
+    }
+
+    /// Reopens the microphone after [`Self::pause`].
+    pub fn resume(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.controller.state() != HandsFreeState::Paused {
+            return;
+        }
+        log::info!("Hands-free: resuming because Warp is the active app again");
+        if let Err(message) = self.open_microphone(ctx) {
+            log::warn!("Hands-free: couldn't resume: {message}");
+            self.show_error(message, ctx);
+            self.stop(ctx);
+            return;
+        }
+        self.controller.resume();
+        ctx.emit(HandsFreeEvent::StateChanged);
+        ctx.notify();
+    }
+
+    /// Opens the microphone and the transcription socket under a new generation.
+    fn open_microphone(&mut self, ctx: &mut ModelContext<Self>) -> Result<(), String> {
         let (audio_tx, audio_rx) = mpsc::unbounded::<LiveChunk>();
         let (update_tx, update_rx) = mpsc::unbounded();
         let failure_tx = update_tx.clone();
@@ -174,15 +279,10 @@ impl HandsFreeSession {
         .map_err(|error| format!("Couldn't open the microphone: {error:#}"))?;
         self.generation += 1;
         self.capture = Some(capture);
-        self.window_id = Some(window_id);
-        self.audio_paused = Arc::new(AtomicBool::new(false));
-        let settings = AISettings::as_ref(ctx);
-        let options = HandsFreeOptions {
-            auto_send_after: settings.hands_free_auto_send_after(),
-            voice_commands: *settings.hands_free_voice_commands,
-        };
-        let language = settings.voice_input_language_code().map(str::to_owned);
-        self.controller.start(options);
+        self.audio_paused = Arc::new(AtomicBool::new(self.controller.is_paused()));
+        let language = AISettings::as_ref(ctx)
+            .voice_input_language_code()
+            .map(str::to_owned);
 
         let server_api = ServerApiProvider::as_ref(ctx).get();
         let generation = self.generation;
@@ -205,6 +305,9 @@ impl HandsFreeSession {
                 match update {
                     SocketUpdate::Message(message) => me.handle_message(message, ctx),
                     SocketUpdate::Closed(error) => {
+                        if error.is_none() {
+                            log::info!("Hands-free voice input stream closed");
+                        }
                         if let Some(error) = error {
                             log::warn!("Hands-free voice input stopped: {error}");
                             me.show_error(format!("Hands-free voice input stopped: {error}"), ctx);
@@ -215,8 +318,6 @@ impl HandsFreeSession {
             },
             |_, _| {},
         );
-        ctx.emit(HandsFreeEvent::StateChanged);
-        ctx.notify();
         Ok(())
     }
 
@@ -225,7 +326,7 @@ impl HandsFreeSession {
         // socket.
         self.capture = None;
         self.generation += 1;
-        if self.controller.state().is_mic_on() {
+        if self.controller.state().is_on() {
             self.controller.stop();
             ctx.emit(HandsFreeEvent::StateChanged);
             ctx.notify();
@@ -233,12 +334,11 @@ impl HandsFreeSession {
     }
 }
 
-/// Streams audio to the server and its messages back, until the audio ends, the server closes the
-/// socket, or either direction fails.
+/// Connects to the server, then streams audio to it until the session ends.
 async fn run_socket(
     server_api: Arc<crate::server::server_api::ServerApi>,
     language: Option<String>,
-    mut audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
+    audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
     audio_paused: Arc<AtomicBool>,
     update_tx: mpsc::UnboundedSender<SocketUpdate>,
 ) {
@@ -249,6 +349,21 @@ async fn run_socket(
             return;
         }
     };
+    stream_session(socket, language, audio_rx, audio_paused, update_tx).await;
+}
+
+/// How many audio chunks pass between progress logs (about ten seconds of audio).
+const CHUNKS_PER_LOG: u64 = 1000;
+
+/// Streams audio to the server and its messages back, until the audio ends, the server closes the
+/// socket, or either direction fails.
+async fn stream_session(
+    socket: websocket::WebSocket,
+    language: Option<String>,
+    mut audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
+    audio_paused: Arc<AtomicBool>,
+    update_tx: mpsc::UnboundedSender<SocketUpdate>,
+) {
     let (mut sink, mut stream) = socket.split().await;
     let config = ClientMessage::Config {
         language,
@@ -260,44 +375,74 @@ async fn run_socket(
         websocket::Message::new_text(serde_json::to_string(message).expect("messages serialize"))
     };
     if let Err(error) = sink.send(text(&config)).await {
+        log::warn!("Hands-free: couldn't send the stream config: {error}");
         let _ = update_tx.unbounded_send(SocketUpdate::Closed(Some(error.to_string())));
         return;
     }
+    log::info!("Hands-free: stream config sent, streaming audio");
     let reader_tx = update_tx.clone();
     let reader = async move {
         while let Some(message) = stream.next().await {
             let message = match message {
                 Ok(message) => message,
-                Err(error) => return Some(error.to_string()),
+                Err(error) => {
+                    log::warn!("Hands-free: socket read failed: {error}");
+                    return Some(error.to_string());
+                }
             };
             let Some(text) = message.text() else { continue };
             match serde_json::from_str::<ServerMessage>(text) {
                 Ok(message) => {
+                    log_server_message(&message);
                     let _ = reader_tx.unbounded_send(SocketUpdate::Message(message));
                 }
                 Err(error) => log::warn!("Unexpected hands-free server message: {error}"),
             }
         }
+        log::info!("Hands-free: the server closed the socket");
         None
     };
     let writer = async move {
         let mut was_paused = false;
+        let mut sent: u64 = 0;
+        let mut dropped: u64 = 0;
         while let Some(chunk) = audio_rx.next().await {
             let paused = audio_paused.load(Ordering::Relaxed);
             if paused {
                 // Closing the open utterance stops the server decoding it; the final it sends is
                 // dropped because transcripts are paused.
-                if !was_paused && let Err(error) = sink.send(text(&ClientMessage::Flush)).await {
-                    return Some(error.to_string());
+                if !was_paused {
+                    log::info!("Hands-free: audio paused because the user is typing");
+                    if let Err(error) = sink.send(text(&ClientMessage::Flush)).await {
+                        log::warn!("Hands-free: socket write failed: {error}");
+                        return Some(error.to_string());
+                    }
                 }
                 was_paused = true;
+                dropped += 1;
                 continue;
             }
             was_paused = false;
+            if sent == 0 {
+                log::info!(
+                    "Hands-free: sending the first audio chunk ({} bytes)",
+                    chunk.pcm.len()
+                );
+            }
+            sent += 1;
+            if sent.is_multiple_of(CHUNKS_PER_LOG) {
+                log::info!(
+                    "Hands-free: sent {sent} audio chunks ({dropped} dropped while paused), \
+                     last level {:.3}",
+                    chunk.level
+                );
+            }
             if let Err(error) = sink.send(websocket::Message::new_binary(chunk.pcm)).await {
+                log::warn!("Hands-free: socket write failed: {error}");
                 return Some(error.to_string());
             }
         }
+        log::info!("Hands-free: audio ended after {sent} chunks; ending the stream");
         let _ = sink.send(text(&ClientMessage::End)).await;
         None
     };
@@ -308,6 +453,22 @@ async fn run_socket(
         }
     };
     let _ = update_tx.unbounded_send(SocketUpdate::Closed(error));
+}
+
+fn log_server_message(message: &ServerMessage) {
+    match message {
+        ServerMessage::SpeechStart => log::info!("Hands-free: speech started"),
+        ServerMessage::SpeechEnd => log::info!("Hands-free: speech ended"),
+        ServerMessage::Partial { utterance, text } => log::info!(
+            "Hands-free: partial for utterance {utterance} ({} chars)",
+            text.len()
+        ),
+        ServerMessage::Final { utterance, text } => log::info!(
+            "Hands-free: final for utterance {utterance} ({} chars)",
+            text.len()
+        ),
+        ServerMessage::Error { message } => log::warn!("Hands-free: server error: {message}"),
+    }
 }
 
 impl Entity for HandsFreeSession {
@@ -336,3 +497,7 @@ pub fn toggle_hands_free(window_id: WindowId, ctx: &mut AppContext) {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "hands_free_tests.rs"]
+mod tests;
