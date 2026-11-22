@@ -226,17 +226,169 @@ pub fn final_text_for_input(text: &str, is_shell: bool) -> String {
     }
 }
 
-/// Whether `effect` submits the input. Auto-send applies only to agent prompts, so a shell command
-/// runs only after an explicit spoken send.
-pub fn sends_input(effect: &HandsFreeEffect, is_shell: bool) -> bool {
+/// Whether `effect` submits the input holding `buffer`. Auto-send submits agent prompts, and shell
+/// commands only when they are low risk; any other command waits for a spoken send or Enter.
+pub fn sends_input(effect: &HandsFreeEffect, is_shell: bool, buffer: &str) -> bool {
     match effect {
         HandsFreeEffect::Send => true,
-        HandsFreeEffect::AutoSend => !is_shell,
+        HandsFreeEffect::AutoSend => !is_shell || is_low_risk_command(buffer),
         HandsFreeEffect::ShowPartial(_)
         | HandsFreeEffect::Commit(_)
         | HandsFreeEffect::InsertNewline
         | HandsFreeEffect::ClearInput => false,
     }
+}
+
+/// Where a dictated utterance should go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputRoute {
+    /// The agent, as a natural-language prompt.
+    Agent,
+    /// The shell, as a command.
+    Shell,
+}
+
+/// Spoken prefixes that may introduce a shell command.
+const COMMAND_PREFIXES: &[&str] = &["run", "command", "execute"];
+
+/// Executables whose name at the start of an utterance marks it as a command.
+const KNOWN_EXECUTABLES: &[&str] = &[
+    "ls",
+    "cd",
+    "pwd",
+    "git",
+    "cargo",
+    "npm",
+    "npx",
+    "pnpm",
+    "yarn",
+    "make",
+    "docker",
+    "kubectl",
+    "cat",
+    "grep",
+    "rg",
+    "find",
+    "echo",
+    "mkdir",
+    "rm",
+    "mv",
+    "cp",
+    "touch",
+    "chmod",
+    "ssh",
+    "curl",
+    "wget",
+    "python",
+    "python3",
+    "pip",
+    "node",
+    "brew",
+    "gh",
+    "vim",
+    "nvim",
+    "code",
+    "top",
+    "htop",
+    "ps",
+    "kill",
+    "tail",
+    "head",
+    "less",
+    "man",
+    "which",
+    "export",
+    "source",
+    "clear",
+    "exit",
+    "sudo",
+    "go",
+    "rustup",
+    "terraform",
+    "aws",
+    "uv",
+    "tar",
+    "zip",
+    "unzip",
+    "wc",
+    "whoami",
+    "date",
+    "tree",
+    "du",
+    "df",
+];
+
+/// Words that show an utterance is English rather than (or as well as) a command, as in
+/// "make sure" or "git status and tell me what changed".
+const ENGLISH_WORDS: &[&str] = &[
+    "sure", "me", "us", "the", "it", "this", "that", "all", "my", "our", "some", "why", "what",
+    "how", "if", "whether", "and", "then", "tell", "explain", "please", "can", "could", "would",
+    "you", "is", "are",
+];
+
+/// Commands that only read state and run on auto-send.
+const LOW_RISK_COMMANDS: &[&str] = &[
+    "ls", "pwd", "cat", "head", "tail", "wc", "which", "whoami", "date", "tree", "du", "df",
+    "grep", "rg",
+];
+
+/// Read-only git subcommands that run on auto-send.
+const LOW_RISK_GIT_SUBCOMMANDS: &[&str] = &["status", "log", "diff", "show"];
+
+/// Decides where a dictated utterance goes and returns the text to insert. Dictation is mostly
+/// natural language, so only an utterance that is clearly a command, optionally introduced by a
+/// spoken "run"/"command" (which is stripped), routes to the shell. Natural language, including a
+/// command mixed with a request, goes to the agent unchanged.
+pub fn route_utterance(text: &str) -> (InputRoute, String) {
+    let trimmed = text.trim();
+    let first = trimmed.split_whitespace().next().unwrap_or_default();
+    let command = if COMMAND_PREFIXES.contains(&word_key(first).as_str()) {
+        trimmed[first.len()..]
+            .trim_start_matches([',', ':', '.', ' '])
+            .trim()
+    } else {
+        trimmed
+    };
+    if looks_like_command(command) {
+        (InputRoute::Shell, command.to_owned())
+    } else {
+        (InputRoute::Agent, trimmed.to_owned())
+    }
+}
+
+/// Whether `command` only reads state, so it may run without an explicit send.
+pub fn is_low_risk_command(command: &str) -> bool {
+    let command = command.trim();
+    if command.is_empty() || command.contains([';', '|', '&', '>', '<', '`', '$', '\n']) {
+        return false;
+    }
+    let mut words = command.split_whitespace();
+    let Some(program) = words.next() else {
+        return false;
+    };
+    if program == "git" {
+        return words
+            .next()
+            .is_some_and(|sub| LOW_RISK_GIT_SUBCOMMANDS.contains(&sub))
+            && !words.any(|arg| arg.starts_with("--output") || arg == "-o");
+    }
+    LOW_RISK_COMMANDS.contains(&program)
+}
+
+fn word_key(word: &str) -> String {
+    word.trim_end_matches([',', ':', '.']).to_ascii_lowercase()
+}
+
+fn looks_like_command(text: &str) -> bool {
+    if text.is_empty() || text.ends_with('?') {
+        return false;
+    }
+    let mut words = text.split_whitespace().map(word_key);
+    let Some(first) = words.next() else {
+        return false;
+    };
+    KNOWN_EXECUTABLES.contains(&first.as_str())
+        && !words.any(|word| ENGLISH_WORDS.contains(&word.as_str()))
 }
 
 /// The span of the input that holds the open utterance's transcript, which each partial and the
@@ -286,6 +438,17 @@ impl PendingVoiceRange {
         };
         self.range = None;
         out
+    }
+
+    /// Whether the open utterance (or the next one, when none is open) starts an input that holds
+    /// nothing else.
+    pub fn starts_input(&self, buffer: &str) -> bool {
+        match &self.range {
+            Some(range) => buffer
+                .get(..range.start)
+                .is_none_or(|p| p.trim().is_empty()),
+            None => buffer.trim().is_empty(),
+        }
     }
 
     pub fn clear(&mut self) {

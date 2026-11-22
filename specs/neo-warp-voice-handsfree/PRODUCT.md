@@ -28,6 +28,21 @@ is not a goal.
   - "Voice commands": default On. Saying "send" or "send it" at the end sends the prompt;
     "cancel" or "scratch that" clears the input; "new line" inserts a newline. Command words count
     only as the last word or words of an utterance, and they are removed from the text.
+- **Routing in the terminal input**: dictation is mostly natural language. When an utterance starts
+  an empty terminal input:
+  - Natural language goes to the agent: the input switches to agent mode, and auto-send sends it.
+  - A command mixed with a request ("run git status and tell me what changed") also goes to the
+    agent.
+  - A clear command (it begins with a known executable such as `git` or `ls`, optionally after a
+    spoken "run", "command", or "execute", which is removed, has no English words such as "and"
+    or "tell", and does not end with a question mark) switches the input to shell mode. If it is
+    read-only (`ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `which`, `git status`,
+    `git log`, `git diff`, `git show`, and similar, with no pipes, redirects, `;`, `&`, or `$`),
+    auto-send runs it after the pause. Anything else stays in the input, with a short toast
+    explaining that it waits for a spoken "send" or Enter.
+  - A mode the user picked by hand (cmd-I or a `!` prefix) is kept.
+  Sending a hands-free input does exactly what pressing Enter does, so prompts go to the agent and
+  commands to the shell.
 - **Wake word**: future work (for example "Hey Warp" with a tiny keyword-spotting model). Not in v1.
 - **Models**: the VAD model (2 MB) downloads after the same consent dialog, with the same live
   progress, as the speech model. The dialog lists both models. Hands-free cannot start until both

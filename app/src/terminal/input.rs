@@ -2472,7 +2472,7 @@ impl Input {
     ) {
         use crate::voice::hands_free::{HandsFreeEvent, HandsFreeSession};
         use crate::voice::hands_free_controller::{
-            HandsFreeEffect, final_text_for_input, sends_input,
+            HandsFreeEffect, final_text_for_input, is_low_risk_command, sends_input,
         };
 
         let effect = match event {
@@ -2507,22 +2507,46 @@ impl Input {
         let buffer = self.buffer_text(ctx);
         let text = match effect {
             HandsFreeEffect::ShowPartial(text) => self.hands_free_range.replace(&buffer, text),
-            HandsFreeEffect::Commit(text) => self
-                .hands_free_range
-                .commit(&buffer, &final_text_for_input(text, is_shell)),
+            HandsFreeEffect::Commit(text) => {
+                let routed = if self.hands_free_range.starts_input(&buffer) {
+                    self.route_hands_free_utterance(text, is_shell, ctx)
+                } else {
+                    None
+                };
+                let (is_shell, text) = routed
+                    .unwrap_or_else(|| (self.input_type(ctx) == InputType::Shell, text.clone()));
+                let committed = self
+                    .hands_free_range
+                    .commit(&buffer, &final_text_for_input(&text, is_shell));
+                if is_shell && !committed.trim().is_empty() && !is_low_risk_command(&committed) {
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |toasts, ctx| {
+                        toasts.add_ephemeral_toast(
+                            DismissibleToast::default(
+                                "This command can change things, so it won't run on its own. \
+                                 Say \"send\" or press Enter to run it."
+                                    .to_owned(),
+                            ),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                }
+                committed
+            }
             HandsFreeEffect::InsertNewline => format!("{buffer}\n"),
             HandsFreeEffect::ClearInput => {
                 self.hands_free_range.clear();
                 String::new()
             }
             HandsFreeEffect::Send | HandsFreeEffect::AutoSend => {
-                if !sends_input(effect, is_shell) {
+                if !sends_input(effect, is_shell, &buffer) {
                     return;
                 }
                 self.hands_free_range.clear();
                 self.hands_free_written = None;
                 if !buffer.trim().is_empty() {
-                    self.submit_current_input(ctx);
+                    self.input_enter(ctx);
                 }
                 return;
             }
@@ -2530,6 +2554,54 @@ impl Input {
         self.hands_free_written = Some(text.clone());
         self.editor
             .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+    }
+
+    /// Switches the input to the mode a dictated utterance that starts the input belongs in, and
+    /// returns whether the input is now a shell input along with the text to insert. Returns
+    /// `None` when the mode can't change, so the utterance follows the current mode.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn route_hands_free_utterance(
+        &mut self,
+        text: &str,
+        is_shell: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<(bool, String)> {
+        use crate::voice::hands_free_controller::{InputRoute, route_utterance};
+
+        if !FeatureFlag::AgentMode.is_enabled() || !AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
+            return None;
+        }
+        let input_model = self.ai_input_model.as_ref(ctx);
+        // A mode the user chose by hand wins over the dictation heuristic.
+        let user_chose_mode = input_model.is_input_type_locked()
+            && matches!(
+                input_model.last_ai_autodetection_source(),
+                Some(
+                    InputTypeAutoDetectionSource::ManualToggle
+                        | InputTypeAutoDetectionSource::ShellPrefix
+                )
+            );
+        if user_chose_mode {
+            return None;
+        }
+        let (route, text) = route_utterance(text);
+        let wants_shell = route == InputRoute::Shell;
+        if wants_shell != is_shell {
+            let input_type = if wants_shell {
+                InputType::Shell
+            } else {
+                InputType::AI
+            };
+            let is_buffer_empty = self.editor.as_ref(ctx).is_empty(ctx);
+            self.ai_input_model.update(ctx, |input_model, ctx| {
+                let config = input_model
+                    .input_config()
+                    .with_input_type(input_type)
+                    .locked();
+                input_model.set_input_config(config, is_buffer_empty, None, ctx);
+            });
+        }
+        Some((wants_shell, text))
     }
 
     /// Tells conversation mode when an agent action of this input's terminal waits for approval
