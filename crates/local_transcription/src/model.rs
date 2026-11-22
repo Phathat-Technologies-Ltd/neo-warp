@@ -81,6 +81,22 @@ pub fn silero_vad_v5() -> ModelSpec {
     }
 }
 
+/// CAM++ speaker embedding model (3D-Speaker, Apache-2.0) trained on VoxCeleb, as exported to
+/// ONNX by sherpa-onnx. The release asset isn't immutable, so the SHA-256 pins it.
+pub fn campplus_en_voxceleb() -> ModelSpec {
+    ModelSpec {
+        id: "campplus-en-voxceleb-16k".to_owned(),
+        display_name: "CAM++ speaker model".to_owned(),
+        files: vec![ModelFile {
+            name: "campplus_en_voxceleb_16k.onnx".to_owned(),
+            url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+                .to_owned(),
+            size: 29_596_979,
+            sha256: "98daf9bcf1c8abf3db374fec4c27a5eda7c58705bb3f180d057b085a72a88bb5".to_owned(),
+        }],
+    }
+}
+
 const CMUDICT_COMMIT: &str = "74790861f652b15e4ac49015a90074ad62a27690";
 
 /// CMUdict (BSD-style license), which the speech output models pronounce words with.

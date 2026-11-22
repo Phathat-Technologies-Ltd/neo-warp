@@ -1484,6 +1484,37 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.conversation_read_code_summaries",
         description: "Whether code blocks in agent replies are announced (\"I wrote a code block in rust, 12 lines\") in voice conversation mode.",
     },
+    voice_speaker_id_enabled: VoiceSpeakerIdEnabled {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.speaker_id_enabled",
+        description: "Whether hands-free voice input ignores speech that doesn't match your enrolled voiceprint. Has no effect until you enroll.",
+    },
+    // How closely speech must match the voiceprint: "strict", "normal", or "loose".
+    voice_speaker_id_sensitivity: VoiceSpeakerIdSensitivity {
+        type: String,
+        default: "normal".to_owned(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.speaker_id_sensitivity",
+        description: "How closely speech must match your voiceprint: strict, normal, or loose.",
+    },
+    voice_denoise: VoiceDenoise {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.denoise",
+        description: "Whether hands-free voice input suppresses background noise before detecting speech.",
+    },
     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
     // explicitly interacted with voice input. We use this to determine whether we should show a toast
     // to inform the user about voice input and auto-set the keybinding.

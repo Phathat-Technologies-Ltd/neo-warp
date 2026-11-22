@@ -3,22 +3,30 @@
 //! [`ModelState`] machine that a UI drives to ask the user before downloading. For hands-free
 //! input, a [`VoiceActivityDetector`] and [`stream::UtteranceStream`] split live audio into
 //! utterances. For conversation mode, [`speech::Speaker`] engines read agent replies aloud.
+//! [`speaker`] verifies that an utterance came from the enrolled user.
 //!
 //! The crate has no dependency on Warp's code so it can be reused as is.
 
 mod audio;
+#[cfg(feature = "denoise")]
+pub mod denoise;
+pub mod fbank;
 mod model;
 #[cfg(any(
     feature = "parakeet",
     feature = "silero",
     feature = "kokoro",
-    feature = "tiny_voca"
+    feature = "tiny_voca",
+    feature = "speaker_id"
 ))]
 mod ort_env;
 #[cfg(feature = "parakeet")]
 mod parakeet;
 #[cfg(feature = "silero")]
 mod silero;
+pub mod speaker;
+#[cfg(feature = "speaker_id")]
+mod speaker_onnx;
 pub mod speech;
 mod state;
 pub mod stream;
@@ -29,8 +37,11 @@ mod voice_command;
 pub use audio::{Audio, decode_wav};
 pub use model::{
     DownloadError, DownloadProgress, ModelBundle, ModelFile, ModelSpec, ModelStatus, ModelStore,
-    ProgressThrottle, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3, silero_vad_v5, tiny_voca,
+    ProgressThrottle, campplus_en_voxceleb, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3,
+    silero_vad_v5, tiny_voca,
 };
+#[cfg(feature = "speaker_id")]
+pub use speaker_onnx::{OnnxSpeakerEmbedder, SPEAKER_MODEL_FILE};
 #[cfg(feature = "parakeet")]
 pub use parakeet::ParakeetTranscriber;
 #[cfg(feature = "silero")]

@@ -33,6 +33,7 @@ fn bundled_defaults_turn_off_backend_features() {
         ProductArea::VoiceInput,
         ProductArea::VoiceHandsFree,
         ProductArea::VoiceConversation,
+        ProductArea::VoiceSpeakerId,
         ProductArea::CodebaseIndexing,
         ProductArea::AiPromptSuggestions,
         ProductArea::AiCommandSearch,

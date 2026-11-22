@@ -320,6 +320,10 @@ pub enum WorkspaceAction {
         /// Whether the download is of the speech output model rather than the speech model.
         speech_output: bool,
     },
+    /// Downloads the speaker model after the user agreed in the "Recognize my voice" prompt.
+    DownloadSpeakerModel,
+    /// Cancels a running speaker model download.
+    CancelSpeakerModelDownload,
     /// Turns voice conversation mode on or off.
     ToggleVoiceConversation,
     /// Stops reading the current agent reply aloud in voice conversation mode.
@@ -1059,6 +1063,8 @@ impl WorkspaceAction {
             | ToggleHandsFreeVoice
             | DownloadSpeechOutputModel
             | CancelVoiceModelDownload { .. }
+            | DownloadSpeakerModel
+            | CancelSpeakerModelDownload
             | ToggleVoiceConversation
             | StopVoiceSpeaking
             | ToggleVoiceReadoutMute

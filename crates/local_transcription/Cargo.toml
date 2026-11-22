@@ -15,6 +15,10 @@ silero = ["dep:parakeet-rs"]
 kokoro = ["dep:parakeet-rs"]
 # Speaks with tiny-voca on the same ONNX Runtime.
 tiny_voca = ["dep:parakeet-rs"]
+# Embeds speakers' voices with CAM++ on the same ONNX Runtime.
+speaker_id = ["dep:parakeet-rs"]
+# Suppresses background noise with RNNoise (pure Rust).
+denoise = ["dep:nnnoiseless"]
 
 [dependencies]
 futures.workspace = true
@@ -22,6 +26,7 @@ hex.workspace = true
 hound = "3.5.1"
 instant.workspace = true
 log.workspace = true
+nnnoiseless = { version = "0.5.2", default-features = false, optional = true }
 parakeet-rs = { version = "0.4.4", default-features = false, features = ["cpu", "ort-defaults", "api-28"], optional = true }
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true

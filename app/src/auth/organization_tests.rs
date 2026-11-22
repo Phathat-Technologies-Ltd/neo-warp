@@ -57,6 +57,7 @@ fn voice_input_off_disables_hands_free() {
     let disabled = flags_to_disable(&flags_with(ProductArea::VoiceInput, false));
     assert!(disabled.contains(&FeatureFlag::VoiceHandsFree));
     assert!(disabled.contains(&FeatureFlag::VoiceConversation));
+    assert!(disabled.contains(&FeatureFlag::VoiceSpeakerId));
 }
 
 #[test]

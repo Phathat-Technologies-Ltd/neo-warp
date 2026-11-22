@@ -111,8 +111,8 @@ use crate::settings::{
     NaturalLanguageAutosuggestionsEnabled, OrchestrationMessageDisplayMode, PromptSubmissionMode,
     SharedBlockTitleGenerationEnabled, ShouldRenderUseAgentToolbarForUserCommands,
     ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
-    ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceInputEnabled, VoiceInputLanguage,
-    VoiceInputToggleKey, WarpCloudModelsEnabled,
+    ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceDenoise, VoiceInputEnabled,
+    VoiceInputLanguage, VoiceInputToggleKey, VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
 };
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -910,6 +910,20 @@ impl WarpAgentPageView {
         if ctx.has_singleton_model::<crate::voice::local_model::LocalVoiceModel>() {
             ctx.subscribe_to_model(
                 &crate::voice::local_model::LocalVoiceModel::handle(ctx),
+                |_, _, _, ctx| ctx.notify(),
+            );
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if ctx.has_singleton_model::<crate::voice::local_model::SpeakerIdModel>() {
+            ctx.subscribe_to_model(
+                &crate::voice::local_model::SpeakerIdModel::handle(ctx),
+                |_, _, _, ctx| ctx.notify(),
+            );
+        }
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        if ctx.has_singleton_model::<crate::voice::speaker_id::SpeakerProfile>() {
+            ctx.subscribe_to_model(
+                &crate::voice::speaker_id::SpeakerProfile::handle(ctx),
                 |_, _, _, ctx| ctx.notify(),
             );
         }
@@ -2762,6 +2776,17 @@ pub enum WarpAgentPageAction {
     /// Switches conversation mode to the next speaking rate.
     CycleConversationSpeechRate,
     ToggleConversationReadCodeSummaries,
+    ToggleVoiceDenoise,
+    ToggleVoiceSpeakerId,
+    /// Switches "Recognize my voice" to the next sensitivity.
+    CycleVoiceSpeakerSensitivity,
+    /// Starts guided voice enrollment, first asking to download the speaker model if needed.
+    EnrollVoice,
+    CancelVoiceEnrollment,
+    DeleteVoiceprint,
+    DownloadSpeakerModel,
+    CancelSpeakerModelDownload,
+    RemoveSpeakerModel,
     SetVoiceInputToggleKey(VoiceInputToggleKey),
     SetVoiceInputLanguage(String),
     ToggleGlobalAI,
@@ -3169,6 +3194,93 @@ impl TypedActionView for WarpAgentPageView {
                 });
                 ctx.notify();
             }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::ToggleVoiceDenoise => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.voice_denoise.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::ToggleVoiceSpeakerId => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.voice_speaker_id_enabled.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::CycleVoiceSpeakerSensitivity => {
+                use local_transcription::speaker::Sensitivity;
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let next =
+                        match Sensitivity::from_setting(&settings.voice_speaker_id_sensitivity) {
+                            Sensitivity::Strict => "normal",
+                            Sensitivity::Normal => "loose",
+                            Sensitivity::Loose => "strict",
+                        };
+                    report_if_error!(
+                        settings
+                            .voice_speaker_id_sensitivity
+                            .set_value(next.to_owned(), ctx)
+                    );
+                });
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::EnrollVoice => {
+                let window_id = ctx.window_id();
+                if crate::voice::local_model::ensure_speaker_model_ready(window_id, ctx) {
+                    crate::voice::hands_free::HandsFreeSession::handle(ctx)
+                        .update(ctx, |session, ctx| session.stop(ctx));
+                    let started = crate::voice::speaker_id::SpeakerProfile::handle(ctx)
+                        .update(ctx, |profile, ctx| profile.start_enrollment(ctx));
+                    if let Err(message) = started {
+                        crate::workspace::ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+                            stack.add_ephemeral_toast(
+                                crate::view_components::DismissibleToast::error(message),
+                                window_id,
+                                ctx,
+                            );
+                        });
+                    }
+                }
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::CancelVoiceEnrollment => {
+                crate::voice::speaker_id::SpeakerProfile::handle(ctx)
+                    .update(ctx, |profile, ctx| profile.cancel_enrollment(ctx));
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::DeleteVoiceprint => {
+                crate::voice::speaker_id::SpeakerProfile::handle(ctx)
+                    .update(ctx, |profile, ctx| profile.delete_voiceprint(ctx));
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::DownloadSpeakerModel => {
+                let window_id = ctx.window_id();
+                crate::voice::local_model::SpeakerIdModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.download(window_id, ctx));
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::CancelSpeakerModelDownload => {
+                crate::voice::local_model::SpeakerIdModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.cancel_download(ctx));
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::RemoveSpeakerModel => {
+                crate::voice::local_model::SpeakerIdModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.remove(ctx));
+            }
+            #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
+            WarpAgentPageAction::ToggleVoiceDenoise
+            | WarpAgentPageAction::ToggleVoiceSpeakerId
+            | WarpAgentPageAction::CycleVoiceSpeakerSensitivity
+            | WarpAgentPageAction::EnrollVoice
+            | WarpAgentPageAction::CancelVoiceEnrollment
+            | WarpAgentPageAction::DeleteVoiceprint
+            | WarpAgentPageAction::DownloadSpeakerModel
+            | WarpAgentPageAction::CancelSpeakerModelDownload
+            | WarpAgentPageAction::RemoveSpeakerModel => {}
             #[cfg(target_family = "wasm")]
             WarpAgentPageAction::DownloadLocalVoiceModel
             | WarpAgentPageAction::CancelLocalVoiceModelDownload
@@ -4597,6 +4709,12 @@ struct VoiceWidget {
     conversation_voice_button: MouseStateHandle,
     conversation_rate_button: MouseStateHandle,
     conversation_code_summaries_toggle: SwitchStateHandle,
+    denoise_toggle: SwitchStateHandle,
+    speaker_id_toggle: SwitchStateHandle,
+    speaker_model_button: MouseStateHandle,
+    enroll_button: MouseStateHandle,
+    delete_voiceprint_button: MouseStateHandle,
+    sensitivity_button: MouseStateHandle,
 }
 
 impl VoiceWidget {
@@ -4708,6 +4826,22 @@ impl VoiceWidget {
             if crate::voice::local_model::is_conversation_enabled() {
                 self.render_conversation_settings(&mut column, view, appearance, app);
             }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            if crate::voice::local_model::is_hands_free_enabled() {
+                column.add_child(render_ai_setting_toggle::<VoiceDenoise>(
+                    "Reduce Background Noise",
+                    WarpAgentPageAction::ToggleVoiceDenoise,
+                    *ai_settings.voice_denoise,
+                    true,
+                    self.denoise_toggle.clone(),
+                    &view.local_only_icon_tooltip_states,
+                    app,
+                ));
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            if crate::voice::local_model::is_speaker_id_enabled() {
+                self.render_speaker_id_settings(&mut column, view, appearance, app);
+            }
         }
 
         column.finish()
@@ -4781,6 +4915,121 @@ impl VoiceWidget {
         ));
     }
 
+    /// Settings > Voice rows for "Recognize my voice": enrollment, sensitivity, and the speaker
+    /// model.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn render_speaker_id_settings(
+        &self,
+        column: &mut Flex,
+        view: &WarpAgentPageView,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) {
+        use local_transcription::speaker::{ENROLLMENT_PHRASES, Sensitivity};
+
+        use crate::voice::local_model::SpeakerIdModel;
+        use crate::voice::speaker_id::{EnrollmentState, SpeakerProfile};
+
+        let settings = AISettings::as_ref(app);
+        let profile = SpeakerProfile::as_ref(app);
+        column.add_child(render_ai_setting_toggle::<VoiceSpeakerIdEnabled>(
+            "Recognize My Voice",
+            WarpAgentPageAction::ToggleVoiceSpeakerId,
+            *settings.voice_speaker_id_enabled,
+            true,
+            self.speaker_id_toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        ));
+        if !*settings.voice_speaker_id_enabled {
+            return;
+        }
+        let (description, label, action) = match profile.enrollment() {
+            EnrollmentState::Recording { phrase } => (
+                format!(
+                    "Phrase {} of {}. Read aloud: \u{201c}{}\u{201d}",
+                    phrase + 1,
+                    ENROLLMENT_PHRASES.len(),
+                    ENROLLMENT_PHRASES[*phrase]
+                ),
+                "Cancel",
+                WarpAgentPageAction::CancelVoiceEnrollment,
+            ),
+            EnrollmentState::Processing => (
+                "Creating your voiceprint\u{2026}".to_owned(),
+                "Cancel",
+                WarpAgentPageAction::CancelVoiceEnrollment,
+            ),
+            EnrollmentState::Failed(error) => (
+                format!("Enrollment failed: {error}"),
+                "Try Again",
+                WarpAgentPageAction::EnrollVoice,
+            ),
+            EnrollmentState::Idle if profile.is_enrolled() => (
+                "Hands-free voice input ignores speech that doesn't sound like you, including the \
+                 assistant's own voice. Your voiceprint stays on this computer."
+                    .to_owned(),
+                "Re-enroll",
+                WarpAgentPageAction::EnrollVoice,
+            ),
+            EnrollmentState::Idle => (
+                "Read three short phrases so hands-free voice input ignores other voices and the \
+                 assistant's own speech. Your voiceprint stays on this computer and is never sent \
+                 anywhere."
+                    .to_owned(),
+                "Enroll",
+                WarpAgentPageAction::EnrollVoice,
+            ),
+        };
+        column.add_child(render_button_row(
+            "Voiceprint",
+            description,
+            label,
+            action,
+            self.enroll_button.clone(),
+            appearance,
+        ));
+        if profile.is_enrolled() {
+            column.add_child(render_button_row(
+                "Delete Voiceprint",
+                "Removes your voiceprint from this computer; all voices are accepted again."
+                    .to_owned(),
+                "Delete",
+                WarpAgentPageAction::DeleteVoiceprint,
+                self.delete_voiceprint_button.clone(),
+                appearance,
+            ));
+            let sensitivity =
+                match Sensitivity::from_setting(&settings.voice_speaker_id_sensitivity) {
+                    Sensitivity::Strict => "Strict",
+                    Sensitivity::Normal => "Normal",
+                    Sensitivity::Loose => "Loose",
+                };
+            column.add_child(render_cycle_row(
+                "Sensitivity",
+                "Strict ignores more voices; loose misses you less in noisy rooms.",
+                sensitivity,
+                WarpAgentPageAction::CycleVoiceSpeakerSensitivity,
+                self.sensitivity_button.clone(),
+                appearance,
+            ));
+        }
+        let model = SpeakerIdModel::as_ref(app);
+        column.add_child(self.render_model_row(
+            "Speaker Model",
+            ModelRow {
+                state: model.state().clone(),
+                display_name: model.display_name(),
+                size: model.download_size(),
+                download: WarpAgentPageAction::DownloadSpeakerModel,
+                cancel: WarpAgentPageAction::CancelSpeakerModelDownload,
+                remove: WarpAgentPageAction::RemoveSpeakerModel,
+            },
+            self.speaker_model_button.clone(),
+            appearance,
+        ));
+    }
+
     /// A downloadable model's status, with a button to download, cancel, or remove it.
     #[cfg(not(target_family = "wasm"))]
     fn render_model_row(
@@ -4790,8 +5039,9 @@ impl VoiceWidget {
         button_state: MouseStateHandle,
         appearance: &Appearance,
     ) -> Box<dyn Element> {
-        use crate::voice::local_model::{format_megabytes, format_progress};
         use local_transcription::ModelState;
+
+        use crate::voice::local_model::{format_megabytes, format_progress};
 
         let ModelRow {
             state,
@@ -4868,8 +5118,9 @@ const CONVERSATION_RATES: [u32; 5] = [80, 100, 120, 135, 150];
 /// The voices of the engine named by the `conversation_speech_engine` setting, as (id, name).
 #[cfg(not(target_family = "wasm"))]
 fn conversation_voices(engine: &str) -> &'static [(&'static str, &'static str)] {
-    use crate::voice::local_model::SpeechOutputEngine;
     use local_transcription::speech::{KOKORO_VOICES, TINY_VOCA_VOICES};
+
+    use crate::voice::local_model::SpeechOutputEngine;
     match SpeechOutputEngine::from_setting(engine) {
         SpeechOutputEngine::Kokoro => KOKORO_VOICES,
         SpeechOutputEngine::TinyVoca => TINY_VOCA_VOICES,
@@ -4878,6 +5129,40 @@ fn conversation_voices(engine: &str) -> &'static [(&'static str, &'static str)] 
 
 /// A row whose button shows the current value and switches to the next one.
 #[cfg(not(target_family = "wasm"))]
+/// A settings row with a description and one button.
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+fn render_button_row(
+    label: &str,
+    description: String,
+    button_label: &str,
+    action: WarpAgentPageAction,
+    button_state: MouseStateHandle,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let button = appearance
+        .ui_builder()
+        .button(ButtonVariant::Secondary, button_state)
+        .with_text_label(button_label.to_owned())
+        .build()
+        .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
+        .finish();
+    build_toggle_element(
+        render_body_item_label::<WarpAgentPageAction>(
+            label.to_owned(),
+            None,
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::Enabled,
+            appearance,
+        ),
+        Container::new(button)
+            .with_padding_right(TOGGLE_BUTTON_RIGHT_PADDING)
+            .finish(),
+        appearance,
+        Some(description),
+    )
+}
+
 fn render_cycle_row(
     label: &str,
     description: &str,
@@ -4914,7 +5199,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

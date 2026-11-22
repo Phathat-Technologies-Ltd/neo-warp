@@ -2,18 +2,16 @@
 //! server (`crates/selfhost_server`) serves `/ai/transcribe`. The model downloads only after the
 //! user agrees, from the prompt shown when they first record or from settings.
 
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
-use std::marker::PhantomData;
-
 use local_transcription::{
     DownloadError, DownloadProgress, ModelAction, ModelBundle, ModelEvent, ModelSpec, ModelState,
-    ModelStore, ProgressThrottle, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3, silero_vad_v5,
-    tiny_voca,
+    ModelStore, ProgressThrottle, campplus_en_voxceleb, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3,
+    silero_vad_v5, tiny_voca,
 };
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
@@ -81,6 +79,19 @@ pub fn speech_output_store(engine: SpeechOutputEngine) -> ModelStore {
     ModelStore::new(warp_core::paths::data_dir().join("models"), engine.spec())
 }
 
+/// The store holding the speaker embedding model that recognizes the user's voice.
+pub fn speaker_model_store() -> ModelStore {
+    ModelStore::new(
+        warp_core::paths::data_dir().join("models"),
+        campplus_en_voxceleb(),
+    )
+}
+
+/// Whether "Recognize my voice" is available for hands-free and conversation mode.
+pub fn is_speaker_id_enabled() -> bool {
+    is_hands_free_enabled() && FeatureFlag::VoiceSpeakerId.is_enabled()
+}
+
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
 /// Whether voice conversation mode is available.
 pub fn is_conversation_enabled() -> bool {
@@ -116,6 +127,7 @@ pub trait VoiceModelKind: 'static {
     /// Names the model in toasts, e.g. "speech model".
     const NOUN: &'static str;
     fn download_action() -> WorkspaceAction;
+    fn cancel_action() -> WorkspaceAction;
     fn consent_prompt(display_name: &str, size: u64) -> String;
 }
 
@@ -128,6 +140,12 @@ impl VoiceModelKind for SpeechInputKind {
 
     fn download_action() -> WorkspaceAction {
         WorkspaceAction::DownloadLocalVoiceModel
+    }
+
+    fn cancel_action() -> WorkspaceAction {
+        WorkspaceAction::CancelVoiceModelDownload {
+            speech_output: false,
+        }
     }
 
     fn consent_prompt(display_name: &str, size: u64) -> String {
@@ -146,6 +164,12 @@ impl VoiceModelKind for SpeechOutputKind {
         WorkspaceAction::DownloadSpeechOutputModel
     }
 
+    fn cancel_action() -> WorkspaceAction {
+        WorkspaceAction::CancelVoiceModelDownload {
+            speech_output: true,
+        }
+    }
+
     fn consent_prompt(display_name: &str, size: u64) -> String {
         format!(
             "Conversation mode reads replies aloud on this computer with {display_name}. Download \
@@ -155,8 +179,34 @@ impl VoiceModelKind for SpeechOutputKind {
     }
 }
 
+/// The speaker embedding model that recognizes the user's voice.
+pub struct SpeakerIdKind;
+
+impl VoiceModelKind for SpeakerIdKind {
+    const TOAST_ID: &'static str = "speaker-id-model";
+    const NOUN: &'static str = "speaker model";
+
+    fn download_action() -> WorkspaceAction {
+        WorkspaceAction::DownloadSpeakerModel
+    }
+
+    fn cancel_action() -> WorkspaceAction {
+        WorkspaceAction::CancelSpeakerModelDownload
+    }
+
+    fn consent_prompt(display_name: &str, size: u64) -> String {
+        format!(
+            "Recognizing your voice runs on this computer with {display_name}. Download the model \
+             file ({})? Nothing is downloaded until you choose to, and your voiceprint never \
+             leaves this computer.",
+            format_megabytes(size)
+        )
+    }
+}
+
 pub type LocalVoiceModel = VoiceModel<SpeechInputKind>;
 pub type SpeechOutputModel = VoiceModel<SpeechOutputKind>;
+pub type SpeakerIdModel = VoiceModel<SpeakerIdKind>;
 
 enum DownloadUpdate {
     Progress(DownloadProgress),
@@ -216,6 +266,17 @@ fn toast_update(before: &ModelState, after: &ModelState) -> Option<ToastUpdate> 
 impl LocalVoiceModel {
     pub fn new() -> Self {
         Self::with_bundle(model_bundle())
+    }
+}
+
+impl SpeakerIdModel {
+    pub fn new() -> Self {
+        Self::with_bundle(ModelBundle::new(vec![speaker_model_store()]))
+    }
+
+    /// Whether the model files are on disk.
+    pub fn is_installed(&self) -> bool {
+        self.store.is_installed()
     }
 }
 
@@ -532,6 +593,13 @@ pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool
     ensure_model_ready::<SpeechInputKind>(window_id, ctx)
 }
 
+/// Checks that the speaker model is installed before enrollment, asking for consent to download
+/// it when it isn't.
+#[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
+pub fn ensure_speaker_model_ready(window_id: WindowId, ctx: &mut AppContext) -> bool {
+    ensure_model_ready::<SpeakerIdKind>(window_id, ctx)
+}
+
 /// Checks that the speech output model is installed before conversation mode starts, asking for
 /// consent to download it when it isn't.
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
@@ -587,14 +655,8 @@ fn progress_toast<K: VoiceModelKind>(
 ) -> DismissibleToast<WorkspaceAction> {
     // The cancel link stops the download; the model's files stay deletable from settings.
     DismissibleToast::default(progress_message(K::NOUN, progress))
-        .with_link(ToastLink::new("Cancel".to_owned()).with_onclick_action(cancel_action::<K>()))
+        .with_link(ToastLink::new("Cancel".to_owned()).with_onclick_action(K::cancel_action()))
         .with_object_id(K::TOAST_ID.to_owned())
-}
-
-fn cancel_action<K: VoiceModelKind>() -> WorkspaceAction {
-    WorkspaceAction::CancelVoiceModelDownload {
-        speech_output: K::TOAST_ID == SpeechOutputKind::TOAST_ID,
-    }
 }
 
 fn progress_message(noun: &str, progress: DownloadProgress) -> String {

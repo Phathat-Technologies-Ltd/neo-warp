@@ -1052,6 +1052,9 @@ pub enum FeatureFlag {
     /// Voice conversation mode: agent replies are spoken aloud. Takes effect only with
     /// `VoiceHandsFree`.
     VoiceConversation,
+    /// Speaker verification for hands-free voice: utterances that don't match the enrolled
+    /// voiceprint are ignored. Takes effect only with `VoiceHandsFree`.
+    VoiceSpeakerId,
     /// Codebase indexing.
     CodebaseIndexing,
     /// AI prompt suggestions.
@@ -1198,6 +1201,7 @@ pub const PRODUCT_AREA_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::VoiceInput,
     FeatureFlag::VoiceHandsFree,
     FeatureFlag::VoiceConversation,
+    FeatureFlag::VoiceSpeakerId,
     FeatureFlag::CodebaseIndexing,
     FeatureFlag::AiPromptSuggestions,
     FeatureFlag::AiCommandSearch,

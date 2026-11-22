@@ -2,12 +2,15 @@
 //! utterances (`/ai/transcribe/stream`), and transcripts flow into the focused input. Audio stays
 //! on the device and is never written to disk.
 
-use instant::Instant;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::{SinkExt as _, StreamExt as _};
+use instant::Instant;
+use local_transcription::denoise::DenoiseStage;
+use local_transcription::speaker::Sensitivity;
 use local_transcription::stream::{ClientMessage, ServerMessage, VadOptions};
 use voice_input::{LiveCapture, LiveChunk};
 use warpui::r#async::Timer;
@@ -20,6 +23,8 @@ use super::hands_free_controller::{
     HandsFreeController, HandsFreeEffect, HandsFreeOptions, HandsFreeState,
 };
 use super::local_model::{ensure_ready_to_record, is_hands_free_enabled};
+use super::speaker_gate::{AudioTap, GateStep, SpeakerGate};
+use super::speaker_id::SpeakerProfile;
 use crate::server::server_api::ServerApiProvider;
 use crate::settings::AISettings;
 use crate::view_components::DismissibleToast;
@@ -47,7 +52,18 @@ pub struct HandsFreeSession {
     window_id: Option<WindowId>,
     /// Shared with the socket writer, which drops audio while the user types.
     audio_paused: Arc<AtomicBool>,
+    /// Whether finals must match the user's voiceprint, decided when the session starts.
+    verify_speaker: bool,
+    sensitivity: Sensitivity,
+    gate: SpeakerGate,
+    /// Recent audio sent to the server, which speaker checks embed; filled only while verifying.
+    tap: Arc<Mutex<AudioTap>>,
+    /// Until when the indicator says an utterance was ignored.
+    rejected_until: Option<Instant>,
 }
+
+/// How long "Not you — ignored" shows.
+const REJECTION_NOTICE: Duration = Duration::from_secs(3);
 
 impl HandsFreeSession {
     pub fn state(&self) -> HandsFreeState {
@@ -56,6 +72,12 @@ impl HandsFreeSession {
 
     pub fn is_active(&self) -> bool {
         self.controller.state().is_mic_on()
+    }
+
+    /// Whether the indicator should say an utterance was ignored for not matching the user.
+    pub fn showing_rejection(&self) -> bool {
+        self.rejected_until
+            .is_some_and(|until| Instant::now() < until)
     }
 
     /// The window whose focused input applies effects.
@@ -86,6 +108,63 @@ impl HandsFreeSession {
         };
         ToastStack::handle(ctx).update(ctx, |stack, ctx| {
             stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+        });
+    }
+
+    /// Passes a server message through the speaker gate, which holds finals back until their
+    /// speaker is checked.
+    fn on_server_message(&mut self, message: ServerMessage, ctx: &mut ModelContext<Self>) {
+        let now = self.tap_total();
+        let verify = self.verify_speaker && !self.controller.is_paused();
+        let steps = self.gate.push(message, now, verify);
+        self.run_gate_steps(steps, ctx);
+    }
+
+    fn tap_total(&self) -> u64 {
+        self.tap.lock().map_or(0, |tap| tap.total())
+    }
+
+    fn run_gate_steps(&mut self, steps: Vec<GateStep>, ctx: &mut ModelContext<Self>) {
+        for step in steps {
+            match step {
+                GateStep::Deliver(message) => self.handle_message(message, ctx),
+                GateStep::Verify(request) => {
+                    let samples = self
+                        .tap
+                        .lock()
+                        .map(|tap| tap.slice(request.range))
+                        .unwrap_or_default();
+                    let sensitivity = self.sensitivity;
+                    let verdict = SpeakerProfile::handle(ctx)
+                        .update(ctx, |profile, _| profile.verify(samples, sensitivity));
+                    let generation = self.generation;
+                    ctx.spawn(verdict, move |me, verdict, ctx| {
+                        if me.generation != generation {
+                            return;
+                        }
+                        let now = me.tap_total();
+                        let verify = me.verify_speaker && !me.controller.is_paused();
+                        let (steps, rejected) = me.gate.verdict(verdict, now, verify);
+                        if rejected {
+                            me.show_rejection(ctx);
+                        }
+                        me.run_gate_steps(steps, ctx);
+                    });
+                }
+            }
+        }
+    }
+
+    fn show_rejection(&mut self, ctx: &mut ModelContext<Self>) {
+        self.rejected_until = Some(Instant::now() + REJECTION_NOTICE);
+        ctx.emit(HandsFreeEvent::StateChanged);
+        ctx.notify();
+        ctx.spawn(Timer::after(REJECTION_NOTICE), |me, _, ctx| {
+            if !me.showing_rejection() {
+                me.rejected_until = None;
+                ctx.emit(HandsFreeEvent::StateChanged);
+                ctx.notify();
+            }
         });
     }
 
@@ -163,8 +242,23 @@ impl HandsFreeSession {
         let (audio_tx, audio_rx) = mpsc::unbounded::<LiveChunk>();
         let (update_tx, update_rx) = mpsc::unbounded();
         let failure_tx = update_tx.clone();
+        let settings = AISettings::as_ref(ctx);
+        let mut denoise = DenoiseStage::new(*settings.voice_denoise);
+        let sensitivity = Sensitivity::from_setting(&settings.voice_speaker_id_sensitivity);
+        let verify_speaker = SpeakerProfile::as_ref(ctx).is_verifying(ctx);
+        let tap = Arc::new(Mutex::new(AudioTap::default()));
+        let capture_tap = verify_speaker.then(|| tap.clone());
         let capture = LiveCapture::start(
-            move |chunk| {
+            move |mut chunk| {
+                chunk.pcm = denoise.process(chunk.pcm);
+                if chunk.pcm.is_empty() {
+                    return;
+                }
+                if let Some(tap) = &capture_tap
+                    && let Ok(mut tap) = tap.lock()
+                {
+                    tap.push_pcm(&chunk.pcm);
+                }
                 let _ = audio_tx.unbounded_send(chunk);
             },
             move |error| {
@@ -176,6 +270,11 @@ impl HandsFreeSession {
         self.capture = Some(capture);
         self.window_id = Some(window_id);
         self.audio_paused = Arc::new(AtomicBool::new(false));
+        self.verify_speaker = verify_speaker;
+        self.sensitivity = sensitivity;
+        self.gate = SpeakerGate::default();
+        self.tap = tap;
+        self.rejected_until = None;
         let settings = AISettings::as_ref(ctx);
         let options = HandsFreeOptions {
             auto_send_after: settings.hands_free_auto_send_after(),
@@ -203,7 +302,7 @@ impl HandsFreeSession {
                     return;
                 }
                 match update {
-                    SocketUpdate::Message(message) => me.handle_message(message, ctx),
+                    SocketUpdate::Message(message) => me.on_server_message(message, ctx),
                     SocketUpdate::Closed(error) => {
                         if let Some(error) = error {
                             log::warn!("Hands-free voice input stopped: {error}");
@@ -225,6 +324,11 @@ impl HandsFreeSession {
         // socket.
         self.capture = None;
         self.generation += 1;
+        self.gate = SpeakerGate::default();
+        self.rejected_until = None;
+        if let Ok(mut tap) = self.tap.lock() {
+            *tap = AudioTap::default();
+        }
         if self.controller.state().is_mic_on() {
             self.controller.stop();
             ctx.emit(HandsFreeEvent::StateChanged);

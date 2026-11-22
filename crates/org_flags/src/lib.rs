@@ -33,6 +33,7 @@ pub enum ProductArea {
     VoiceInput,
     VoiceHandsFree,
     VoiceConversation,
+    VoiceSpeakerId,
     CodebaseIndexing,
     AiPromptSuggestions,
     AiCommandSearch,
@@ -40,7 +41,7 @@ pub enum ProductArea {
 }
 
 impl ProductArea {
-    pub const ALL: [ProductArea; 15] = [
+    pub const ALL: [ProductArea; 16] = [
         ProductArea::WarpDrive,
         ProductArea::SettingsSync,
         ProductArea::CloudAgents,
@@ -52,6 +53,7 @@ impl ProductArea {
         ProductArea::VoiceInput,
         ProductArea::VoiceHandsFree,
         ProductArea::VoiceConversation,
+        ProductArea::VoiceSpeakerId,
         ProductArea::CodebaseIndexing,
         ProductArea::AiPromptSuggestions,
         ProductArea::AiCommandSearch,
@@ -72,6 +74,7 @@ impl ProductArea {
             ProductArea::VoiceInput => "voice_input",
             ProductArea::VoiceHandsFree => "voice_hands_free",
             ProductArea::VoiceConversation => "voice_conversation",
+            ProductArea::VoiceSpeakerId => "voice_speaker_id",
             ProductArea::CodebaseIndexing => "codebase_indexing",
             ProductArea::AiPromptSuggestions => "ai_prompt_suggestions",
             ProductArea::AiCommandSearch => "ai_command_search",

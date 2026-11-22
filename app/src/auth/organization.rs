@@ -155,13 +155,18 @@ fn feature_flags_for(area: ProductArea) -> (FeatureFlag, &'static [FeatureFlag])
         // one off turns off what builds on it.
         ProductArea::VoiceInput => (
             FeatureFlag::VoiceInput,
-            &[FeatureFlag::VoiceHandsFree, FeatureFlag::VoiceConversation],
+            &[
+                FeatureFlag::VoiceHandsFree,
+                FeatureFlag::VoiceConversation,
+                FeatureFlag::VoiceSpeakerId,
+            ],
         ),
         ProductArea::VoiceHandsFree => (
             FeatureFlag::VoiceHandsFree,
-            &[FeatureFlag::VoiceConversation],
+            &[FeatureFlag::VoiceConversation, FeatureFlag::VoiceSpeakerId],
         ),
         ProductArea::VoiceConversation => (FeatureFlag::VoiceConversation, &[]),
+        ProductArea::VoiceSpeakerId => (FeatureFlag::VoiceSpeakerId, &[]),
         ProductArea::CodebaseIndexing => (
             FeatureFlag::CodebaseIndexing,
             &[
