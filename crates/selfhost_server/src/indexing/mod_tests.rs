@@ -233,7 +233,7 @@ async fn a_synced_repository_answers_queries_from_its_own_fragments() {
 
     assert_eq!(
         sync(&index, vec![repo_a.root.clone()]).await,
-        [repo_a.root.clone()]
+        std::slice::from_ref(&repo_a.root)
     );
     upload(&index, &repo_a, nodes_a).await;
     upload(&index, &repo_b, nodes_b).await;
