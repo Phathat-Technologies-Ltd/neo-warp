@@ -22,7 +22,7 @@ mod voice_command;
 
 pub use audio::{Audio, decode_wav};
 pub use model::{
-    DownloadError, DownloadProgress, ModelFile, ModelSpec, ModelStatus, ModelStore,
+    DownloadError, DownloadProgress, ModelBundle, ModelFile, ModelSpec, ModelStatus, ModelStore,
     ProgressThrottle, parakeet_tdt_0_6b_v3, silero_vad_v5,
 };
 #[cfg(feature = "parakeet")]

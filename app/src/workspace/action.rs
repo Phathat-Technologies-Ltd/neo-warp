@@ -310,6 +310,8 @@ pub enum WorkspaceAction {
     ViewLatestChangelog,
     /// Downloads the on-device speech model after the user agreed in the voice input prompt.
     DownloadLocalVoiceModel,
+    /// Turns hands-free voice input on or off.
+    ToggleHandsFreeVoice,
     ViewPrivacyPolicy,
     SendFeedback,
     /// Open the log directory in the system file explorer with the current log file selected.
@@ -1038,6 +1040,7 @@ impl WorkspaceAction {
             | ViewUserDocs
             | ViewLatestChangelog
             | DownloadLocalVoiceModel
+            | ToggleHandsFreeVoice
             | ViewPrivacyPolicy
             | SendFeedback
             | ChangeCursor(_)

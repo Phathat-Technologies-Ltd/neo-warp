@@ -2314,6 +2314,8 @@ pub(crate) fn initialize_app(
     });
     #[cfg(not(target_family = "wasm"))]
     ctx.add_singleton_model(|_| voice::local_model::LocalVoiceModel::new());
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    ctx.add_singleton_model(|_| voice::hands_free::HandsFreeSession::default());
 
     let notebooks = cloud_objects
         .iter()

@@ -147,7 +147,9 @@ fn feature_flags_for(area: ProductArea) -> (FeatureFlag, &'static [FeatureFlag])
             FeatureFlag::ConversationCloudSync,
             &[FeatureFlag::CloudConversations],
         ),
-        ProductArea::VoiceInput => (FeatureFlag::VoiceInput, &[]),
+        // Hands-free voice builds on voice input, so turning voice input off turns it off too.
+        ProductArea::VoiceInput => (FeatureFlag::VoiceInput, &[FeatureFlag::VoiceHandsFree]),
+        ProductArea::VoiceHandsFree => (FeatureFlag::VoiceHandsFree, &[]),
         ProductArea::CodebaseIndexing => (
             FeatureFlag::CodebaseIndexing,
             &[
@@ -177,6 +179,7 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
         session_max_age: EMBEDDED_SESSION_MAX_AGE,
         remote_server_artifacts: bundled_remote_server_builds(),
         transcriber: local_transcriber(),
+        vad: local_vad(),
         codebase_index_dir: FeatureFlag::CodebaseIndexing
             .is_enabled()
             .then(|| warp_core::paths::data_dir().join("codebase-index")),
@@ -199,6 +202,18 @@ fn local_transcriber() -> Option<std::sync::Arc<dyn local_transcription::Transcr
     Some(std::sync::Arc::new(
         local_transcription::ParakeetTranscriber::new(crate::voice::local_model::model_store()),
     ))
+}
+
+/// The voice activity detector for `/ai/transcribe/stream`, when hands-free voice input is on.
+fn local_vad() -> Option<local_transcription::VadFactory> {
+    if !(FeatureFlag::VoiceInput.is_enabled() && FeatureFlag::VoiceHandsFree.is_enabled()) {
+        return None;
+    }
+    let store = crate::voice::local_model::vad_model_store();
+    Some(std::sync::Arc::new(move || {
+        local_transcription::SileroVad::load(&store)
+            .map(|vad| Box::new(vad) as Box<dyn local_transcription::VoiceActivityDetector>)
+    }))
 }
 
 /// The directory of Linux builds bundled with the app for its SSH extension, if any.

@@ -51,3 +51,9 @@ fn codebase_indexing_off_disables_embedding_flags() {
         assert!(disabled.contains(&flag), "{flag:?}");
     }
 }
+
+#[test]
+fn voice_input_off_disables_hands_free() {
+    let disabled = flags_to_disable(&flags_with(ProductArea::VoiceInput, false));
+    assert!(disabled.contains(&FeatureFlag::VoiceHandsFree));
+}

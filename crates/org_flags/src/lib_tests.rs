@@ -31,6 +31,7 @@ fn bundled_defaults_turn_off_backend_features() {
     }
     for area in [
         ProductArea::VoiceInput,
+        ProductArea::VoiceHandsFree,
         ProductArea::CodebaseIndexing,
         ProductArea::AiPromptSuggestions,
         ProductArea::AiCommandSearch,

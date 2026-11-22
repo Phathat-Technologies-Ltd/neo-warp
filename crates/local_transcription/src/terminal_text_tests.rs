@@ -24,7 +24,10 @@ fn normalizes_spoken_terminal_syntax() {
         ("ls slash tmp", "ls /tmp"),
         ("ls pipe grep foo", "ls | grep foo"),
         ("echo hi greater than out dot txt", "echo hi > out.txt"),
-        ("export rust underscore log equals debug", "export rust_log=debug"),
+        (
+            "export rust underscore log equals debug",
+            "export rust_log=debug",
+        ),
         ("git cherry pick HEAD", "git cherry-pick HEAD"),
         ("git rebase origin main", "git rebase origin main"),
         ("Show me the logs, please.", "show me the logs please"),

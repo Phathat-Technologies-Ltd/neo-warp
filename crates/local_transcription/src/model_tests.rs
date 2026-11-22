@@ -203,3 +203,42 @@ fn throttle_reports_on_percent_change_interval_and_completion() {
     assert!(throttle.should_report(progress(16), at(520)));
     assert!(throttle.should_report(progress(1000), at(521)));
 }
+
+#[tokio::test]
+async fn bundle_downloads_every_model_against_one_total() {
+    let url = serve(Arc::default()).await;
+    let root = tempfile::tempdir().unwrap();
+    let mut second = spec(&url, sha(BODY));
+    second.id = "second-model".to_owned();
+    second.display_name = "Second".to_owned();
+    let bundle = ModelBundle::new(vec![
+        ModelStore::new(root.path(), spec(&url, sha(BODY))),
+        ModelStore::new(root.path(), second),
+    ]);
+    assert_eq!(bundle.display_name(), "Test and Second");
+    assert_eq!(bundle.status(), ModelStatus::NotInstalled);
+    let mut reports = Vec::new();
+    bundle
+        .download(
+            &reqwest::Client::new(),
+            &AtomicBool::new(false),
+            |progress| reports.push(progress),
+        )
+        .await
+        .unwrap();
+    assert!(bundle.is_installed());
+    assert!(reports.iter().all(|progress| progress.total == 40));
+    assert_eq!(reports.last().map(|progress| progress.downloaded), Some(40));
+    bundle.stores()[1].remove().unwrap();
+    assert_eq!(bundle.status(), ModelStatus::Partial { downloaded: 20 });
+    bundle.remove().unwrap();
+    assert_eq!(bundle.status(), ModelStatus::NotInstalled);
+}
+
+#[test]
+fn silero_spec_is_pinned() {
+    let spec = silero_vad_v5();
+    assert_eq!(spec.files.len(), 1);
+    assert!(spec.files[0].url.contains("/v5.1.2/"));
+    assert_eq!(spec.files[0].sha256.len(), 64);
+}

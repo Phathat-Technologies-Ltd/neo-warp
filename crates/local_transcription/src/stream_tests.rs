@@ -162,10 +162,9 @@ fn queue_drops_partials_superseded_by_a_final() {
 
 #[test]
 fn protocol_messages_match_the_spec() {
-    let config: ClientMessage = serde_json::from_str(
-        r#"{"type":"config","language":"en","vad":{"min_silence_ms":300}}"#,
-    )
-    .unwrap();
+    let config: ClientMessage =
+        serde_json::from_str(r#"{"type":"config","language":"en","vad":{"min_silence_ms":300}}"#)
+            .unwrap();
     assert_eq!(
         config,
         ClientMessage::Config {

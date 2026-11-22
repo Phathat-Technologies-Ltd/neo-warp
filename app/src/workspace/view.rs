@@ -235,13 +235,13 @@ use crate::app_state::{
     TabSnapshot, TerminalPaneSnapshot, WindowSnapshot, WorkflowPaneSnapshot,
 };
 use crate::appearance::{Appearance, AppearanceManager};
-use crate::auth::{self, AuthStateProvider};
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::auth::auth_override_warning_modal::{
     AuthOverrideWarningModal, AuthOverrideWarningModalEvent, AuthOverrideWarningModalVariant,
 };
 use crate::auth::auth_state::AuthState;
 use crate::auth::auth_view_modal::{AuthRedirectPayload, AuthView, AuthViewEvent, AuthViewVariant};
+use crate::auth::{self, AuthStateProvider};
 use crate::autoupdate::{
     AutoupdateState, AutoupdateStateEvent, RelaunchModel, is_incoming_version_past_current,
 };
@@ -23346,6 +23346,19 @@ impl Workspace {
         ) {
             context.set.insert(flags::NOTIFICATIONS_CONTEXT_FLAG);
         }
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        {
+            if crate::voice::local_model::is_hands_free_enabled() {
+                context
+                    .set
+                    .insert(flags::HANDS_FREE_VOICE_AVAILABLE_CONTEXT_FLAG);
+                if crate::voice::hands_free::HandsFreeSession::as_ref(app).is_active() {
+                    context
+                        .set
+                        .insert(flags::HANDS_FREE_VOICE_ACTIVE_CONTEXT_FLAG);
+                }
+            }
+        }
         if session_settings.notifications.is_long_running_enabled {
             context.set.insert(flags::LONG_RUNNING_NOTIFICATIONS_FLAG);
         }
@@ -24743,6 +24756,13 @@ impl TypedActionView for Workspace {
                     let window_id = ctx.window_id();
                     crate::voice::local_model::LocalVoiceModel::handle(ctx)
                         .update(ctx, |model, ctx| model.download(window_id, ctx));
+                }
+            }
+            ToggleHandsFreeVoice => {
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                {
+                    let window_id = ctx.window_id();
+                    crate::voice::hands_free::toggle_hands_free(window_id, ctx);
                 }
             }
             ViewPrivacyPolicy => self.view_privacy_policy(ctx),

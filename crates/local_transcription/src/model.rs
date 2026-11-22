@@ -330,6 +330,105 @@ impl ModelStore {
     }
 }
 
+/// Models a feature needs together, downloaded after one consent with one progress total.
+#[derive(Debug, Clone)]
+pub struct ModelBundle {
+    stores: Vec<ModelStore>,
+}
+
+impl ModelBundle {
+    pub fn new(stores: Vec<ModelStore>) -> Self {
+        Self { stores }
+    }
+
+    pub fn stores(&self) -> &[ModelStore] {
+        &self.stores
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.stores
+            .iter()
+            .map(|store| store.spec().total_size())
+            .sum()
+    }
+
+    /// The models' names, e.g. "Parakeet TDT 0.6B v3 and Silero VAD v5".
+    pub fn display_name(&self) -> String {
+        let names: Vec<&str> = self
+            .stores
+            .iter()
+            .map(|store| store.spec().display_name.as_str())
+            .collect();
+        match names.split_last() {
+            None => String::new(),
+            Some((last, [])) => (*last).to_owned(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        }
+    }
+
+    pub fn status(&self) -> ModelStatus {
+        let statuses: Vec<ModelStatus> = self.stores.iter().map(ModelStore::status).collect();
+        if statuses
+            .iter()
+            .all(|status| *status == ModelStatus::Installed)
+        {
+            return ModelStatus::Installed;
+        }
+        let downloaded: u64 = self
+            .stores
+            .iter()
+            .zip(&statuses)
+            .map(|(store, status)| match status {
+                ModelStatus::NotInstalled => 0,
+                ModelStatus::Partial { downloaded } => *downloaded,
+                ModelStatus::Installed => store.spec().total_size(),
+            })
+            .sum();
+        if downloaded == 0 {
+            ModelStatus::NotInstalled
+        } else {
+            ModelStatus::Partial { downloaded }
+        }
+    }
+
+    pub fn is_installed(&self) -> bool {
+        self.stores.iter().all(ModelStore::is_installed)
+    }
+
+    pub fn remove(&self) -> io::Result<()> {
+        self.stores.iter().try_for_each(ModelStore::remove)
+    }
+
+    /// Downloads every model that isn't installed, reporting progress against the bundle's total.
+    pub async fn download(
+        &self,
+        client: &reqwest::Client,
+        cancel: &AtomicBool,
+        mut on_progress: impl FnMut(DownloadProgress),
+    ) -> Result<(), DownloadError> {
+        let total = self.total_size();
+        let mut done_before = 0;
+        for store in &self.stores {
+            if !store.is_installed() {
+                store
+                    .download(client, cancel, |progress| {
+                        on_progress(DownloadProgress {
+                            downloaded: done_before + progress.downloaded,
+                            total,
+                        })
+                    })
+                    .await?;
+            }
+            done_before += store.spec().total_size();
+            on_progress(DownloadProgress {
+                downloaded: done_before,
+                total,
+            });
+        }
+        Ok(())
+    }
+}
+
 async fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = tokio::fs::File::open(path).await?;
     let mut hasher = Sha256::new();

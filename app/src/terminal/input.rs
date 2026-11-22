@@ -1819,6 +1819,12 @@ pub struct Input {
     cached_agent_mode_hint_text: Option<&'static str>,
 
     predict_am_queries_future_handle: Option<SpawnedFutureHandle>,
+    /// The span of the buffer holding the open hands-free utterance.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    hands_free_range: crate::voice::hands_free_controller::PendingVoiceRange,
+    /// The buffer as hands-free voice input last wrote it, to tell its edits from typing.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    hands_free_written: Option<String>,
 
     attachment_chips: Vec<AttachmentChip>,
 
@@ -2438,6 +2444,91 @@ impl Input {
         self.editor.update(ctx, |editor, ctx| {
             editor.set_buffer_text_for_syncing_inputs(buffer_contents, ctx);
         });
+    }
+
+    /// Applies a hands-free transcript edit when this input has focus.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn handle_hands_free_event(
+        &mut self,
+        event: &crate::voice::hands_free::HandsFreeEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use crate::voice::hands_free::{HandsFreeEvent, HandsFreeSession};
+        use crate::voice::hands_free_controller::HandsFreeEffect;
+
+        if !self.editor.is_focused(ctx) {
+            return;
+        }
+        let effect = match event {
+            HandsFreeEvent::StateChanged => {
+                let normalize = self.input_type(ctx) == InputType::Shell;
+                HandsFreeSession::handle(ctx)
+                    .update(ctx, |session, _| session.set_normalize_finals(normalize));
+                let state = HandsFreeSession::as_ref(ctx).state();
+                self.agent_input_footer.update(ctx, |footer, ctx| {
+                    footer.set_voice_is_active(state.is_mic_on(), ctx);
+                });
+                if state.is_mic_on() {
+                    if self.editor.as_ref(ctx).is_empty(ctx) {
+                        let placeholder = format!("\u{25cf} Mic on \u{b7} {}...", state.label());
+                        self.editor.update(ctx, |editor, ctx| {
+                            editor.set_placeholder_text(&placeholder, ctx);
+                        });
+                    }
+                } else {
+                    self.hands_free_range.clear();
+                    self.hands_free_written = None;
+                    self.set_zero_state_hint_text(ctx);
+                }
+                ctx.notify();
+                return;
+            }
+            HandsFreeEvent::Effect(effect) => effect,
+        };
+        let buffer = self.buffer_text(ctx);
+        let text = match effect {
+            HandsFreeEffect::ShowPartial(text) => self.hands_free_range.replace(&buffer, text),
+            HandsFreeEffect::Commit(text) => self.hands_free_range.commit(&buffer, text),
+            HandsFreeEffect::InsertNewline => format!("{buffer}\n"),
+            HandsFreeEffect::ClearInput => {
+                self.hands_free_range.clear();
+                String::new()
+            }
+            HandsFreeEffect::Send => {
+                self.hands_free_range.clear();
+                self.hands_free_written = None;
+                if !buffer.trim().is_empty() {
+                    self.submit_current_input(ctx);
+                }
+                return;
+            }
+        };
+        self.hands_free_written = Some(text.clone());
+        self.editor
+            .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+    }
+
+    /// Pauses hands-free transcripts while the user types, and resumes them once the input is
+    /// cleared.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn note_edit_for_hands_free(&mut self, ctx: &mut ViewContext<Self>) {
+        use crate::voice::hands_free::HandsFreeSession;
+
+        let session = HandsFreeSession::handle(ctx);
+        if !session.as_ref(ctx).is_active() {
+            return;
+        }
+        let buffer = self.buffer_text(ctx);
+        if self.hands_free_written.as_deref() == Some(buffer.as_str()) {
+            return;
+        }
+        self.hands_free_range.clear();
+        self.hands_free_written = None;
+        if buffer.is_empty() {
+            session.update(ctx, |session, ctx| session.input_reset(ctx));
+        } else {
+            session.update(ctx, |session, ctx| session.user_typed(ctx));
+        }
     }
 
     /// Submits the current editor contents once the terminal is ready.
@@ -3799,6 +3890,12 @@ impl Input {
             me.handle_ai_settings_changed_event(event, ctx)
         });
 
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        ctx.subscribe_to_model(
+            &crate::voice::hands_free::HandsFreeSession::handle(ctx),
+            |me, _, event, ctx| me.handle_hands_free_event(event, ctx),
+        );
+
         ctx.subscribe_to_model(
             &IgnoredSuggestionsModel::handle(ctx),
             |me, _, event, ctx| {
@@ -4192,6 +4289,10 @@ impl Input {
             #[cfg(feature = "local_fs")]
             conn: None,
             predict_am_queries_future_handle: None,
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            hands_free_range: Default::default(),
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            hands_free_written: None,
             attachment_chips: Default::default(),
             is_processing_attached_images: false,
             prompt_suggestions_view,
@@ -10735,6 +10836,8 @@ impl Input {
                     EditOrigin::UserTyped | EditOrigin::UserInitiated
                 ) {
                     self.model.lock().set_is_input_dirty(true);
+                    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                    self.note_edit_for_hands_free(ctx);
                 }
 
                 if self.maybe_activate_cloud_handoff_prefix(edit_origin, ctx) {

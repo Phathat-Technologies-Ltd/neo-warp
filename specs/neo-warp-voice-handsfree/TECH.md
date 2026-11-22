@@ -84,6 +84,29 @@ Add `FeatureFlag::VoiceHandsFree` to `crates/warp_features`, add it to the org d
 `app/src/auth/organization.rs`, and document it in `specs/neo-warp-flags`. It takes effect only when
 `VoiceInput` is also on.
 
+## Implementation notes (v1)
+- Silero VAD v5.1.2 is pinned at 2,327,524 bytes, SHA-256
+  `2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f` (computed with
+  `shasum -a 256` on the tagged GitHub file; it has no Hugging Face LFS mirror at that tag).
+- ONNX Runtime allows one environment per process, so Parakeet and Silero share one
+  (`local_transcription::ort_env`).
+- The consent toast and the Speech Model settings row cover a `ModelBundle`: Parakeet, plus Silero
+  when `VoiceHandsFree` is on. With the flag on, a user who already has Parakeet is asked once more,
+  for the 2 MB VAD, before voice input starts again.
+- Spoken-form normalization runs on finals only when the focused input is in shell mode. Agent
+  prompts are natural language, and normalization would strip their punctuation and casing.
+- The server sends `speech_end` as soon as the VAD ends an utterance, and `final` once its decode
+  finishes. The client's auto-send timer starts at the `final`.
+- Capture uses a new `voice_input::LiveCapture` (cpal plus a linear resampler to 16 kHz).
+- The toggle is a Command Palette entry and keybinding (`cmd-shift-H`, or `ctrl-alt-shift-H` on
+  Linux and Windows), shown only when the flags and the local server are on. The listening state
+  and a "Mic on" label are shown in the input's placeholder, and the footer's voice indicator turns
+  on.
+- Not done in v1: the footer mic button, the level meter, the window-header and TUI status-line
+  privacy dot, the Settings > Voice rows (the settings `agents.voice.hands_free_auto_send_ms` and
+  `agents.voice.hands_free_voice_commands` exist in the settings file), TUI wiring, and the macOS
+  VoiceProcessingIO capture path (only needed with conversation mode).
+
 ## Testing
 - VAD segmentation on recorded audio fixtures.
 - Table tests for the spoken-form normalization.

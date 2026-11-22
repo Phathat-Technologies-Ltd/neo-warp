@@ -46,6 +46,11 @@
       "variants": { "on": true, "off": false },
       "defaultVariant": "on"
     },
+    "voice_hands_free": {
+      "state": "ENABLED",
+      "variants": { "on": true, "off": false },
+      "defaultVariant": "on"
+    },
     "codebase_indexing": {
       "state": "ENABLED",
       "variants": { "on": true, "off": false },

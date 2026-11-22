@@ -3,13 +3,33 @@ use super::*;
 #[test]
 fn splits_trailing_commands() {
     let cases = [
-        ("Run the tests, send it.", "Run the tests", Some(VoiceCommand::Send)),
-        ("run the tests send", "run the tests", Some(VoiceCommand::Send)),
+        (
+            "Run the tests, send it.",
+            "Run the tests",
+            Some(VoiceCommand::Send),
+        ),
+        (
+            "run the tests send",
+            "run the tests",
+            Some(VoiceCommand::Send),
+        ),
         ("Send.", "", Some(VoiceCommand::Send)),
-        ("delete it, scratch that", "delete it", Some(VoiceCommand::Cancel)),
+        (
+            "delete it, scratch that",
+            "delete it",
+            Some(VoiceCommand::Cancel),
+        ),
         ("cancel", "", Some(VoiceCommand::Cancel)),
-        ("first step, new line", "first step", Some(VoiceCommand::NewLine)),
-        ("first step newline", "first step", Some(VoiceCommand::NewLine)),
+        (
+            "first step, new line",
+            "first step",
+            Some(VoiceCommand::NewLine),
+        ),
+        (
+            "first step newline",
+            "first step",
+            Some(VoiceCommand::NewLine),
+        ),
         // Command words elsewhere in the utterance are just words.
         ("send the logs to Bob", "send the logs to Bob", None),
         ("cancel the job please", "cancel the job please", None),

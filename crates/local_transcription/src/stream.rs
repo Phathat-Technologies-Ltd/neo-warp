@@ -37,11 +37,19 @@ pub struct VadOptions {
 pub enum ServerMessage {
     SpeechStart,
     /// The latest transcript of the open utterance `utterance`; replaces earlier partials.
-    Partial { utterance: u64, text: String },
+    Partial {
+        utterance: u64,
+        text: String,
+    },
     /// The transcript of the finished utterance `utterance`; replaces its partials.
-    Final { utterance: u64, text: String },
+    Final {
+        utterance: u64,
+        text: String,
+    },
     SpeechEnd,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,13 +170,13 @@ impl UtteranceStream {
                 None => self.pending_byte = Some(low),
             }
         }
-        let mut chunks = rest.chunks_exact(2);
+        let (pairs, remainder) = rest.as_chunks::<2>();
         samples.extend(
-            chunks
-                .by_ref()
-                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0),
+            pairs
+                .iter()
+                .map(|pair| i16::from_le_bytes(*pair) as f32 / 32768.0),
         );
-        if let [last] = chunks.remainder() {
+        if let [last] = remainder {
             self.pending_byte = Some(*last);
         }
         self.push_samples(&samples)

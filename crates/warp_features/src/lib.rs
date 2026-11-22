@@ -1046,6 +1046,9 @@ pub enum FeatureFlag {
     ConversationCloudSync,
     /// Voice input.
     VoiceInput,
+    /// Hands-free voice input: VAD-segmented, streamed transcription. Takes effect only with
+    /// `VoiceInput`.
+    VoiceHandsFree,
     /// Codebase indexing.
     CodebaseIndexing,
     /// AI prompt suggestions.
@@ -1188,6 +1191,7 @@ pub const PRODUCT_AREA_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::BlockTitles,
     FeatureFlag::ConversationCloudSync,
     FeatureFlag::VoiceInput,
+    FeatureFlag::VoiceHandsFree,
     FeatureFlag::CodebaseIndexing,
     FeatureFlag::AiPromptSuggestions,
     FeatureFlag::AiCommandSearch,

@@ -26,9 +26,9 @@ product area (`ProductArea`).
 
 New `FeatureFlag` variants, one per product area: `WarpDrive`, `SettingsSync`, `CloudAgents`,
 `WarpHostedMcp`, `SharingAndTeams`, `BillingAndReferrals`, `BlockTitles`, `ConversationCloudSync`,
-`VoiceInput`, `CodebaseIndexing`, `AiPromptSuggestions`, `AiCommandSearch`. They are listed in
-`PRODUCT_AREA_FLAGS`, which `init_feature_flags` enables in every build, so builds without an
-organization keep upstream behavior.
+`VoiceInput`, `VoiceHandsFree`, `CodebaseIndexing`, `AiPromptSuggestions`, `AiCommandSearch`. They
+are listed in `PRODUCT_AREA_FLAGS`, which `init_feature_flags` enables in every build, so builds
+without an organization keep upstream behavior.
 
 `app/src/auth/organization.rs::init` is the single startup path for the GUI and the TUI (both go
 through `run_internal`). When organization sign-in is configured it loads the flags and calls

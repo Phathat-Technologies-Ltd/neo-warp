@@ -84,9 +84,10 @@ fn tokenize(text: &str) -> Vec<Token> {
             continue;
         }
         let after_git = index > 0 && keys[index - 1] == "git";
-        if let Some((phrase, joined)) = JOINED_WORDS.iter().find(|(phrase, _)| {
-            matches_phrase(rest, phrase) && (phrase[0] != "check" || after_git)
-        }) {
+        if let Some((phrase, joined)) = JOINED_WORDS
+            .iter()
+            .find(|(phrase, _)| matches_phrase(rest, phrase) && (phrase[0] != "check" || after_git))
+        {
             tokens.push(Token::Word((*joined).to_owned()));
             index += phrase.len();
             continue;

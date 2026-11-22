@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
 use local_transcription::{
-    DownloadError, DownloadProgress, ModelAction, ModelEvent, ModelState, ModelStore,
-    ProgressThrottle, parakeet_tdt_0_6b_v3,
+    DownloadError, DownloadProgress, ModelAction, ModelBundle, ModelEvent, ModelState, ModelStore,
+    ProgressThrottle, parakeet_tdt_0_6b_v3, silero_vad_v5,
 };
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
@@ -27,6 +27,26 @@ pub fn model_store() -> ModelStore {
         warp_core::paths::data_dir().join("models"),
         parakeet_tdt_0_6b_v3(),
     )
+}
+
+/// The store holding the voice activity detector that hands-free input segments speech with.
+pub fn vad_model_store() -> ModelStore {
+    ModelStore::new(warp_core::paths::data_dir().join("models"), silero_vad_v5())
+}
+
+/// Whether hands-free voice input is available, which also needs the VAD model.
+pub fn is_hands_free_enabled() -> bool {
+    is_local_voice_enabled() && FeatureFlag::VoiceHandsFree.is_enabled()
+}
+
+/// The models voice input needs: the speech model, plus the VAD when hands-free is on, so one
+/// consent covers both.
+fn model_bundle() -> ModelBundle {
+    let mut stores = vec![model_store()];
+    if FeatureFlag::VoiceHandsFree.is_enabled() {
+        stores.push(vad_model_store());
+    }
+    ModelBundle::new(stores)
 }
 
 pub fn mark_served_locally() {
@@ -58,7 +78,7 @@ enum DownloadUpdate {
 }
 
 pub struct LocalVoiceModel {
-    store: ModelStore,
+    store: ModelBundle,
     state: ModelState,
     /// Cancels the running download; replaced on each download so late updates from a cancelled
     /// one are recognized and dropped.
@@ -107,7 +127,7 @@ fn toast_update(before: &ModelState, after: &ModelState) -> Option<ToastUpdate> 
 
 impl LocalVoiceModel {
     pub fn new() -> Self {
-        let store = model_store();
+        let store = model_bundle();
         let state = ModelState::from_status(store.status());
         Self {
             store,
@@ -123,11 +143,11 @@ impl LocalVoiceModel {
     }
 
     pub fn download_size(&self) -> u64 {
-        self.store.spec().total_size()
+        self.store.total_size()
     }
 
-    pub fn display_name(&self) -> &str {
-        &self.store.spec().display_name
+    pub fn display_name(&self) -> String {
+        self.store.display_name()
     }
 
     #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
@@ -332,7 +352,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 /// Runs the download on the calling thread with its own runtime, reporting progress as
 /// [`ProgressThrottle`] allows.
 fn download_blocking(
-    store: &ModelStore,
+    store: &ModelBundle,
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(DownloadProgress),
 ) -> Result<(), String> {
@@ -393,7 +413,7 @@ pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool
         RecordingReadiness::Ready => return true,
         RecordingReadiness::NeedsConsent => {
             let model = model.as_ref(ctx);
-            DismissibleToast::default(consent_prompt(model.display_name(), model.download_size()))
+            DismissibleToast::default(consent_prompt(&model.display_name(), model.download_size()))
                 .with_link(
                     ToastLink::new("Download".to_owned())
                         .with_onclick_action(WorkspaceAction::DownloadLocalVoiceModel),
@@ -438,7 +458,7 @@ fn progress_message(progress: DownloadProgress) -> String {
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
 fn consent_prompt(display_name: &str, size: u64) -> String {
     format!(
-        "Voice input is transcribed on this computer by {display_name}. Download the model ({})? \
+        "Voice input is transcribed on this computer by {display_name}. Download the model files ({})? \
          Nothing is downloaded until you choose to.",
         format_megabytes(size)
     )

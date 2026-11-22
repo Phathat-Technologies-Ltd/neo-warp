@@ -54,10 +54,10 @@ impl VoiceActivityDetector for SileroVad {
         let mut input = Vec::with_capacity(CONTEXT_SAMPLES + VAD_FRAME_SAMPLES);
         input.extend_from_slice(&self.context);
         input.extend_from_slice(frame);
-        self.context.copy_from_slice(&frame[VAD_FRAME_SAMPLES - CONTEXT_SAMPLES..]);
+        self.context
+            .copy_from_slice(&frame[VAD_FRAME_SAMPLES - CONTEXT_SAMPLES..]);
         let input = Tensor::from_array(([1, input.len()], input)).map_err(engine_error)?;
-        let state =
-            Tensor::from_array(([2, 1, 128], self.state.clone())).map_err(engine_error)?;
+        let state = Tensor::from_array(([2, 1, 128], self.state.clone())).map_err(engine_error)?;
         let sample_rate =
             Tensor::from_array(((), vec![i64::from(VAD_SAMPLE_RATE)])).map_err(engine_error)?;
         let outputs = self
