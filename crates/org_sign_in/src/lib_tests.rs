@@ -351,7 +351,32 @@ fn environment_configures_the_server_url_and_sign_in() {
 fn shipped_example_config_is_valid() {
     let (_dir, path) = write_config_file(include_str!("../organization.toml.example"));
     let config = OrganizationConfig::from_file(&path).expect("the example must parse");
-    assert_eq!(config.server_url, None, "the example runs the embedded server");
+    assert_eq!(
+        config.server_url, None,
+        "the example runs the embedded server"
+    );
     let sign_in = config.sign_in.expect("the example configures sign-in");
     assert_eq!(sign_in.button_label(), "Sign in with Microsoft");
+}
+
+#[test]
+fn model_specs_key_and_aliases_are_read() {
+    let (_dir, path) = write_config_file(
+        r#"
+[model_specs]
+artificial_analysis_api_key = "aa-key"
+
+[model_specs.aliases]
+"gpt-6.2-sol" = "gpt-6-2-sol-medium"
+"#,
+    );
+    let specs = OrganizationConfig::from_file(&path)
+        .unwrap()
+        .model_specs
+        .expect("model specs should be configured");
+    assert_eq!(specs.artificial_analysis_api_key, "aa-key");
+    assert_eq!(
+        specs.aliases.get("gpt-6.2-sol").map(String::as_str),
+        Some("gpt-6-2-sol-medium")
+    );
 }

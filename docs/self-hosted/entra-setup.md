@@ -113,6 +113,26 @@ client_id = "<application-client-id>"
 display_name = "Microsoft"
 ```
 
+### Model ratings (optional)
+
+The model picker can show each model's intelligence, speed, and cost from
+[Artificial Analysis](https://artificialanalysis.ai). Create a free Data API key there and add it
+to the same file. neo-warp fetches the ratings at most once a day and credits Artificial Analysis
+under the bars, as its terms require.
+
+```toml
+[model_specs]
+artificial_analysis_api_key = "<key>"
+
+# Optional: models that matching by name misses, mapped to Artificial Analysis slugs.
+[model_specs.aliases]
+"gpt-6.2-sol" = "gpt-6-2-sol"
+```
+
+Models Artificial Analysis doesn't list keep "?". Speed is measured on each model's own
+provider, so it understates models served on faster hardware, such as Cerebras. For local
+testing, `WARP_ORG_ARTIFICIAL_ANALYSIS_API_KEY` sets the key.
+
 By default Warp runs its sign-in server embedded in the app, so nothing else needs deploying. A
 standalone `selfhost-server` (set `server_url` in `organization.toml`) needs the same issuer URL and
 client ID to validate tokens.

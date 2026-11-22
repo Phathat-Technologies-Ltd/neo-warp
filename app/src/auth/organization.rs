@@ -45,7 +45,9 @@ pub(crate) fn init() {
         eprintln!("Error: invalid organization server URL {server_url}: {error:#}");
         log::error!("Invalid organization server URL {server_url}: {error:#}");
     }
-    if config.sign_in.is_some() && !(config.server_url.is_none() && bundled_remote_server_builds().is_some()) {
+    if config.sign_in.is_some()
+        && !(config.server_url.is_none() && bundled_remote_server_builds().is_some())
+    {
         // The SSH extension installs a Linux build of the app on the remote host, downloaded from
         // the server; only the embedded server, from builds bundled with the app, offers them.
         FeatureFlag::SshRemoteServer.set_enabled(false);
@@ -151,6 +153,12 @@ pub fn login_failure_message(err: &UserAuthenticationError) -> String {
 
 /// The organization sign-in settings, when this build signs users in through their organization
 /// instead of a Warp account.
+pub fn model_specs_config() -> Option<&'static org_sign_in::ModelSpecsConfig> {
+    ORGANIZATION_CONFIG
+        .get()
+        .and_then(|config| config.model_specs.as_ref())
+}
+
 pub fn sign_in_config() -> Option<&'static OrganizationSignInConfig> {
     ORGANIZATION_CONFIG.get()?.sign_in.as_ref()
 }

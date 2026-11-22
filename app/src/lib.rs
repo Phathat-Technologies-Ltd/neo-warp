@@ -2652,6 +2652,7 @@ pub(crate) fn initialize_app(
     ctx.add_singleton_model(LocalWorkflows::new);
 
     ctx.add_singleton_model(LLMPreferences::new);
+    ctx.add_singleton_model(crate::ai::model_specs::ModelSpecs::new);
     ctx.add_singleton_model(HarnessAvailabilityModel::new);
     ctx.add_singleton_model(ConnectedSelfHostedWorkersModel::new);
 

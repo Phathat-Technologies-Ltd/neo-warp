@@ -35,6 +35,7 @@ use crate::ai::llms::{
     should_show_bedrock_icon_for_model,
     should_show_gemini_enterprise_agent_platform_icon_for_model, should_show_key_icon_for_model,
 };
+use crate::ai::model_specs::ModelSpecs;
 use crate::features::FeatureFlag;
 use crate::search::data_source::{Query, QueryFilter, QueryResult};
 use crate::search::mixer::DataSourceRunErrorWrapper;
@@ -415,7 +416,10 @@ impl ModelSearchItem {
             id: llm.id.clone(),
             upgrade_url: upgrade_url.to_owned(),
             provider: llm.provider,
-            spec: llm.spec.clone(),
+            spec: llm
+                .spec
+                .clone()
+                .or_else(|| ModelSpecs::as_ref(app).spec_for(llm)),
             leading_icon,
             credential_icon,
             byo_key_source,
@@ -623,7 +627,7 @@ impl SearchItem for ModelSearchItem {
         let (title, description) = if self.reasoning_level.is_some() {
             (REASONING_LEVEL_TITLE, REASONING_LEVEL_DESCRIPTION)
         } else {
-            (MODEL_SPECS_TITLE, MODEL_SPECS_DESCRIPTION)
+            (MODEL_SPECS_TITLE, model_specs_description(app))
         };
         let header = render_model_spec_header(title, description, app);
 
@@ -819,4 +823,13 @@ impl SearchItem for ModelSearchItem {
 /// so we suppress the chip when the user is routing through their own API key.
 fn should_show_discount_chip(discount_percentage: Option<f32>, is_using_byok: bool) -> bool {
     discount_percentage.is_some_and(|p| p > 0.) && !is_using_byok
+}
+
+/// Credits Artificial Analysis when its ratings fill the bars, as its terms require.
+fn model_specs_description(app: &AppContext) -> &'static str {
+    if ModelSpecs::as_ref(app).is_active() {
+        ::ai::model_specs::ATTRIBUTION
+    } else {
+        MODEL_SPECS_DESCRIPTION
+    }
 }

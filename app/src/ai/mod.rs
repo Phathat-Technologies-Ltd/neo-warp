@@ -76,6 +76,7 @@ pub(crate) mod generate_block_title;
 pub(crate) mod generate_code_review_content;
 pub(crate) mod loading;
 pub mod mcp;
+pub mod model_specs;
 pub mod outline;
 
 pub(crate) use ai::paths;

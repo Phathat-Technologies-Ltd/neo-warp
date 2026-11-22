@@ -3,6 +3,7 @@
 //! public client and a loopback redirect, followed by an exchange of the provider's ID token for
 //! a sign-in token at the self-hosted backend.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -23,6 +24,7 @@ const EXTRA_SCOPES_ENV: &str = "WARP_ORG_SIGN_IN_SCOPES";
 const REDIRECT_PORT_ENV: &str = "WARP_ORG_SIGN_IN_REDIRECT_PORT";
 const SERVER_URL_ENV: &str = "WARP_ORG_SERVER_URL";
 const CONFIG_FILE_ENV: &str = "WARP_ORG_CONFIG_FILE";
+const ARTIFICIAL_ANALYSIS_KEY_ENV: &str = "WARP_ORG_ARTIFICIAL_ANALYSIS_API_KEY";
 
 const BASE_SCOPES: &str = "openid profile email offline_access";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
@@ -54,6 +56,18 @@ pub struct OrganizationConfig {
     pub server_url: Option<String>,
     #[serde(default)]
     pub sign_in: Option<OrganizationSignInConfig>,
+    #[serde(default)]
+    pub model_specs: Option<ModelSpecsConfig>,
+}
+
+/// Where the model picker's intelligence, speed, and cost ratings come from.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct ModelSpecsConfig {
+    /// A key for Artificial Analysis's free Data API.
+    pub artificial_analysis_api_key: String,
+    /// Our model IDs mapped to Artificial Analysis slugs, for models matching by name misses.
+    #[serde(default)]
+    pub aliases: HashMap<String, String>,
 }
 
 impl OrganizationConfig {
@@ -114,6 +128,13 @@ impl OrganizationConfig {
                 .map(|url| url.trim().to_owned())
                 .filter(|url| !url.is_empty()),
             sign_in: OrganizationSignInConfig::from_lookup(&lookup)?,
+            model_specs: lookup(ARTIFICIAL_ANALYSIS_KEY_ENV)
+                .map(|key| key.trim().to_owned())
+                .filter(|key| !key.is_empty())
+                .map(|artificial_analysis_api_key| ModelSpecsConfig {
+                    artificial_analysis_api_key,
+                    aliases: HashMap::new(),
+                }),
         })
     }
 }
