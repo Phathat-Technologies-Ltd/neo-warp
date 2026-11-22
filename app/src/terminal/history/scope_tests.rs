@@ -1,4 +1,4 @@
-use super::HistoryScope;
+use super::{HistoryScope, HistorySource, is_warp_internal_command};
 use crate::terminal::HistoryEntry;
 use crate::terminal::model::session::SessionId;
 
@@ -64,4 +64,46 @@ fn next_cycles_through_all_scopes_in_order() {
         assert_eq!(scope, expected);
     }
     assert_eq!(scope, HistoryScope::Global);
+}
+
+#[test]
+fn warp_shell_integration_helpers_are_internal() {
+    for command in [
+        "warp_run_external_ctrl_r_widget 0:",
+        "warp_run_external_ctrl_t_widget",
+        "_warp_execute_command foo",
+        "__warp_on_exit",
+        "  warp_precmd",
+    ] {
+        assert!(is_warp_internal_command(command), "{command}");
+    }
+    for command in [
+        "warp",
+        "warp_",
+        "ls warp_precmd",
+        "echo warp_x",
+        "cargo run",
+        "",
+    ] {
+        assert!(!is_warp_internal_command(command), "{command}");
+    }
+}
+
+#[test]
+fn source_filters_by_who_ran_the_command() {
+    let mine = HistoryEntry::command_only("ls");
+    let mut agents = HistoryEntry::command_only("ls");
+    agents.is_agent_executed = true;
+    assert!(HistorySource::All.includes(&mine) && HistorySource::All.includes(&agents));
+    assert!(HistorySource::Me.includes(&mine) && !HistorySource::Me.includes(&agents));
+    assert!(!HistorySource::Agent.includes(&mine) && HistorySource::Agent.includes(&agents));
+}
+
+#[test]
+fn source_next_cycles_through_all() {
+    let mut source = HistorySource::default();
+    for expected in [HistorySource::Me, HistorySource::Agent, HistorySource::All] {
+        source = source.next();
+        assert_eq!(source, expected);
+    }
 }

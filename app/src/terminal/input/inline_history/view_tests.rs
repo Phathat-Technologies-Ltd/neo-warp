@@ -1,5 +1,8 @@
-use super::{HistoryTab, build_tab_configs, scope_selector_label, tabs_select_item_type};
-use crate::terminal::history::HistoryScope;
+use super::{
+    HistoryTab, build_tab_configs, scope_selector_label, source_selector_label,
+    tabs_select_item_type,
+};
+use crate::terminal::history::{HistoryScope, HistorySource};
 
 #[test]
 fn terminal_mode_tabs_are_the_history_scopes() {
@@ -54,4 +57,11 @@ fn cycling_scope_visits_every_scope_in_menu_order() {
     }
     assert_eq!(visited, HistoryScope::ALL.to_vec());
     assert_eq!(scope.next(), HistoryScope::Global);
+}
+
+#[test]
+fn source_selector_label_names_source() {
+    assert_eq!(source_selector_label(HistorySource::All), "Source: All");
+    assert_eq!(source_selector_label(HistorySource::Me), "Source: Me");
+    assert_eq!(source_selector_label(HistorySource::Agent), "Source: Agent");
 }

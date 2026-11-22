@@ -4,7 +4,7 @@ use ordered_float::OrderedFloat;
 use warp_core::ui::Icon;
 use warp_core::ui::color::coloru_with_opacity;
 use warp_core::ui::theme::Fill;
-use warpui::elements::{ConstrainedBox, Container, Highlight, ParentElement, Shrinkable, Text};
+use warpui::elements::{ConstrainedBox, Container, Expanded, Highlight, ParentElement, Text};
 use warpui::fonts::{Properties, Weight};
 use warpui::prelude::{Align, CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize};
 use warpui::scene::{CornerRadius, Radius};
@@ -63,6 +63,28 @@ pub fn format_command_duration(duration: Duration) -> String {
         return format!("{mins}m {secs}s");
     }
     format!("{}h {}m", mins / 60, mins % 60)
+}
+
+/// Width of the duration column, in monospace ems. Fits the longest compact duration (`59m 59s`).
+const DURATION_COLUMN_EMS: f32 = 7.;
+/// Width of the relative time column, in UI font ems.
+const TIME_COLUMN_EMS: f32 = 8.;
+const COLUMN_GAP: f32 = 8.;
+
+/// The columns of a history row: an optional fixed-width, right-aligned duration, the text
+/// left-aligned and filling the remaining width, and a fixed-width, right-aligned relative time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryRowLayout {
+    /// Present for every command row so command text lines up, even when the run is unknown.
+    pub duration: Option<DurationColumn>,
+    pub relative_time: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurationColumn {
+    /// Empty when the run is unknown.
+    pub label: String,
+    pub succeeded: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +171,28 @@ impl InlineHistoryItem {
     pub fn with_score(mut self, score: OrderedFloat<f64>) -> Self {
         self.score = score;
         self
+    }
+}
+
+impl InlineHistoryItem {
+    pub fn row_layout(&self) -> HistoryRowLayout {
+        let duration = match &self.item_type {
+            HistoryItemType::Command { .. } => Some(match self.run {
+                Some(run) => DurationColumn {
+                    label: format_command_duration(run.duration),
+                    succeeded: Some(run.succeeded),
+                },
+                None => DurationColumn {
+                    label: String::new(),
+                    succeeded: None,
+                },
+            }),
+            HistoryItemType::Conversation { .. } | HistoryItemType::AIPrompt { .. } => None,
+        };
+        HistoryRowLayout {
+            duration,
+            relative_time: format_approx_duration_from_now_utc(self.timestamp.to_utc()),
+        }
     }
 }
 
@@ -254,59 +298,57 @@ impl SearchItem for InlineHistoryItem {
             );
         }
 
-        let mut primary_row = Flex::row()
+        let layout = self.row_layout();
+        let em_width = |family| app.font_cache().em_width(family, font_size);
+        let mut row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_main_axis_alignment(MainAxisAlignment::Start)
             .with_cross_axis_alignment(CrossAxisAlignment::Center);
 
-        if matches!(self.item_type, HistoryItemType::Command { .. }) {
+        if let Some(duration) = layout.duration {
             let theme = appearance.theme();
-            let (label, color) = match self.run {
-                Some(run) => (
-                    format_command_duration(run.duration),
-                    if run.succeeded {
-                        theme.ansi_fg_green()
-                    } else {
-                        theme.ansi_fg_red()
-                    },
-                ),
-                None => (String::new(), secondary_text_color.into_solid()),
+            let color = match duration.succeeded {
+                Some(true) => theme.ansi_fg_green(),
+                Some(false) => theme.ansi_fg_red(),
+                None => secondary_text_color.into_solid(),
             };
-            let duration_width = app
-                .font_cache()
-                .em_width(appearance.monospace_font_family(), font_size)
-                * 8.;
-            let duration = Text::new_inline(label, appearance.monospace_font_family(), font_size)
-                .with_color(color)
-                .finish();
-            primary_row.add_child(
-                ConstrainedBox::new(duration)
-                    .with_width(duration_width)
-                    .finish(),
+            let label = Text::new_inline(
+                duration.label,
+                appearance.monospace_font_family(),
+                font_size,
+            )
+            .with_color(color)
+            .finish();
+            row.add_child(
+                Container::new(
+                    ConstrainedBox::new(Align::new(label).right().finish())
+                        .with_width(
+                            em_width(appearance.monospace_font_family()) * DURATION_COLUMN_EMS,
+                        )
+                        .finish(),
+                )
+                .with_margin_right(COLUMN_GAP)
+                .finish(),
             );
         }
 
-        primary_row.add_child(Shrinkable::new(1., text.finish()).finish());
+        row.add_child(Expanded::new(1., Align::new(text.finish()).left().finish()).finish());
 
-        let timestamp = Text::new_inline(
-            format_approx_duration_from_now_utc(self.timestamp.to_utc()),
-            appearance.ui_font_family(),
-            font_size,
-        )
-        .with_color(secondary_text_color.into())
-        .finish();
-
-        let max_timestamp_width = app
-            .font_cache()
-            .em_width(appearance.ui_font_family(), font_size)
-            * 10.;
-        primary_row.add_child(
-            ConstrainedBox::new(Align::new(timestamp).right().finish())
-                .with_width(max_timestamp_width)
-                .finish(),
+        let timestamp =
+            Text::new_inline(layout.relative_time, appearance.ui_font_family(), font_size)
+                .with_color(secondary_text_color.into())
+                .finish();
+        row.add_child(
+            Container::new(
+                ConstrainedBox::new(Align::new(timestamp).right().finish())
+                    .with_width(em_width(appearance.ui_font_family()) * TIME_COLUMN_EMS)
+                    .finish(),
+            )
+            .with_margin_left(COLUMN_GAP)
+            .finish(),
         );
 
-        primary_row.finish()
+        row.finish()
     }
 
     fn item_background(

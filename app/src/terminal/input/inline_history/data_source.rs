@@ -20,9 +20,13 @@ use crate::search::SyncDataSource;
 use crate::search::data_source::{Query, QueryFilter, QueryResult};
 use crate::search::mixer::DataSourceRunErrorWrapper;
 use crate::settings::InputSettings;
-use crate::terminal::history::{History, HistoryScope, LinkedWorkflowData, UpArrowHistoryConfig};
-use crate::terminal::input::inline_history::HISTORY_SCOPE_CYCLE_KEYSTROKE;
+use crate::terminal::history::{
+    History, HistoryScope, HistorySource, LinkedWorkflowData, UpArrowHistoryConfig,
+};
 use crate::terminal::input::inline_history::search_item::{CommandRun, InlineHistoryItem};
+use crate::terminal::input::inline_history::{
+    HISTORY_SCOPE_CYCLE_KEYSTROKE, HISTORY_SOURCE_CYCLE_KEYSTROKE,
+};
 use crate::terminal::input::inline_menu::{
     InlineMenuAction, InlineMenuClickBehavior, InlineMenuMessageArgs, InlineMenuType,
     default_navigation_message_items,
@@ -67,13 +71,13 @@ impl InlineMenuAction for AcceptHistoryItem {
             .tab_configs()
             .iter()
             .any(|tab| !tab.filters.is_empty());
+        let settings = InputSettings::as_ref(args.app);
+        let mut hints = source_hint_items(*settings.history_source);
         if tabs_select_item_type {
-            let dismiss_index = items.len().saturating_sub(1);
-            items.splice(
-                dismiss_index..dismiss_index,
-                scope_hint_items(*InputSettings::as_ref(args.app).history_scope),
-            );
+            hints.extend(scope_hint_items(*settings.history_scope));
         }
+        let dismiss_index = items.len().saturating_sub(1);
+        items.splice(dismiss_index..dismiss_index, hints);
         Some(Message::new(items))
     }
 
@@ -91,6 +95,15 @@ pub(super) fn scope_hint_items(scope: HistoryScope) -> Vec<MessageItem> {
     vec![
         MessageItem::keystroke(Keystroke::parse(HISTORY_SCOPE_CYCLE_KEYSTROKE).unwrap_or_default()),
         MessageItem::text(format!(" to cycle scope ({})", scope.label())),
+    ]
+}
+
+pub(super) fn source_hint_items(source: HistorySource) -> Vec<MessageItem> {
+    vec![
+        MessageItem::keystroke(
+            Keystroke::parse(HISTORY_SOURCE_CYCLE_KEYSTROKE).unwrap_or_default(),
+        ),
+        MessageItem::text(format!(" to cycle source ({})", source.label())),
     ]
 }
 
@@ -139,6 +152,7 @@ impl InlineHistoryMenuDataSource {
             include_commands,
             include_prompts,
             scope: *InputSettings::as_ref(app).history_scope,
+            source: *InputSettings::as_ref(app).history_source,
         };
         let suggestions = history.up_arrow_suggestions_for_terminal_surface(
             self.terminal_view_id,
@@ -318,6 +332,7 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
                         include_commands: true,
                         include_prompts: false,
                         scope: *InputSettings::as_ref(app).history_scope,
+                        source: *InputSettings::as_ref(app).history_source,
                     },
                     app,
                 )

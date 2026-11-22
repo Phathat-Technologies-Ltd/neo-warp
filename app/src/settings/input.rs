@@ -7,6 +7,7 @@ use settings::{RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, define_s
 use warpui::{AppContext, SingletonEntity};
 
 use crate::terminal::HistoryScope;
+use crate::terminal::history::HistorySource;
 use crate::terminal::input::inline_menu::InlineMenuType;
 use crate::terminal::session_settings::SessionSettings;
 
@@ -230,6 +231,16 @@ define_settings_group!(InputSettings,
             private: false,
             toml_path: "terminal.input.history_scope",
             description: "Which commands the history menu shows: global, host, session, or directory.",
+        },
+        history_source: HistorySourceSetting {
+            type: HistorySource,
+            default: HistorySource::All,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            surface: settings::SettingSurfaces::ALL,
+            private: false,
+            toml_path: "terminal.input.history_source",
+            description: "Whose commands the history menu shows: all, only the user's (me), or only the agent's.",
         },
         // Per-menu custom content heights set by drag-to-resize. Not user-visible.
         inline_menu_custom_content_heights: InlineMenuCustomContentHeights {

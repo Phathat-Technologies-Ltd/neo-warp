@@ -54,11 +54,33 @@ exists: a command run on another machine or in another shell cannot be recalled 
 - Ctrl-S also cycles scope in the classic menu, where it moves the active scope tab. Ctrl-S is
   only bound while the history menu is open, so terminal flow control is unaffected otherwise.
 
+### Source
+
+- Next to the scope, the menu header shows a source selector (`Source: All`): All, Me (commands the
+  user ran), or Agent (commands the agent ran). Clicking it, or pressing Ctrl-O while the menu is
+  open, moves to the next source. The footer adds `ctrl-o to cycle source (All)` before the dismiss
+  hint. This applies in both the agent view and the classic menu, where the source selector sits
+  in the header next to `Configure` and the scope stays on the tabs.
+- Source filters command rows only; prompts and conversations are unaffected.
+- All respects the "include agent commands in history" setting. Choosing Agent always shows the
+  agent's commands, since the user asked for them explicitly.
+- The chosen source is saved as `terminal.input.history_source` (`all`, `me`, `agent`), local only,
+  shared by all panes, default All.
+
+### Warp helper commands
+
+- Commands that call Warp's own shell-integration helpers (any command whose first word is
+  `warp_*`, `_warp_*`, or `__warp_*`, such as `warp_run_external_ctrl_r_widget 0`) are never shown
+  in any history list. They are dropped when history files are read, when Warp records commands,
+  and when persisted commands are loaded.
+
 ### Rows
 
-- Each command row shows how long it ran, green when it exited 0 and red otherwise, then the
-  command (truncated with an ellipsis), then the relative time (`4m ago`). Entries read from the
-  shell history file have no duration or exit code, so the duration column is blank.
+- Each command row is laid out in columns, as in atuin: a fixed-width, right-aligned duration
+  (green when it exited 0, red otherwise), the command left-aligned right after it and truncated
+  with an ellipsis, then the relative time (`4m ago`) right-aligned at the end. Entries read from
+  the shell history file have no duration or exit code, so their duration column is blank but still
+  reserved, keeping commands aligned. Prompt and conversation rows have no duration column.
 - Typing filters the rows within the current scope; the newest match stays closest to the input.
 
 ### TUI
