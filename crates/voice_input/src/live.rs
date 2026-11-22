@@ -10,6 +10,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crate::recovery::{Heartbeat, RecoveryTiming, Signal, StreamFault, supervise};
 
 const TARGET_RATE: f64 = 16_000.0;
+/// Audio callbacks between progress logs (roughly ten seconds at typical buffer sizes).
+const CALLBACKS_PER_LOG: u64 = 1000;
 
 /// A chunk of captured audio.
 #[derive(Debug, Clone, PartialEq)]
@@ -78,14 +80,51 @@ where
         .default_input_config()
         .context("failed to get the default input config")?;
     let channels = usize::from(config.channels().max(1));
+    log::info!(
+        "Hands-free microphone: opening {:?} at {} Hz, {channels} channel(s), {:?}, resampling to \
+         {TARGET_RATE} Hz",
+        device
+            .description()
+            .map(|description| description.name().to_owned())
+            .unwrap_or_default(),
+        config.sample_rate(),
+        config.sample_format()
+    );
     let mut resampler = LinearResampler::new(f64::from(config.sample_rate()), TARGET_RATE);
+    let mut callbacks: u64 = 0;
+    let mut peak_level: f32 = 0.0;
     let on_mono = move |mono: Vec<f32>| {
         heartbeat.fetch_add(1, Ordering::Relaxed);
         let samples = resampler.process(&mono);
-        if !samples.is_empty()
-            && let Ok(mut on_chunk) = on_chunk.lock()
-        {
-            on_chunk(to_chunk(&samples));
+        callbacks += 1;
+        if callbacks == 1 {
+            log::info!(
+                "Hands-free microphone: first audio callback ({} frames in, {} samples out)",
+                mono.len(),
+                samples.len()
+            );
+        }
+        if samples.is_empty() {
+            return;
+        }
+        let chunk = to_chunk(&samples);
+        peak_level = peak_level.max(chunk.level);
+        if callbacks.is_multiple_of(CALLBACKS_PER_LOG) {
+            if peak_level == 0.0 {
+                // macOS delivers zeros instead of failing when the app lacks microphone access.
+                log::warn!(
+                    "Hands-free microphone: {callbacks} audio callbacks of pure silence; check \
+                     microphone access and the input device"
+                );
+            }
+            log::info!(
+                "Hands-free microphone: {callbacks} audio callbacks, peak level {peak_level:.3} \
+                 since the last report"
+            );
+            peak_level = 0.0;
+        }
+        if let Ok(mut on_chunk) = on_chunk.lock() {
+            on_chunk(chunk);
         }
     };
     let sample_format = config.sample_format();

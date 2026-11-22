@@ -19,8 +19,12 @@ pub mod transcriber;
 pub fn mic_indicator_label(app: &warpui::AppContext) -> Option<String> {
     use warpui::SingletonEntity as _;
 
-    if !hands_free::HandsFreeSession::as_ref(app).is_active() {
+    let session = hands_free::HandsFreeSession::as_ref(app);
+    if !session.is_active() {
         return None;
+    }
+    if !session.state().is_mic_on() {
+        return Some(session.state().label().to_owned());
     }
     let conversation = conversation::ConversationSession::as_ref(app);
     Some(if conversation.is_active() {

@@ -2481,9 +2481,13 @@ impl Input {
                 self.agent_input_footer.update(ctx, |footer, ctx| {
                     footer.set_voice_is_active(state.is_mic_on(), ctx);
                 });
-                if state.is_mic_on() {
+                if state.is_on() {
                     if self.editor.as_ref(ctx).is_empty(ctx) {
-                        let placeholder = format!("\u{25cf} Mic on \u{b7} {}...", state.label());
+                        let placeholder = if state.is_mic_on() {
+                            format!("\u{25cf} Mic on \u{b7} {}...", state.label())
+                        } else {
+                            state.label().to_owned()
+                        };
                         self.editor.update(ctx, |editor, ctx| {
                             editor.set_placeholder_text(&placeholder, ctx);
                         });
@@ -2498,11 +2502,18 @@ impl Input {
             }
             HandsFreeEvent::Effect(effect) => effect,
         };
-        if HandsFreeSession::as_ref(ctx).window_id() != Some(ctx.window_id())
-            || !self.editor.is_focused(ctx)
-        {
+        if HandsFreeSession::as_ref(ctx).window_id() != Some(ctx.window_id()) {
+            log::debug!("Hands-free: edit skipped by an input in another window");
             return;
         }
+        if !self.editor.is_focused(ctx) {
+            log::debug!("Hands-free: edit skipped by an unfocused input");
+            return;
+        }
+        log::info!(
+            "Hands-free: applying {} to the focused input",
+            effect.kind()
+        );
         let is_shell = self.input_type(ctx) == InputType::Shell;
         let buffer = self.buffer_text(ctx);
         let text = match effect {
@@ -2539,6 +2550,7 @@ impl Input {
                 self.hands_free_range.clear();
                 String::new()
             }
+            HandsFreeEffect::DiscardPartial => self.hands_free_range.commit(&buffer, ""),
             HandsFreeEffect::Send | HandsFreeEffect::AutoSend => {
                 if !sends_input(effect, is_shell, &buffer) {
                     return;
