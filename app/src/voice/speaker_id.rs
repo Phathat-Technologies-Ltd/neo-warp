@@ -28,6 +28,9 @@ const PHRASE_DURATION: Duration = Duration::from_millis(5500);
 const SILENCE_RMS: f32 = 0.01;
 /// Speech needed per enrollment phrase after trimming silence.
 const MIN_PHRASE_SAMPLES: usize = 16_000;
+/// Less speech than this gives an unreliable voiceprint score (the enrolled user scores below
+/// the threshold on ~0.4 s replies like "yes"), so such utterances are let through unchecked.
+const MIN_VERIFY_SPEECH_SECS: f32 = 0.7;
 
 type EmbedResult = Result<Vec<f32>, String>;
 type EmbedderFactory = Box<dyn Fn() -> Result<Box<dyn SpeakerEmbedder>, String> + Send>;
@@ -263,10 +266,10 @@ impl SpeakerProfile {
             );
             return Box::pin(async { Verdict::Unavailable });
         };
-        if speech.is_empty() {
+        if speech_secs < MIN_VERIFY_SPEECH_SECS {
             log::info!(
-                "Speaker check (utterance {utterance}, {stage}): no speech above the silence \
-                 level in {audio_secs:.2}s of audio, let through"
+                "Speaker check (utterance {utterance}, {stage}): {speech_secs:.2}s of speech in \
+                 {audio_secs:.2}s of audio is too short to judge, let through"
             );
             return Box::pin(async { Verdict::Unavailable });
         }
