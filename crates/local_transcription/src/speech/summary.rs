@@ -92,100 +92,9 @@ fn article(word: &str) -> &'static str {
     }
 }
 
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
-/// What to say when a command finishes, for example "Ran a find command: 14 folders." or "The
-/// cargo command failed with 2 errors." The output itself is never read out, only counted.
-pub fn command_result_readout(command: &str, exit_code: Option<i32>, output: &str) -> String {
-    let errors = count_lines(output, &["error:", "error[", "FAILED", "panicked"]);
-    let warnings = count_lines(output, &["warning:"]);
-    let failed = errors > 0 || !matches!(exit_code, Some(0) | None);
-    let description = command_description(command);
-    if failed {
-        let subject = match program_name(command) {
-            Some(name) if description.ends_with(" command") => format!("The {name} command"),
-            _ => "The command".to_owned(),
-        };
-        let detail = match (errors, warnings, exit_code) {
-            (0, 0, Some(code)) => format!("exit code {code}"),
-            (0, _, _) => "an error".to_owned(),
-            (errors, 0, _) => plural(errors, "error"),
-            (errors, warnings, _) => {
-                format!(
-                    "{} and {}",
-                    plural(errors, "error"),
-                    plural(warnings, "warning")
-                )
-            }
-        };
-        return format!("{subject} failed with {detail}.");
-    }
-    let lines = output
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .count();
-    let words = program_words(command);
-    let noun = match program_name(command).as_deref() {
-        Some("find" | "fd") => match words
-            .iter()
-            .position(|word| *word == "-type")
-            .and_then(|index| words.get(index + 1))
-        {
-            Some(&"d") => Some("folder"),
-            Some(&"f") => Some("file"),
-            _ => Some("result"),
-        },
-        Some("grep" | "rg") => Some("match"),
-        _ => None,
-    };
-    let detail = match noun {
-        _ if warnings > 0 => plural(warnings, "warning"),
-        Some(noun) => plural_noun(lines, noun),
-        None => "it succeeded".to_owned(),
-    };
-    format!("Ran {description}: {detail}.")
-}
-
 /// What the agent asks to do when it wants to run `command`, naming only what it does.
 pub fn command_approval_subject(command: &str) -> String {
     format!("run {}", command_description(command))
-}
-
-/// The spoken note for a denylisted command.
-pub fn command_denied_readout(command: &str) -> String {
-    format!(
-        "{} is on the deny list, so it didn't run.",
-        capitalize(&command_description(command))
-    )
-}
-
-fn count_lines(output: &str, needles: &[&str]) -> usize {
-    output
-        .lines()
-        .filter(|line| {
-            let line = line.trim_start();
-            needles.iter().any(|needle| line.starts_with(needle))
-        })
-        .count()
-}
-
-fn plural_noun(count: usize, noun: &str) -> String {
-    let plural = if noun.ends_with("ch") || noun.ends_with('s') {
-        format!("{noun}es")
-    } else {
-        format!("{noun}s")
-    };
-    match count {
-        0 => format!("no {plural}"),
-        1 => format!("1 {noun}"),
-        count => format!("{count} {plural}"),
-    }
 }
 
 /// "1 error", "3 errors".
@@ -194,34 +103,6 @@ pub fn plural(count: usize, noun: &str) -> String {
         1 => format!("1 {noun}"),
         count => format!("{count} {noun}s"),
     }
-}
-
-/// A kind of tool call, for grouped progress lines.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProgressKind {
-    Read,
-    Search,
-    Command,
-    Edit,
-    Other,
-}
-
-/// One spoken line for a batch of tool calls, each with how many items it covers, such as
-/// "Looking at three files." A batch of mixed kinds gets a generic line.
-pub fn progress_line(batch: &[(ProgressKind, usize)]) -> Option<String> {
-    let (first, _) = batch.first()?;
-    if batch.iter().any(|(kind, _)| kind != first) {
-        return Some("Checking a few things.".to_owned());
-    }
-    let count = batch.iter().map(|(_, count)| count).sum::<usize>();
-    let line = match first {
-        ProgressKind::Read => format!("Looking at {}.", counted(count, "file")),
-        ProgressKind::Search => "Searching the project.".to_owned(),
-        ProgressKind::Command => format!("Running {}.", counted(count, "command")),
-        ProgressKind::Edit => format!("Editing {}.", counted(count, "file")),
-        ProgressKind::Other => "Working on it.".to_owned(),
-    };
-    Some(line)
 }
 
 /// The one prompt for several approvals that came in together, such as "Two commands need your
