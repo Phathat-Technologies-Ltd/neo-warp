@@ -27,4 +27,13 @@ fn spoken_summary_only_when_conversation_mode_is_flagged() {
 
     assert!(system_prompt(None, true).contains("<spoken>"));
     assert!(!system_prompt(None, false).contains("<spoken>"));
+    let prompt = system_prompt(None, true);
+    for rule in [
+        "through speakers",
+        "shell syntax",
+        "three digits",
+        "what the user should do",
+    ] {
+        assert!(prompt.contains(rule), "{rule}");
+    }
 }

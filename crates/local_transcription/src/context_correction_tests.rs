@@ -21,6 +21,7 @@ fn fix(text: &str) -> String {
         &vocabulary(),
         &CorrectionLog::default(),
         DEFAULT_THRESHOLD,
+        CorrectionContext::Command,
     )
     .text
 }
@@ -44,6 +45,7 @@ fn reports_heard_words_and_ranges() {
         &vocabulary(),
         &CorrectionLog::default(),
         DEFAULT_THRESHOLD,
+        CorrectionContext::Command,
     );
     assert_eq!(result.text, "run git status.");
     let [correction] = result.corrections.as_slice() else {
@@ -64,12 +66,94 @@ fn leaves_ordinary_speech_and_weak_matches() {
 }
 
 #[test]
+fn never_rewrites_everyday_speech() {
+    let mut vocabulary = vocabulary();
+    vocabulary.extend([
+        "Can", "Hey", "hello", "find", "make", "list", "canu", "heyhello",
+    ]);
+    let log = CorrectionLog::default();
+    for text in [
+        "can you",
+        "hey, hello",
+        "Can you find the list and make it?",
+        "hey hello there",
+    ] {
+        let result = correct(
+            text,
+            &vocabulary,
+            &log,
+            DEFAULT_THRESHOLD,
+            CorrectionContext::Command,
+        );
+        assert_eq!(result.text, text);
+        assert!(result.corrections.is_empty(), "{text}: {result:?}");
+    }
+}
+
+#[test]
+fn never_drops_words_or_touches_text_outside_the_span() {
+    let result = fix("hey, can you open pie project dot toml?");
+    assert_eq!(result, "hey, can you open pyproject.toml?");
+}
+
+#[test]
+fn never_substitutes_flags_for_words() {
+    let mut vocabulary = vocabulary();
+    assert!(!vocabulary.add("--show-current"));
+    vocabulary.extend(["show-current", "current_hour"]);
+    let log = CorrectionLog::default();
+    for context in [CorrectionContext::Command, CorrectionContext::Prose] {
+        let result = correct(
+            "what is the current hour",
+            &vocabulary,
+            &log,
+            DEFAULT_THRESHOLD,
+            context,
+        );
+        assert_eq!(result.text, "what is the current hour", "{context:?}");
+    }
+}
+
+#[test]
+fn prose_only_corrects_identifier_shaped_multi_word_spans() {
+    let log = CorrectionLog::default();
+    let prose = |text| {
+        correct(
+            text,
+            &vocabulary(),
+            &log,
+            DEFAULT_THRESHOLD,
+            CorrectionContext::Prose,
+        )
+        .text
+    };
+    assert_eq!(
+        prose("look at atm design analyzer"),
+        "look at atm-design-analyzer"
+    );
+    assert_eq!(prose("show get status"), "show get status");
+    assert_eq!(prose("use cube control"), "use cube control");
+}
+
+#[test]
 fn threshold_controls_replacement() {
     let log = CorrectionLog::default();
-    let strict = correct("get status", &vocabulary(), &log, 0.99);
+    let strict = correct(
+        "get status",
+        &vocabulary(),
+        &log,
+        0.99,
+        CorrectionContext::Command,
+    );
     assert_eq!(strict.text, "get status");
     assert!(strict.corrections.is_empty());
-    let normal = correct("get status", &vocabulary(), &log, DEFAULT_THRESHOLD);
+    let normal = correct(
+        "get status",
+        &vocabulary(),
+        &log,
+        DEFAULT_THRESHOLD,
+        CorrectionContext::Command,
+    );
     assert_eq!(normal.text, "git status");
 }
 
@@ -77,7 +161,13 @@ fn threshold_controls_replacement() {
 fn pinned_mappings_apply_first() {
     let mut log = CorrectionLog::default();
     log.pin("get status", "gst", 1);
-    let result = correct("get status", &vocabulary(), &log, DEFAULT_THRESHOLD);
+    let result = correct(
+        "get status",
+        &vocabulary(),
+        &log,
+        DEFAULT_THRESHOLD,
+        CorrectionContext::Command,
+    );
     assert_eq!(result.text, "gst");
     assert!(result.corrections[0].pinned);
 
@@ -87,6 +177,7 @@ fn pinned_mappings_apply_first() {
         &Vocabulary::default(),
         &log,
         DEFAULT_THRESHOLD,
+        CorrectionContext::Command,
     );
     assert_eq!(result.text, "open warpterm");
 }
@@ -97,13 +188,27 @@ fn reverted_mappings_are_suppressed() {
     log.record_correction("get status", "git status", 1);
     log.record_reverted("get status", "git status", 2);
     assert_eq!(
-        correct("get status", &vocabulary(), &log, DEFAULT_THRESHOLD).text,
+        correct(
+            "get status",
+            &vocabulary(),
+            &log,
+            DEFAULT_THRESHOLD,
+            CorrectionContext::Command
+        )
+        .text,
         "get status"
     );
     log.record_accepted("get status", "git status", 3);
     log.record_accepted("get status", "git status", 4);
     assert_eq!(
-        correct("get status", &vocabulary(), &log, DEFAULT_THRESHOLD).text,
+        correct(
+            "get status",
+            &vocabulary(),
+            &log,
+            DEFAULT_THRESHOLD,
+            CorrectionContext::Command
+        )
+        .text,
         "git status"
     );
 }
@@ -114,13 +219,27 @@ fn disabled_and_removed_mappings() {
     log.pin("get status", "git status", 1);
     log.set_disabled("get status", "git status", true, 2);
     assert_eq!(
-        correct("get status", &vocabulary(), &log, DEFAULT_THRESHOLD).text,
+        correct(
+            "get status",
+            &vocabulary(),
+            &log,
+            DEFAULT_THRESHOLD,
+            CorrectionContext::Command
+        )
+        .text,
         "get status"
     );
     log.remove("get status", "git status");
     assert!(log.entries().is_empty());
     assert_eq!(
-        correct("get status", &vocabulary(), &log, DEFAULT_THRESHOLD).text,
+        correct(
+            "get status",
+            &vocabulary(),
+            &log,
+            DEFAULT_THRESHOLD,
+            CorrectionContext::Command
+        )
+        .text,
         "git status"
     );
 }

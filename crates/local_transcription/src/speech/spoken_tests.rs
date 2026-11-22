@@ -74,3 +74,33 @@ fn fallback_holds_back_a_partial_word_while_streaming() {
         "Here it is:"
     );
 }
+
+#[test]
+fn fallback_drops_unformatted_command_arguments() {
+    assert_eq!(
+        fallback_readout(
+            "I ran find . -type d -not -path '*/.git*' -not -path '*/node_modules*' to list them.",
+            true
+        ),
+        "I ran find to list them."
+    );
+}
+
+#[test]
+fn plain_speech_drops_shell_math_and_long_numbers() {
+    assert_eq!(
+        plain_speech("I set cutoff=$(( $(date +%s) - 7*86400 )) and searched."),
+        "I set and searched."
+    );
+    assert_eq!(
+        plain_speech("Ran find . -type d -not -path '*/.git*' to list folders."),
+        "Ran find to list folders."
+    );
+    assert_eq!(plain_speech("`ls -la` | grep x"), "grep");
+    assert_eq!(plain_speech("$(( 1 + 2 ))"), "");
+    assert_eq!(
+        plain_speech("Ran a find command: 14 folders."),
+        "Ran a find command: 14 folders."
+    );
+    assert_eq!(plain_speech("See https://x.io/a now."), "See now.");
+}

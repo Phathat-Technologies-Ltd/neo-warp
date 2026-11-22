@@ -4,8 +4,6 @@ use std::time::Duration;
 
 use instant::Instant;
 
-use super::tts_text;
-
 /// How long after the assistant's audio stops its echo may still reach the microphone, so speech
 /// that starts within it is not trusted as the user's.
 pub const ECHO_TAIL: Duration = Duration::from_millis(700);
@@ -92,23 +90,14 @@ pub fn is_stop_phrase(text: &str) -> bool {
     )
 }
 
-/// Commands longer than this many words are read as their first words.
-const MAX_SPOKEN_COMMAND_WORDS: usize = 6;
-
-/// The prompt spoken when the agent asks to run `command`. Commands that need on-screen approval
-/// are announced without asking for a spoken answer.
-pub fn approval_prompt(command: &str, needs_screen: bool) -> String {
-    let words: Vec<&str> = command.split_whitespace().collect();
-    let short = if words.len() > MAX_SPOKEN_COMMAND_WORDS {
-        format!("{} and so on", words[..MAX_SPOKEN_COMMAND_WORDS].join(" "))
-    } else {
-        words.join(" ")
-    };
-    let short = tts_text::normalize(&short);
+/// The prompt spoken when the agent asks to do `subject` (a plain description such as "run a
+/// command that deletes files", never raw command text). Actions that need on-screen approval are
+/// announced without asking for a spoken answer.
+pub fn approval_prompt(subject: &str, needs_screen: bool) -> String {
     if needs_screen {
-        format!("I want to run {short}. Please approve it on screen.")
+        format!("I want to {subject}. Approve on screen.")
     } else {
-        format!("I want to run {short}. Say run it, or no.")
+        format!("I want to {subject}. Say run it, or no.")
     }
 }
 
@@ -151,14 +140,14 @@ impl<Id> Default for ApprovalFlow<Id> {
 
 impl<Id: Clone + PartialEq> ApprovalFlow<Id> {
     /// Records that the agent waits on `id`, returning the prompt to speak.
-    pub fn request(&mut self, id: Id, command: &str, needs_screen: bool) -> String {
+    pub fn request(&mut self, id: Id, subject: &str, needs_screen: bool) -> String {
         self.pending = Some(PendingApproval {
             id,
             needs_screen,
             listening_from: None,
             listening_until: None,
         });
-        approval_prompt(command, needs_screen)
+        approval_prompt(subject, needs_screen)
     }
 
     pub fn pending(&self) -> Option<&PendingApproval<Id>> {

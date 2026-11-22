@@ -3,7 +3,8 @@
 
 use local_transcription::speech::spoken::fallback_readout;
 use local_transcription::speech::summary::{
-    SpokenSummary, command_name, command_result_readout, plural,
+    SpokenSummary, command_approval_subject, command_denied_readout, command_description,
+    command_result_readout, plural,
 };
 
 use crate::ai::agent::{
@@ -18,7 +19,7 @@ impl SpokenSummary for SpokenAction<'_> {
     fn spoken_summary(&self) -> Option<String> {
         let summary = match self.0 {
             AIAgentActionType::RequestCommandOutput { command, .. } => {
-                format!("Running {}.", command_name(command))
+                format!("Running {}.", command_description(command))
             }
             AIAgentActionType::RequestFileEdits { file_edits, .. } => {
                 format!("Editing {}.", plural(file_edits.len(), "file"))
@@ -66,20 +67,24 @@ impl SpokenSummary for SpokenAction<'_> {
     }
 }
 
-/// The command (or summary) to name in a spoken approval prompt, and whether only the on-screen
+/// What the agent asks to do in a spoken approval prompt (never raw command text), and whether
+/// only the on-screen
 /// buttons may approve it. Only commands the risk classification explicitly marks as safe may be
 /// approved by voice; risky and unclassified ones need the screen.
 pub fn spoken_action_prompt(action: &AIAgentActionType) -> (String, bool) {
     match action {
         AIAgentActionType::RequestCommandOutput {
             command, is_risky, ..
-        } => (command.clone(), *is_risky != Some(false)),
+        } => (command_approval_subject(command), *is_risky != Some(false)),
         action => {
             let summary = SpokenAction(action)
                 .spoken_summary()
                 .unwrap_or_else(|| "this action.".to_owned());
             (
-                summary.trim_end_matches('.').to_lowercase(),
+                format!(
+                    "go ahead with {}",
+                    summary.trim_end_matches('.').to_lowercase()
+                ),
                 // Only commands have a risk classification; anything else is approved on screen.
                 true,
             )
@@ -87,8 +92,8 @@ pub fn spoken_action_prompt(action: &AIAgentActionType) -> (String, bool) {
     }
 }
 
-/// What to say when an action finishes, if anything: a command's short output is read out, and
-/// longer output is only summarized.
+/// What to say when an action finishes, if anything: a one-line count or failure note for a
+/// command, never its text or output.
 pub fn spoken_action_result(result: &AIAgentActionResultType) -> Option<String> {
     let AIAgentActionResultType::RequestCommandOutput(result) = result else {
         return None;
@@ -107,10 +112,7 @@ pub fn spoken_action_result(result: &AIAgentActionResultType) -> Option<String> 
         RequestCommandOutputResult::ShellRecovered {
             command, output, ..
         } => Some(command_result_readout(command, Some(1), output)),
-        RequestCommandOutputResult::Denylisted { command } => Some(format!(
-            "{} is on the deny list, so it didn't run.",
-            command_name(command)
-        )),
+        RequestCommandOutputResult::Denylisted { command } => Some(command_denied_readout(command)),
         RequestCommandOutputResult::LongRunningCommandSnapshot { .. }
         | RequestCommandOutputResult::CancelledBeforeExecution
         | RequestCommandOutputResult::TerminalBusy { .. } => None,
@@ -118,9 +120,11 @@ pub fn spoken_action_result(result: &AIAgentActionResultType) -> Option<String> 
 }
 
 /// Builds the text to speak for `output`: each text message's `<spoken>` summary, or a short
-/// filtered readout of its prose when it has none, and short summaries of tool calls.
+/// filtered readout of its prose when it has none, and short summaries of tool calls. Tool calls
+/// are skipped once any message has a `<spoken>` summary, since that summary covers the turn.
 pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
+    let has_spoken = reply_has_spoken_summary(output);
     let last_index = output.messages.len().saturating_sub(1);
     for (index, message) in output.messages.iter().enumerate() {
         match &message.message {
@@ -147,6 +151,7 @@ pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
                     parts.push(part);
                 }
             }
+            AIAgentOutputMessageType::Action(_) if has_spoken => {}
             AIAgentOutputMessageType::Action(action) => {
                 if let Some(summary) = SpokenAction(&action.action).spoken_summary() {
                     parts.push(summary);
@@ -167,6 +172,13 @@ pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
         }
     }
     parts.join("\n\n")
+}
+
+/// Whether any text message of `output` carries a `<spoken>` summary.
+pub fn reply_has_spoken_summary(output: &AIAgentOutput) -> bool {
+    output.messages.iter().any(|message| {
+        matches!(&message.message, AIAgentOutputMessageType::Text(text) if text.spoken.is_some())
+    })
 }
 
 #[cfg(test)]

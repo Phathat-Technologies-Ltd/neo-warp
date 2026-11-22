@@ -156,6 +156,14 @@ Add `FeatureFlag::VoiceHandsFree` to `crates/warp_features`, add it to the org d
   window has focus; the "Mic on" placeholder only refreshes on hands-free state changes, not on
   conversation-state changes.
 
+## Target input
+
+`HandsFreeSession` keeps a `VoiceTarget` (window and terminal surface). An input claims it from
+`EditorEvent::Focused` via `focus_target`, which emits `StateChanged`; a just-started session is
+claimed by the focused input in its window. `Input::handle_hands_free_event` applies effects and
+shows the placeholder only when `is_target`, and `VoiceControls` (given its host surface) shows
+live state only through `visible_voice_state(is_target, ..)`.
+
 ## Testing
 - VAD segmentation on recorded audio fixtures.
 - Table tests for the spoken-form normalization.

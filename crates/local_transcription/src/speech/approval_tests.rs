@@ -37,18 +37,14 @@ fn recognizes_stop() {
 }
 
 #[test]
-fn prompt_reads_a_short_command() {
+fn prompt_speaks_the_subject_verbatim() {
     assert_eq!(
-        approval_prompt("cargo test --workspace", false),
-        "I want to run cargo test dash dash workspace. Say run it, or no."
+        approval_prompt("run a cargo command", false),
+        "I want to run a cargo command. Say run it, or no."
     );
     assert_eq!(
-        approval_prompt("rm -rf target", true),
-        "I want to run rm dash r f target. Please approve it on screen."
-    );
-    assert_eq!(
-        approval_prompt("a b c d e f g h", false),
-        "I want to run a b c d e f and so on. Say run it, or no."
+        approval_prompt("run a command that deletes files", true),
+        "I want to run a command that deletes files. Approve on screen."
     );
 }
 

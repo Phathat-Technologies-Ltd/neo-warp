@@ -13,12 +13,66 @@ pub const MAX_VOCABULARY_TERMS: usize = 2000;
 /// Longest spoken span, in words, matched against one term.
 const MAX_SPAN_WORDS: usize = 4;
 /// Minimum confidence for replacing a span.
-pub const DEFAULT_THRESHOLD: f32 = 0.86;
+pub const DEFAULT_THRESHOLD: f32 = 0.88;
 /// Single words are more often ordinary speech, so they need a stronger match and a longer key.
-const SINGLE_WORD_THRESHOLD: f32 = 0.92;
+const SINGLE_WORD_THRESHOLD: f32 = 0.95;
 const SINGLE_WORD_MIN_KEY: usize = 4;
 /// Reverts that suppress a learned mapping once they outnumber its accepts.
 const MIN_REVERTS_TO_SUPPRESS: u32 = 1;
+
+/// The spoken span and the term must also be this similar letter for letter, so a term never
+/// swallows extra spoken words ("can you" is never replaced by `can`).
+const MIN_SPELLING_SIMILARITY: f32 = 0.6;
+
+/// Everyday English words, including command names that double as words. A term made only of
+/// these is never a replacement, and a single one of these is never replaced.
+const COMMON_WORDS: &[&str] = &[
+    "a", "about", "add", "after", "again", "all", "also", "am", "an", "and", "any", "are", "as",
+    "ask", "at", "back", "be", "because", "been", "before", "build", "but", "by", "call", "can",
+    "cat", "change", "check", "clean", "clear", "close", "code", "come", "copy", "could",
+    "current", "cut", "date", "delete", "did", "diff", "do", "does", "done", "down", "each",
+    "echo", "edit", "else", "error", "even", "file", "files", "find", "first", "fix", "folder",
+    "for", "from", "get", "give", "go", "good", "got", "had", "has", "have", "he", "head", "hello",
+    "help", "her", "here", "hey", "hi", "him", "his", "hour", "how", "i", "if", "in", "into", "is",
+    "it", "its", "just", "kill", "know", "last", "less", "let", "like", "line", "link", "list",
+    "log", "logs", "look", "main", "make", "man", "may", "me", "more", "most", "move", "my",
+    "name", "need", "new", "next", "no", "not", "now", "of", "off", "ok", "okay", "on", "one",
+    "only", "open", "or", "other", "our", "out", "over", "please", "print", "pull", "push", "put",
+    "read", "remove", "rename", "reset", "right", "run", "say", "see", "set", "she", "should",
+    "show", "so", "some", "sort", "start", "status", "stop", "take", "tell", "test", "thanks",
+    "that", "the", "their", "them", "then", "there", "these", "they", "this", "time", "to", "top",
+    "touch", "try", "two", "up", "us", "use", "want", "was", "watch", "way", "we", "well", "were",
+    "what", "when", "where", "which", "who", "why", "will", "with", "would", "write", "yes", "you",
+    "your",
+];
+
+/// Where a transcript goes, which sets how freely it is corrected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrectionContext {
+    /// Shell input: commands, file names, and identifiers are expected.
+    Command,
+    /// A natural-language prompt: only multi-word spans that clearly name a file, directory, or
+    /// identifier (a term with a symbol, digit, or inner capital) are corrected.
+    Prose,
+}
+
+fn is_identifier_shaped(term: &str) -> bool {
+    term.chars()
+        .any(|c| c.is_ascii_digit() || matches!(c, '.' | '/' | '_' | '-' | '~' | '@'))
+        || term
+            .split_whitespace()
+            .any(|word| word.chars().skip(1).any(char::is_uppercase))
+}
+
+fn is_common_word(word: &str) -> bool {
+    COMMON_WORDS.contains(&word.to_lowercase().as_str())
+}
+
+/// Whether `term` is vocabulary rather than ordinary speech: it has a symbol, digit, or inner
+/// capital, or at least one word that isn't [`COMMON_WORDS`].
+fn is_vocabulary_term(term: &str) -> bool {
+    is_identifier_shaped(term) || term.split_whitespace().any(|word| !is_common_word(word))
+}
 
 /// Spoken names of the symbols that appear inside terms.
 const SYMBOL_WORDS: &[(char, &str)] = &[
@@ -90,6 +144,7 @@ impl Vocabulary {
         let term = term.trim();
         if self.terms.len() >= self.cap
             || term.chars().count() < 2
+            || term.starts_with('-')
             || term.len() > 64
             || !term.chars().any(char::is_alphabetic)
             || term.chars().any(char::is_whitespace) && term.split_whitespace().count() > 3
@@ -312,12 +367,14 @@ fn trailing_punctuation(word: &str) -> &str {
 
 /// Rewrites spans of `text` that match `vocabulary` or a pinned mapping in `log`. Pinned
 /// mappings apply first; mappings the user reverted or disabled are skipped; matches below
-/// `threshold` are left alone.
+/// `threshold` are left alone. `context` limits what may be corrected; see
+/// [`CorrectionContext`].
 pub fn correct(
     text: &str,
     vocabulary: &Vocabulary,
     log: &CorrectionLog,
     threshold: f32,
+    context: CorrectionContext,
 ) -> Corrected {
     let words: Vec<&str> = text.split_whitespace().collect();
     let keys: Vec<String> = words.iter().map(|w| heard_key(w)).collect();
@@ -346,10 +403,14 @@ pub fn correct(
                 if spelling.len() < 2 {
                     continue;
                 }
-                // A word already on screen is what the user meant.
-                if len == 1 && vocabulary.contains(words[index]) {
+                if context == CorrectionContext::Prose && len == 1 {
                     continue;
                 }
+                // A word already on screen is what the user meant, and an everyday word is speech.
+                if len == 1 && (vocabulary.contains(words[index]) || is_common_word(&heard)) {
+                    continue;
+                }
+                let all_common = span.iter().all(|word| is_common_word(word));
                 let key = phonetic_key(&spelling);
                 let needed = if len == 1 {
                     if key.len() < SINGLE_WORD_MIN_KEY {
@@ -364,7 +425,19 @@ pub fn correct(
                     .iter()
                     .filter(|term| {
                         term.text != words[index..index + len].join(" ")
+                            && is_vocabulary_term(&term.text)
+                            && (context == CorrectionContext::Command
+                                || is_identifier_shaped(&term.text))
+                            && heard != term.text.to_lowercase()
+                            // Everyday words only become a same-length plain term ("get
+                            // status" as `git status`), never an identifier or flag.
+                            && (!all_common
+                                || !is_identifier_shaped(&term.text)
+                                    && term.text.split_whitespace().count() == len)
                             && !log.is_suppressed(&heard, &term.text)
+                            && term.spellings.iter().any(|term_spelling| {
+                                similarity(&spelling, term_spelling) >= MIN_SPELLING_SIMILARITY
+                            })
                     })
                     .map(|term| (term, confidence(&spelling, &key, term)))
                     .filter(|(_, score)| *score >= needed)

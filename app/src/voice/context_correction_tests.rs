@@ -42,3 +42,37 @@ fn screen_text_keeps_the_tail() {
     assert!(pane.screen_text.len() <= MAX_SCREEN_BYTES + 1);
     assert!(pane.screen_text.ends_with("tail-term"));
 }
+
+fn correction(heard: &str, corrected: &str) -> (Correction, u64) {
+    (
+        Correction {
+            heard: heard.to_owned(),
+            corrected: corrected.to_owned(),
+            range: 0..corrected.len(),
+            confidence: 1.,
+            pinned: false,
+        },
+        1,
+    )
+}
+
+#[test]
+fn one_compact_toast_per_utterance_and_none_for_trivial_changes() {
+    assert_eq!(corrections_toast_text(&[]), None);
+    assert_eq!(
+        corrections_toast_text(&[correction("can you", "Can You")]),
+        None
+    );
+    assert_eq!(
+        corrections_toast_text(&[correction("hey, hello", "Hey hello")]),
+        None
+    );
+    assert_eq!(
+        corrections_toast_text(&[
+            correction("pie project dot toml", "pyproject.toml"),
+            correction("cube control", "kubectl"),
+        ])
+        .as_deref(),
+        Some("Corrected pyproject.toml, kubectl")
+    );
+}

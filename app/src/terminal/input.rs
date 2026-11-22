@@ -2465,8 +2465,24 @@ impl Input {
         });
     }
 
+    /// Makes this input the hands-free target when its editor is focused, so the indicator and
+    /// transcripts follow tab, pane, and window switches.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn claim_hands_free_target(&mut self, ctx: &mut ViewContext<Self>) {
+        use crate::voice::hands_free::HandsFreeSession;
+
+        let session = HandsFreeSession::handle(ctx);
+        if !session.as_ref(ctx).is_active() {
+            return;
+        }
+        let (window_id, surface) = (ctx.window_id(), self.terminal_view_id);
+        session.update(ctx, |session, ctx| {
+            session.focus_target(window_id, surface, ctx)
+        });
+    }
+
     /// Refreshes the hands-free indicator on every state change, and applies transcript edits when
-    /// this is the focused input of the session's window.
+    /// this input is the session's target. Only the target shows the live state.
     #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
     fn handle_hands_free_event(
         &mut self,
@@ -2477,14 +2493,29 @@ impl Input {
         use crate::voice::hands_free_controller::{
             HandsFreeEffect, final_text_for_input, is_low_risk_command, sends_input,
         };
+        use local_transcription::context_correction::CorrectionContext;
 
+        let window_id = ctx.window_id();
+        let surface = self.terminal_view_id;
         let effect = match event {
             HandsFreeEvent::StateChanged => {
-                let state = HandsFreeSession::as_ref(ctx).state();
+                let session = HandsFreeSession::as_ref(ctx);
+                let state = session.state();
+                // A session just started has no target yet; the focused input in its window
+                // claims it.
+                if state.is_on()
+                    && session.target_surface().is_none()
+                    && session.window_id() == Some(window_id)
+                    && self.editor.is_focused(ctx)
+                {
+                    self.claim_hands_free_target(ctx);
+                    return;
+                }
+                let is_target = HandsFreeSession::as_ref(ctx).is_target(window_id, surface);
                 self.agent_input_footer.update(ctx, |footer, ctx| {
-                    footer.set_voice_is_active(state.is_mic_on(), ctx);
+                    footer.set_voice_is_active(is_target && state.is_mic_on(), ctx);
                 });
-                if state.is_on() {
+                if is_target {
                     self.refresh_voice_vocabulary(ctx);
                     if self.editor.as_ref(ctx).is_empty(ctx) {
                         let placeholder = if state.is_mic_on() {
@@ -2497,8 +2528,15 @@ impl Input {
                         });
                     }
                 } else {
+                    // A partial left by an input that lost the target is dropped from it.
+                    if let Some(written) = self.hands_free_written.take()
+                        && self.buffer_text(ctx) == written
+                    {
+                        let kept = self.hands_free_range.commit(&written, "");
+                        self.editor
+                            .update(ctx, |editor, ctx| editor.set_buffer_text(&kept, ctx));
+                    }
                     self.hands_free_range.clear();
-                    self.hands_free_written = None;
                     self.set_zero_state_hint_text(ctx);
                 }
                 ctx.notify();
@@ -2506,12 +2544,7 @@ impl Input {
             }
             HandsFreeEvent::Effect(effect) => effect,
         };
-        if HandsFreeSession::as_ref(ctx).window_id() != Some(ctx.window_id()) {
-            log::debug!("Hands-free: edit skipped by an input in another window");
-            return;
-        }
-        if !self.editor.is_focused(ctx) {
-            log::debug!("Hands-free: edit skipped by an unfocused input");
+        if !HandsFreeSession::as_ref(ctx).is_target(window_id, surface) {
             return;
         }
         log::info!(
@@ -2532,7 +2565,16 @@ impl Input {
                 let (is_shell, text) = routed
                     .unwrap_or_else(|| (self.input_type(ctx) == InputType::Shell, text.clone()));
                 let (final_text, corrections) = self.editor.update(ctx, |editor, ctx| {
-                    editor.correct_voice_transcript(&final_text_for_input(&text, is_shell), ctx)
+                    let context = if is_shell {
+                        CorrectionContext::Command
+                    } else {
+                        CorrectionContext::Prose
+                    };
+                    editor.correct_voice_transcript(
+                        &final_text_for_input(&text, is_shell),
+                        context,
+                        ctx,
+                    )
                 });
                 let committed = self.hands_free_range.commit(&buffer, &final_text);
                 if !corrections.is_empty() {
@@ -12068,7 +12110,11 @@ impl Input {
             EditorEvent::MiddleClickPaste => {
                 ctx.emit(Event::InputFocusedFromMiddleClick);
             }
-            EditorEvent::Focused => ctx.emit(Event::EditorFocused),
+            EditorEvent::Focused => {
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                self.claim_hands_free_target(ctx);
+                ctx.emit(Event::EditorFocused);
+            }
             EditorEvent::ProcessingAttachedImages(is_processing) => {
                 self.set_is_processing_attached_images(*is_processing, ctx);
             }

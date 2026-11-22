@@ -371,6 +371,7 @@ impl UniversalDeveloperInputButtonBar {
             ctx.add_typed_action_view(|ctx| {
                 VoiceControls::new(
                     VoiceControlsStyle::UniversalInput,
+                    terminal_view_id,
                     mic_button,
                     menu_positioning_provider,
                     ctx,

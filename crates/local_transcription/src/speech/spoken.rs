@@ -10,7 +10,7 @@ const FALLBACK_MAX_SENTENCES: usize = 2;
 /// The most words the fallback readout keeps.
 const FALLBACK_MAX_WORDS: usize = 40;
 /// Numbers with more digits than this are not read aloud.
-const MAX_SPOKEN_DIGITS: usize = 4;
+const MAX_SPOKEN_DIGITS: usize = 3;
 
 /// Splits a (possibly still streaming) reply into its `<spoken>` summary and the text to show on
 /// screen. While the summary streams, it is returned as far as it got and nothing is shown; a
@@ -79,7 +79,10 @@ pub fn fallback_readout(markdown: &str, finished: bool) -> String {
         let ends_sentence = token.ends_with(['.', '!', '?']);
         let core = token.trim_matches(|c: char| !c.is_alphanumeric());
         if core.is_empty() || is_technical(token, core) {
-            if ends_sentence && let Some(last) = words.last_mut() {
+            if ends_sentence
+                && !core.is_empty()
+                && let Some(last) = words.last_mut()
+            {
                 close_sentence(last);
                 sentences += 1;
             }
@@ -96,6 +99,32 @@ pub fn fallback_readout(markdown: &str, finished: bool) -> String {
         readout.push('.');
     }
     readout
+}
+
+/// The last safety filter before text is synthesized: drops every token that looks like code,
+/// shell syntax, math, a path, a URL, a flag, or a long number, keeping only plain words and
+/// sentence punctuation. Returns an empty string when nothing speakable remains.
+pub fn plain_speech(text: &str) -> String {
+    let mut words: Vec<String> = Vec::new();
+    for token in strip_inline_code(text).split_whitespace() {
+        let core = token.trim_matches(|c: char| !c.is_alphanumeric());
+        if core.is_empty() || is_technical(token, core) {
+            if token.ends_with(['.', '!', '?'])
+                && !core.is_empty()
+                && let Some(last) = words.last_mut()
+            {
+                close_sentence(last);
+            }
+            continue;
+        }
+        words.push(strip_emphasis(token));
+    }
+    let spoken = words.join(" ");
+    if spoken.chars().any(char::is_alphabetic) {
+        spoken
+    } else {
+        String::new()
+    }
 }
 
 fn close_sentence(word: &mut String) {
@@ -139,6 +168,14 @@ fn is_technical(token: &str, core: &str) -> bool {
     let has_alpha = core.chars().any(|c| c.is_ascii_alphabetic());
     let start = token.trim_start_matches(['(', '"', '\'']);
     token.contains("://")
+        || token.contains([
+            '*', '|', '`', '$', '=', '/', '\\', '<', '>', '{', '}', '[', ']',
+        ])
+        || token.contains("((")
+        || token.contains("))")
+        || (core.chars().count() == 1
+            && core.chars().all(|c| c.is_ascii_alphabetic())
+            && !matches!(core, "a" | "A" | "I"))
         || token.starts_with("www.")
         || core.contains(['/', '\\', '=', '_', '<', '>', '{', '}', '(', ')', '$', ':'])
         || start.starts_with(['-', '/', '~', '.', '$'])

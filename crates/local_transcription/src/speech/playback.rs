@@ -416,18 +416,19 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.pump()
     }
 
-    /// The agent waits on approval `id` to run `command`; the prompt is spoken after the reply so
+    /// The agent waits on approval `id` to do `subject` (see
+    /// [`super::approval::approval_prompt`]); the prompt is spoken after the reply so
     /// far. Spoken answers count only once the prompt has played.
     pub fn approval_requested(
         &mut self,
         id: Id,
-        command: &str,
+        subject: &str,
         needs_screen: bool,
     ) -> Vec<PlaybackAction<A>> {
         if !self.is_on() {
             return Vec::new();
         }
-        let prompt = self.approvals.request(id, command, needs_screen);
+        let prompt = self.approvals.request(id, subject, needs_screen);
         if self.muted {
             return Vec::new();
         }
@@ -462,6 +463,10 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
 
     fn enqueue(&mut self, text: String) {
         if self.muted {
+            return;
+        }
+        let text = super::spoken::plain_speech(&text);
+        if text.is_empty() {
             return;
         }
         let seq = self.next_seq;

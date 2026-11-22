@@ -96,6 +96,17 @@ Add `FeatureFlag::VoiceConversation` to the org flags system (default ON in org 
 it in `specs/neo-warp-flags`. It requires `VoiceHandsFree`, and all of its UI is hidden when it is
 off.
 
+## Never speaking command text
+
+`speech::summary` builds every tool readout from `program_name` (first non-wrapper word, only when
+it is a short plain name) and `command_description` (a plain effect for destructive programs such
+as `rm`, `git push --force`, `kubectl apply`). `command_result_readout` counts output lines and
+error lines and never reads output. `approval_prompt` speaks a subject phrase verbatim, built by
+`spoken_action_prompt`. `spoken_reply_text` drops action summaries when any text message has a
+`<spoken>` block, and `ConversationSession::action_finished` skips results for such replies.
+`spoken::plain_speech` runs in `ConversationController::enqueue` on every sentence before
+synthesis. `ConversationSession` follows `HandsFreeSession::target_surface()`.
+
 ## Testing
 - Chunker tests, including streamed deltas and code fences split across deltas.
 - Table tests for the text normalization.

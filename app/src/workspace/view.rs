@@ -24933,9 +24933,15 @@ impl TypedActionView for Workspace {
             RevertVoiceCorrection(id) => {
                 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
                 {
-                    let id = *id;
-                    crate::voice::context_correction::VoiceCorrections::handle(ctx)
-                        .update(ctx, |corrections, ctx| corrections.revert(id, ctx));
+                    let ids = id.clone();
+                    crate::voice::context_correction::VoiceCorrections::handle(ctx).update(
+                        ctx,
+                        |corrections, ctx| {
+                            for id in ids {
+                                corrections.revert(id, ctx);
+                            }
+                        },
+                    );
                 }
                 #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
                 let _ = id;
