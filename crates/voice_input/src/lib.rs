@@ -18,6 +18,11 @@ use warpui_core::event::KeyState;
 use warpui_core::platform::MicrophoneAccessState;
 use warpui_core::{Entity, ModelContext, SingletonEntity};
 
+mod live;
+pub use live::{LinearResampler, LiveCapture, LiveChunk};
+mod speaker_output;
+pub use speaker_output::SpeechOutput;
+
 const DEFAULT_CHUNK_SIZE: u32 = 512;
 // We only support mono for now.
 const NUM_CHANNELS: u16 = 1;

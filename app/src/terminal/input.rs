@@ -1820,6 +1820,12 @@ pub struct Input {
     cached_agent_mode_hint_text: Option<&'static str>,
 
     predict_am_queries_future_handle: Option<SpawnedFutureHandle>,
+    /// The span of the buffer holding the open hands-free utterance.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    hands_free_range: crate::voice::hands_free_controller::PendingVoiceRange,
+    /// The buffer as hands-free voice input last wrote it, to tell its edits from typing.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    hands_free_written: Option<String>,
 
     attachment_chips: Vec<AttachmentChip>,
 
@@ -2446,6 +2452,167 @@ impl Input {
         self.editor.update(ctx, |editor, ctx| {
             editor.set_buffer_text_for_syncing_inputs(buffer_contents, ctx);
         });
+    }
+
+    /// Refreshes the hands-free indicator on every state change, and applies transcript edits when
+    /// this is the focused input of the session's window.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn handle_hands_free_event(
+        &mut self,
+        event: &crate::voice::hands_free::HandsFreeEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use crate::voice::hands_free::{HandsFreeEvent, HandsFreeSession};
+        use crate::voice::hands_free_controller::{
+            HandsFreeEffect, final_text_for_input, sends_input,
+        };
+
+        let effect = match event {
+            HandsFreeEvent::StateChanged => {
+                let state = HandsFreeSession::as_ref(ctx).state();
+                self.agent_input_footer.update(ctx, |footer, ctx| {
+                    footer.set_voice_is_active(state.is_mic_on(), ctx);
+                });
+                if state.is_mic_on() {
+                    if self.editor.as_ref(ctx).is_empty(ctx) {
+                        let placeholder = format!("\u{25cf} Mic on \u{b7} {}...", state.label());
+                        self.editor.update(ctx, |editor, ctx| {
+                            editor.set_placeholder_text(&placeholder, ctx);
+                        });
+                    }
+                } else {
+                    self.hands_free_range.clear();
+                    self.hands_free_written = None;
+                    self.set_zero_state_hint_text(ctx);
+                }
+                ctx.notify();
+                return;
+            }
+            HandsFreeEvent::Effect(effect) => effect,
+        };
+        if HandsFreeSession::as_ref(ctx).window_id() != Some(ctx.window_id())
+            || !self.editor.is_focused(ctx)
+        {
+            return;
+        }
+        let is_shell = self.input_type(ctx) == InputType::Shell;
+        let buffer = self.buffer_text(ctx);
+        let text = match effect {
+            HandsFreeEffect::ShowPartial(text) => self.hands_free_range.replace(&buffer, text),
+            HandsFreeEffect::Commit(text) => self
+                .hands_free_range
+                .commit(&buffer, &final_text_for_input(text, is_shell)),
+            HandsFreeEffect::InsertNewline => format!("{buffer}\n"),
+            HandsFreeEffect::ClearInput => {
+                self.hands_free_range.clear();
+                String::new()
+            }
+            HandsFreeEffect::Send | HandsFreeEffect::AutoSend => {
+                if !sends_input(effect, is_shell) {
+                    return;
+                }
+                self.hands_free_range.clear();
+                self.hands_free_written = None;
+                if !buffer.trim().is_empty() {
+                    self.submit_current_input(ctx);
+                }
+                return;
+            }
+        };
+        self.hands_free_written = Some(text.clone());
+        self.editor
+            .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+    }
+
+    /// Tells conversation mode when an agent action of this input's terminal waits for approval
+    /// and when it stops waiting.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn forward_action_event_to_conversation(
+        &mut self,
+        action_model: ModelHandle<BlocklistAIActionModel>,
+        event: &crate::ai::blocklist::BlocklistAIActionEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use crate::ai::blocklist::BlocklistAIActionEvent;
+        use crate::voice::conversation::ConversationSession;
+
+        let conversation = ConversationSession::handle(ctx);
+        if !conversation.as_ref(ctx).is_active() {
+            return;
+        }
+        match event {
+            BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(action_id) => {
+                let Some(conversation_id) = BlocklistAIHistoryModel::as_ref(ctx)
+                    .active_conversation_id(self.terminal_view_id)
+                else {
+                    return;
+                };
+                let surface = self.terminal_view_id;
+                let action_id = action_id.clone();
+                conversation.update(ctx, |conversation, ctx| {
+                    conversation.approval_requested(
+                        surface,
+                        action_model,
+                        conversation_id,
+                        action_id,
+                        ctx,
+                    );
+                });
+            }
+            BlocklistAIActionEvent::ExecutingAction(action_id) => {
+                conversation.update(ctx, |conversation, _| {
+                    conversation.approval_resolved(action_id)
+                });
+            }
+            BlocklistAIActionEvent::FinishedAction {
+                action_id,
+                cancellation_reason,
+                ..
+            } => {
+                let result = if cancellation_reason.is_none() {
+                    action_model
+                        .as_ref(ctx)
+                        .get_action_result(action_id)
+                        .cloned()
+                } else {
+                    None
+                };
+                let surface = self.terminal_view_id;
+                conversation.update(ctx, |conversation, ctx| {
+                    conversation.approval_resolved(action_id);
+                    if let Some(result) = result {
+                        conversation.action_finished(surface, &result.result, ctx);
+                    }
+                });
+            }
+            BlocklistAIActionEvent::QueuedAction(_)
+            | BlocklistAIActionEvent::InitProject(_)
+            | BlocklistAIActionEvent::ToggleCodeReview(_)
+            | BlocklistAIActionEvent::InsertCodeReviewComments { .. } => {}
+        }
+    }
+
+    /// Pauses hands-free transcripts while the user types, and resumes them once the input is
+    /// cleared.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn note_edit_for_hands_free(&mut self, ctx: &mut ViewContext<Self>) {
+        use crate::voice::hands_free::HandsFreeSession;
+
+        let session = HandsFreeSession::handle(ctx);
+        if !session.as_ref(ctx).is_active() {
+            return;
+        }
+        let buffer = self.buffer_text(ctx);
+        if self.hands_free_written.as_deref() == Some(buffer.as_str()) {
+            return;
+        }
+        self.hands_free_range.clear();
+        self.hands_free_written = None;
+        if buffer.is_empty() {
+            session.update(ctx, |session, ctx| session.input_reset(ctx));
+        } else {
+            session.update(ctx, |session, ctx| session.user_typed(ctx));
+        }
     }
 
     /// Submits the current editor contents once the terminal is ready.
@@ -3579,6 +3746,15 @@ impl Input {
                 is_queued_prompt,
                 ..
             } => {
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                if *is_user_initiated {
+                    let surface = me.terminal_view_id;
+                    let window_id = ctx.window_id();
+                    crate::voice::conversation::ConversationSession::handle(ctx)
+                        .update(ctx, |conversation, ctx| {
+                            conversation.prompt_sent(surface, window_id, ctx)
+                        });
+                }
                 // Skip the buffer clear for queued prompts. The user may have typed new
                 // input while the agent was busy and we don't want to wipe it on auto-send.
                 if *is_user_initiated && !*is_queued_prompt {
@@ -3805,6 +3981,17 @@ impl Input {
 
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, event, ctx| {
             me.handle_ai_settings_changed_event(event, ctx)
+        });
+
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        ctx.subscribe_to_model(
+            &crate::voice::hands_free::HandsFreeSession::handle(ctx),
+            |me, _, event, ctx| me.handle_hands_free_event(event, ctx),
+        );
+
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        ctx.subscribe_to_model(&ai_action_model, |me, action_model, event, ctx| {
+            me.forward_action_event_to_conversation(action_model, event, ctx);
         });
 
         ctx.subscribe_to_model(
@@ -4200,6 +4387,10 @@ impl Input {
             #[cfg(feature = "local_fs")]
             conn: None,
             predict_am_queries_future_handle: None,
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            hands_free_range: Default::default(),
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            hands_free_written: None,
             attachment_chips: Default::default(),
             is_processing_attached_images: false,
             prompt_suggestions_view,
@@ -10743,6 +10934,8 @@ impl Input {
                     EditOrigin::UserTyped | EditOrigin::UserInitiated
                 ) {
                     self.model.lock().set_is_input_dirty(true);
+                    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                    self.note_edit_for_hands_free(ctx);
                 }
 
                 if self.maybe_activate_cloud_handoff_prefix(edit_origin, ctx) {

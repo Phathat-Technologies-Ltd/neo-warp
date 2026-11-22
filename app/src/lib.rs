@@ -2314,6 +2314,17 @@ pub(crate) fn initialize_app(
     });
     #[cfg(not(target_family = "wasm"))]
     ctx.add_singleton_model(|_| voice::local_model::LocalVoiceModel::new());
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    ctx.add_singleton_model(|_| voice::hands_free::HandsFreeSession::default());
+    #[cfg(not(target_family = "wasm"))]
+    ctx.add_singleton_model(|ctx| {
+        let engine = voice::local_model::SpeechOutputEngine::from_setting(
+            &crate::settings::AISettings::as_ref(ctx).conversation_speech_engine,
+        );
+        voice::local_model::SpeechOutputModel::new(engine)
+    });
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    ctx.add_singleton_model(voice::conversation::ConversationSession::new);
 
     let notebooks = cloud_objects
         .iter()

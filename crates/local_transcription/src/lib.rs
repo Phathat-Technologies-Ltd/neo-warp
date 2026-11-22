@@ -1,23 +1,46 @@
 //! Speech-to-text that runs on the user's machine: a [`Transcriber`] interface that engines
 //! implement, a [`ModelStore`] that downloads and verifies model files on demand, and the
-//! [`ModelState`] machine that a UI drives to ask the user before downloading.
+//! [`ModelState`] machine that a UI drives to ask the user before downloading. For hands-free
+//! input, a [`VoiceActivityDetector`] and [`stream::UtteranceStream`] split live audio into
+//! utterances. For conversation mode, [`speech::Speaker`] engines read agent replies aloud.
 //!
 //! The crate has no dependency on Warp's code so it can be reused as is.
 
 mod audio;
 mod model;
+#[cfg(any(
+    feature = "parakeet",
+    feature = "silero",
+    feature = "kokoro",
+    feature = "tiny_voca"
+))]
+mod ort_env;
 #[cfg(feature = "parakeet")]
 mod parakeet;
+#[cfg(feature = "silero")]
+mod silero;
+pub mod speech;
 mod state;
+pub mod stream;
+pub mod terminal_text;
+mod vad;
+mod voice_command;
 
 pub use audio::{Audio, decode_wav};
 pub use model::{
-    DownloadError, DownloadProgress, ModelFile, ModelSpec, ModelStatus, ModelStore,
-    ProgressThrottle, parakeet_tdt_0_6b_v3,
+    DownloadError, DownloadProgress, ModelBundle, ModelFile, ModelSpec, ModelStatus, ModelStore,
+    ProgressThrottle, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3, silero_vad_v5, tiny_voca,
 };
 #[cfg(feature = "parakeet")]
 pub use parakeet::ParakeetTranscriber;
+#[cfg(feature = "silero")]
+pub use silero::SileroVad;
 pub use state::{ModelAction, ModelEvent, ModelState};
+pub use vad::{
+    SegmentEvent, Segmenter, SegmenterConfig, VAD_FRAME_SAMPLES, VAD_SAMPLE_RATE, VadFactory,
+    VoiceActivityDetector,
+};
+pub use voice_command::{VoiceCommand, split_voice_command};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TranscribeError {

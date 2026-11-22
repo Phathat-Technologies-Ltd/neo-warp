@@ -1298,6 +1298,23 @@ impl ServerApi {
         Ok(response)
     }
 
+    /// Opens `/ai/transcribe/stream`, the embedded server's hands-free transcription socket.
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn open_transcribe_stream(&self) -> Result<websocket::WebSocket> {
+        let auth_token = self.get_or_refresh_access_token().await?;
+        let root = ChannelState::server_root_url();
+        let url = match root.split_once("://") {
+            Some(("https", rest)) => format!("wss://{rest}/ai/transcribe/stream"),
+            Some((_, rest)) => format!("ws://{rest}/ai/transcribe/stream"),
+            None => return Err(anyhow!("invalid server URL {root}")),
+        };
+        let headers = auth_token
+            .as_bearer_token()
+            .map(|token| vec![("Authorization", format!("Bearer {token}"))])
+            .unwrap_or_default();
+        websocket::WebSocket::connect_with_headers(&url, [], headers).await
+    }
+
     /// Hits the /ai/transcribe endpoint to get the transcription for the given audio.
     pub async fn transcribe(
         &self,

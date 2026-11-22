@@ -1139,6 +1139,54 @@ pub fn init(app: &mut AppContext) {
         // We have two actions depending on the current state
         // (i.e. whether notifications are already on or off).
         EditableBinding::new(
+            "workspace:enable_voice_conversation",
+            "Enable voice conversation mode",
+            WorkspaceAction::ToggleVoiceConversation,
+        )
+        .with_context_predicate(
+            id!("Workspace")
+                & id!(flags::VOICE_CONVERSATION_AVAILABLE_CONTEXT_FLAG)
+                & !id!(flags::VOICE_CONVERSATION_ACTIVE_CONTEXT_FLAG),
+        )
+        .with_mac_key_binding("cmd-alt-shift-V")
+        .with_linux_or_windows_key_binding("ctrl-alt-shift-V"),
+        EditableBinding::new(
+            "workspace:disable_voice_conversation",
+            "Disable voice conversation mode",
+            WorkspaceAction::ToggleVoiceConversation,
+        )
+        .with_context_predicate(
+            id!("Workspace")
+                & id!(flags::VOICE_CONVERSATION_AVAILABLE_CONTEXT_FLAG)
+                & id!(flags::VOICE_CONVERSATION_ACTIVE_CONTEXT_FLAG),
+        )
+        .with_mac_key_binding("cmd-alt-shift-V")
+        .with_linux_or_windows_key_binding("ctrl-alt-shift-V"),
+        EditableBinding::new(
+            "workspace:enable_hands_free_voice",
+            "Enable hands-free voice",
+            WorkspaceAction::ToggleHandsFreeVoice,
+        )
+        .with_context_predicate(
+            id!("Workspace")
+                & id!(flags::HANDS_FREE_VOICE_AVAILABLE_CONTEXT_FLAG)
+                & !id!(flags::HANDS_FREE_VOICE_ACTIVE_CONTEXT_FLAG),
+        )
+        .with_mac_key_binding("cmd-shift-H")
+        .with_linux_or_windows_key_binding("ctrl-alt-shift-H"),
+        EditableBinding::new(
+            "workspace:disable_hands_free_voice",
+            "Disable hands-free voice",
+            WorkspaceAction::ToggleHandsFreeVoice,
+        )
+        .with_context_predicate(
+            id!("Workspace")
+                & id!(flags::HANDS_FREE_VOICE_AVAILABLE_CONTEXT_FLAG)
+                & id!(flags::HANDS_FREE_VOICE_ACTIVE_CONTEXT_FLAG),
+        )
+        .with_mac_key_binding("cmd-shift-H")
+        .with_linux_or_windows_key_binding("ctrl-alt-shift-H"),
+        EditableBinding::new(
             "workspace:toggle_notifications_on",
             "Turn notifications on",
             WorkspaceAction::ToggleNotifications,

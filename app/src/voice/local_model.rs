@@ -8,9 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
+use std::marker::PhantomData;
+
 use local_transcription::{
-    DownloadError, DownloadProgress, ModelAction, ModelEvent, ModelState, ModelStore,
-    ProgressThrottle, parakeet_tdt_0_6b_v3,
+    DownloadError, DownloadProgress, ModelAction, ModelBundle, ModelEvent, ModelSpec, ModelState,
+    ModelStore, ProgressThrottle, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3, silero_vad_v5,
+    tiny_voca,
 };
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
@@ -27,6 +30,61 @@ pub fn model_store() -> ModelStore {
         warp_core::paths::data_dir().join("models"),
         parakeet_tdt_0_6b_v3(),
     )
+}
+
+/// The store holding the voice activity detector that hands-free input segments speech with.
+pub fn vad_model_store() -> ModelStore {
+    ModelStore::new(warp_core::paths::data_dir().join("models"), silero_vad_v5())
+}
+
+/// Whether hands-free voice input is available, which also needs the VAD model.
+pub fn is_hands_free_enabled() -> bool {
+    is_local_voice_enabled() && FeatureFlag::VoiceHandsFree.is_enabled()
+}
+
+/// The models voice input needs: the speech model, plus the VAD when hands-free is on, so one
+/// consent covers both.
+fn model_bundle() -> ModelBundle {
+    let mut stores = vec![model_store()];
+    if FeatureFlag::VoiceHandsFree.is_enabled() {
+        stores.push(vad_model_store());
+    }
+    ModelBundle::new(stores)
+}
+
+/// The on-device engines that read agent replies aloud in conversation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeechOutputEngine {
+    Kokoro,
+    TinyVoca,
+}
+
+impl SpeechOutputEngine {
+    /// Parses the `conversation_speech_engine` setting, defaulting to Kokoro.
+    pub fn from_setting(value: &str) -> Self {
+        match value {
+            "tiny_voca" => SpeechOutputEngine::TinyVoca,
+            _ => SpeechOutputEngine::Kokoro,
+        }
+    }
+
+    pub fn spec(self) -> ModelSpec {
+        match self {
+            SpeechOutputEngine::Kokoro => kokoro_82m_v1_int8(),
+            SpeechOutputEngine::TinyVoca => tiny_voca(),
+        }
+    }
+}
+
+/// The store holding the speech output model for `engine`.
+pub fn speech_output_store(engine: SpeechOutputEngine) -> ModelStore {
+    ModelStore::new(warp_core::paths::data_dir().join("models"), engine.spec())
+}
+
+#[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
+/// Whether voice conversation mode is available.
+pub fn is_conversation_enabled() -> bool {
+    is_hands_free_enabled() && FeatureFlag::VoiceConversation.is_enabled()
 }
 
 pub fn mark_served_locally() {
@@ -52,13 +110,62 @@ pub enum LocalVoiceModelEvent {
     StateChanged,
 }
 
+/// What differs between the downloadable voice models: their toasts and download action.
+pub trait VoiceModelKind: 'static {
+    const TOAST_ID: &'static str;
+    /// Names the model in toasts, e.g. "speech model".
+    const NOUN: &'static str;
+    fn download_action() -> WorkspaceAction;
+    fn consent_prompt(display_name: &str, size: u64) -> String;
+}
+
+/// The speech recognition models voice input transcribes with.
+pub struct SpeechInputKind;
+
+impl VoiceModelKind for SpeechInputKind {
+    const TOAST_ID: &'static str = "local-voice-model";
+    const NOUN: &'static str = "speech model";
+
+    fn download_action() -> WorkspaceAction {
+        WorkspaceAction::DownloadLocalVoiceModel
+    }
+
+    fn consent_prompt(display_name: &str, size: u64) -> String {
+        consent_prompt(display_name, size)
+    }
+}
+
+/// The text-to-speech model conversation mode reads replies with.
+pub struct SpeechOutputKind;
+
+impl VoiceModelKind for SpeechOutputKind {
+    const TOAST_ID: &'static str = "speech-output-model";
+    const NOUN: &'static str = "speech output model";
+
+    fn download_action() -> WorkspaceAction {
+        WorkspaceAction::DownloadSpeechOutputModel
+    }
+
+    fn consent_prompt(display_name: &str, size: u64) -> String {
+        format!(
+            "Conversation mode reads replies aloud on this computer with {display_name}. Download \
+             the model files ({})? Nothing is downloaded until you choose to.",
+            format_megabytes(size)
+        )
+    }
+}
+
+pub type LocalVoiceModel = VoiceModel<SpeechInputKind>;
+pub type SpeechOutputModel = VoiceModel<SpeechOutputKind>;
+
 enum DownloadUpdate {
     Progress(DownloadProgress),
     Done(Result<(), String>),
 }
 
-pub struct LocalVoiceModel {
-    store: ModelStore,
+/// A downloadable voice model, fetched only after the user agrees.
+pub struct VoiceModel<K: VoiceModelKind> {
+    store: ModelBundle,
     state: ModelState,
     /// Cancels the running download; replaced on each download so late updates from a cancelled
     /// one are recognized and dropped.
@@ -67,6 +174,7 @@ pub struct LocalVoiceModel {
     download_thread: Option<std::thread::JoinHandle<()>>,
     /// The window showing the download's progress toast.
     toast_window: Option<WindowId>,
+    kind: PhantomData<K>,
 }
 
 /// How the speech model toast changes after a state transition.
@@ -107,7 +215,35 @@ fn toast_update(before: &ModelState, after: &ModelState) -> Option<ToastUpdate> 
 
 impl LocalVoiceModel {
     pub fn new() -> Self {
-        let store = model_store();
+        Self::with_bundle(model_bundle())
+    }
+}
+
+impl SpeechOutputModel {
+    pub fn new(engine: SpeechOutputEngine) -> Self {
+        Self::with_bundle(ModelBundle::new(vec![speech_output_store(engine)]))
+    }
+
+    #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
+    /// Switches to `engine`'s model, cancelling a download of the previous one.
+    pub fn set_engine(&mut self, engine: SpeechOutputEngine, ctx: &mut ModelContext<Self>) {
+        let bundle = ModelBundle::new(vec![speech_output_store(engine)]);
+        if bundle.display_name() == self.store.display_name() {
+            return;
+        }
+        self.stop_download();
+        if let Some(window_id) = self.toast_window.take() {
+            remove_toast::<SpeechOutputKind>(window_id, ctx);
+        }
+        self.state = ModelState::from_status(bundle.status());
+        self.store = bundle;
+        ctx.emit(LocalVoiceModelEvent::StateChanged);
+        ctx.notify();
+    }
+}
+
+impl<K: VoiceModelKind> VoiceModel<K> {
+    fn with_bundle(store: ModelBundle) -> Self {
         let state = ModelState::from_status(store.status());
         Self {
             store,
@@ -115,6 +251,7 @@ impl LocalVoiceModel {
             cancel: None,
             download_thread: None,
             toast_window: None,
+            kind: PhantomData,
         }
     }
 
@@ -123,11 +260,11 @@ impl LocalVoiceModel {
     }
 
     pub fn download_size(&self) -> u64 {
-        self.store.spec().total_size()
+        self.store.total_size()
     }
 
-    pub fn display_name(&self) -> &str {
-        &self.store.spec().display_name
+    pub fn display_name(&self) -> String {
+        self.store.display_name()
     }
 
     #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
@@ -173,10 +310,10 @@ impl LocalVoiceModel {
         if let ModelState::Downloading(progress) = self.state {
             if let Some(previous) = self.toast_window.replace(window_id) {
                 if previous != window_id {
-                    remove_toast(previous, ctx);
+                    remove_toast::<K>(previous, ctx);
                 }
             }
-            add_toast(progress_toast(progress), window_id, ctx);
+            add_toast::<K>(progress_toast::<K>(progress), window_id, ctx);
         }
     }
 
@@ -189,37 +326,34 @@ impl LocalVoiceModel {
         };
         match update {
             ToastUpdate::ShowProgress(progress) => {
-                add_toast(progress_toast(progress), window_id, ctx);
+                add_toast::<K>(progress_toast::<K>(progress), window_id, ctx);
             }
             ToastUpdate::UpdateProgress(progress) => {
                 ToastStack::handle(ctx).update(ctx, |stack, ctx| {
-                    stack.update_toast_in_place(progress_toast(progress), window_id, ctx);
+                    stack.update_toast_in_place(progress_toast::<K>(progress), window_id, ctx);
                 });
             }
             ToastUpdate::Ready => {
                 self.toast_window = None;
-                remove_toast(window_id, ctx);
+                remove_toast::<K>(window_id, ctx);
+                let message = format!("{} ready", capitalize(K::NOUN));
                 ToastStack::handle(ctx).update(ctx, |stack, ctx| {
-                    stack.add_ephemeral_toast(
-                        DismissibleToast::success("Speech model ready".to_owned()),
-                        window_id,
-                        ctx,
-                    );
+                    stack.add_ephemeral_toast(DismissibleToast::success(message), window_id, ctx);
                 });
             }
             ToastUpdate::Failed(message) => {
                 let toast =
-                    DismissibleToast::error(format!("The speech model download failed: {message}"))
+                    DismissibleToast::error(format!("The {} download failed: {message}", K::NOUN))
                         .with_link(
                             ToastLink::new("Retry".to_owned())
-                                .with_onclick_action(WorkspaceAction::DownloadLocalVoiceModel),
+                                .with_onclick_action(K::download_action()),
                         )
-                        .with_object_id(TOAST_ID.to_owned());
-                add_toast(toast, window_id, ctx);
+                        .with_object_id(K::TOAST_ID.to_owned());
+                add_toast::<K>(toast, window_id, ctx);
             }
             ToastUpdate::Dismiss => {
                 self.toast_window = None;
-                remove_toast(window_id, ctx);
+                remove_toast::<K>(window_id, ctx);
             }
         }
     }
@@ -332,7 +466,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 /// Runs the download on the calling thread with its own runtime, reporting progress as
 /// [`ProgressThrottle`] allows.
 fn download_blocking(
-    store: &ModelStore,
+    store: &ModelBundle,
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(DownloadProgress),
 ) -> Result<(), String> {
@@ -368,11 +502,19 @@ impl Default for LocalVoiceModel {
     }
 }
 
-impl Entity for LocalVoiceModel {
+impl<K: VoiceModelKind> Entity for VoiceModel<K> {
     type Event = LocalVoiceModelEvent;
 }
 
-impl SingletonEntity for LocalVoiceModel {}
+impl<K: VoiceModelKind> SingletonEntity for VoiceModel<K> {}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
 
 /// Whether the local model UI should show and, if so, the model's state.
 pub fn local_model_state(app: &AppContext) -> Option<ModelState> {
@@ -387,58 +529,82 @@ pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool
     if !is_local_voice_enabled() {
         return true;
     }
-    let model = LocalVoiceModel::handle(ctx);
+    ensure_model_ready::<SpeechInputKind>(window_id, ctx)
+}
+
+/// Checks that the speech output model is installed before conversation mode starts, asking for
+/// consent to download it when it isn't.
+#[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
+pub fn ensure_speech_output_ready(window_id: WindowId, ctx: &mut AppContext) -> bool {
+    ensure_model_ready::<SpeechOutputKind>(window_id, ctx)
+}
+
+#[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
+fn ensure_model_ready<K: VoiceModelKind>(window_id: WindowId, ctx: &mut AppContext) -> bool {
+    let model = VoiceModel::<K>::handle(ctx);
     let readiness = model.update(ctx, |model, ctx| model.request_recording(ctx));
     let toast = match readiness {
         RecordingReadiness::Ready => return true,
         RecordingReadiness::NeedsConsent => {
             let model = model.as_ref(ctx);
-            DismissibleToast::default(consent_prompt(model.display_name(), model.download_size()))
-                .with_link(
-                    ToastLink::new("Download".to_owned())
-                        .with_onclick_action(WorkspaceAction::DownloadLocalVoiceModel),
-                )
+            DismissibleToast::default(K::consent_prompt(
+                &model.display_name(),
+                model.download_size(),
+            ))
+            .with_link(
+                ToastLink::new("Download".to_owned()).with_onclick_action(K::download_action()),
+            )
         }
         RecordingReadiness::Downloading(_) => {
             model.update(ctx, |model, ctx| model.show_progress_toast(window_id, ctx));
             return false;
         }
     }
-    .with_object_id(TOAST_ID.to_owned());
-    add_toast(toast, window_id, ctx);
+    .with_object_id(K::TOAST_ID.to_owned());
+    add_toast::<K>(toast, window_id, ctx);
     false
 }
 
-const TOAST_ID: &str = "local-voice-model";
-
-/// Shows `toast` in `window_id` as the only speech model toast there.
-fn add_toast(toast: DismissibleToast<WorkspaceAction>, window_id: WindowId, ctx: &mut AppContext) {
+/// Shows `toast` in `window_id` as the only toast for this model there.
+fn add_toast<K: VoiceModelKind>(
+    toast: DismissibleToast<WorkspaceAction>,
+    window_id: WindowId,
+    ctx: &mut AppContext,
+) {
     ToastStack::handle(ctx).update(ctx, |stack, ctx| {
         stack.add_persistent_toast(toast, window_id, ctx);
     });
 }
 
-fn remove_toast(window_id: WindowId, ctx: &mut AppContext) {
+fn remove_toast<K: VoiceModelKind>(window_id: WindowId, ctx: &mut AppContext) {
     ToastStack::handle(ctx).update(ctx, |stack, ctx| {
-        stack.remove_toast_by_identifier(TOAST_ID.to_owned(), window_id, ctx);
+        stack.remove_toast_by_identifier(K::TOAST_ID.to_owned(), window_id, ctx);
     });
 }
 
-fn progress_toast(progress: DownloadProgress) -> DismissibleToast<WorkspaceAction> {
-    DismissibleToast::default(progress_message(progress)).with_object_id(TOAST_ID.to_owned())
+fn progress_toast<K: VoiceModelKind>(
+    progress: DownloadProgress,
+) -> DismissibleToast<WorkspaceAction> {
+    // The cancel link stops the download; the model's files stay deletable from settings.
+    DismissibleToast::default(progress_message(K::NOUN, progress))
+        .with_link(ToastLink::new("Cancel".to_owned()).with_onclick_action(cancel_action::<K>()))
+        .with_object_id(K::TOAST_ID.to_owned())
 }
 
-fn progress_message(progress: DownloadProgress) -> String {
-    format!(
-        "Downloading the speech model: {}",
-        format_progress(progress)
-    )
+fn cancel_action<K: VoiceModelKind>() -> WorkspaceAction {
+    WorkspaceAction::CancelVoiceModelDownload {
+        speech_output: K::TOAST_ID == SpeechOutputKind::TOAST_ID,
+    }
+}
+
+fn progress_message(noun: &str, progress: DownloadProgress) -> String {
+    format!("Downloading the {noun}: {}", format_progress(progress))
 }
 
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
 fn consent_prompt(display_name: &str, size: u64) -> String {
     format!(
-        "Voice input is transcribed on this computer by {display_name}. Download the model ({})? \
+        "Voice input is transcribed on this computer by {display_name}. Download the model files ({})? \
          Nothing is downloaded until you choose to.",
         format_megabytes(size)
     )

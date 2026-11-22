@@ -1421,6 +1421,68 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.voice_input_language",
         description: "Preferred spoken language for voice input transcription.",
     },
+    // Silence after the last hands-free utterance before the prompt sends; 0 turns auto-send off.
+    hands_free_auto_send_ms: HandsFreeAutoSendMs {
+        type: u64,
+        default: 1200,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.hands_free_auto_send_ms",
+        description: "Milliseconds of silence before hands-free voice input sends the prompt (600 to 3000), or 0 for off.",
+    },
+    hands_free_voice_commands: HandsFreeVoiceCommands {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.hands_free_voice_commands",
+        description: "Whether saying \"send\", \"cancel\", or \"new line\" at the end of an utterance acts as a command in hands-free voice input.",
+    },
+    // The engine that speaks agent replies in voice conversation mode: "kokoro" or "tiny_voca".
+    conversation_speech_engine: ConversationSpeechEngine {
+        type: String,
+        default: "kokoro".to_owned(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.conversation_speech_engine",
+        description: "The on-device model that reads agent replies aloud in voice conversation mode: kokoro or tiny_voca.",
+    },
+    conversation_voice: ConversationVoice {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.conversation_voice",
+        description: "The voice that reads agent replies aloud, such as af_heart; empty for the model's default.",
+    },
+    conversation_speech_rate_percent: ConversationSpeechRatePercent {
+        type: u32,
+        default: 100,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.conversation_speech_rate_percent",
+        description: "Speaking rate of agent replies in percent of normal speed (80 to 150).",
+    },
+    conversation_read_code_summaries: ConversationReadCodeSummaries {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.conversation_read_code_summaries",
+        description: "Whether code blocks in agent replies are announced (\"I wrote a code block in rust, 12 lines\") in voice conversation mode.",
+    },
     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
     // explicitly interacted with voice input. We use this to determine whether we should show a toast
     // to inform the user about voice input and auto-set the keybinding.
@@ -2408,6 +2470,22 @@ impl AISettings {
     pub fn voice_input_language_code(&self) -> Option<&str> {
         let code = self.voice_input_language.as_str();
         if code.is_empty() { None } else { Some(code) }
+    }
+
+    /// The hands-free auto-send pause, clamped to its supported range, or `None` when off.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn hands_free_auto_send_after(&self) -> Option<std::time::Duration> {
+        use crate::voice::hands_free_controller::{MAX_AUTO_SEND, MIN_AUTO_SEND};
+        let millis = *self.hands_free_auto_send_ms;
+        (millis > 0)
+            .then(|| std::time::Duration::from_millis(millis).clamp(MIN_AUTO_SEND, MAX_AUTO_SEND))
+    }
+
+    /// The conversation speaking rate as a speed multiplier, clamped to its supported range.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn conversation_speech_rate(&self) -> f32 {
+        use local_transcription::speech::{MAX_RATE, MIN_RATE};
+        (*self.conversation_speech_rate_percent as f32 / 100.0).clamp(MIN_RATE, MAX_RATE)
     }
 
     /// Returns `true` if input autodetection is enabled.

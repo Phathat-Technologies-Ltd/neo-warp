@@ -65,13 +65,33 @@ fn toast_follows_the_download() {
 
 #[test]
 fn progress_toast_shows_live_percent() {
-    let message = progress_message(DownloadProgress {
-        downloaded: 335_239_971,
-        total: 670_479_942,
-    });
+    let message = progress_message(
+        "speech model",
+        DownloadProgress {
+            downloaded: 335_239_971,
+            total: 670_479_942,
+        },
+    );
     assert_eq!(
         message,
         "Downloading the speech model: 50% (336 MB of 671 MB)"
+    );
+}
+
+#[test]
+fn speech_output_engine_defaults_to_kokoro() {
+    assert_eq!(
+        SpeechOutputEngine::from_setting("tiny_voca"),
+        SpeechOutputEngine::TinyVoca
+    );
+    assert_eq!(
+        SpeechOutputEngine::from_setting(""),
+        SpeechOutputEngine::Kokoro
+    );
+    let size = SpeechOutputEngine::Kokoro.spec().total_size();
+    assert!(
+        SpeechOutputKind::consent_prompt("Kokoro 82M", size).contains("(99 MB)"),
+        "{size}"
     );
 }
 

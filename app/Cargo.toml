@@ -334,7 +334,7 @@ opentelemetry-http.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 org_flags.workspace = true
-local_transcription = { workspace = true, features = ["parakeet"] }
+local_transcription = { workspace = true, features = ["parakeet", "silero", "kokoro", "tiny_voca"] }
 org_sign_in.workspace = true
 preview_proxy.workspace = true
 selfhost_server.workspace = true
