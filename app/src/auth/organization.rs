@@ -35,6 +35,9 @@ pub(crate) fn init() {
     } else {
         OrganizationConfig::default()
     };
+    if config.sign_in.is_some() {
+        apply_org_flags(&OrgFlags::load(ChannelState::enable_debug_features()));
+    }
     let server_url = match (&config.server_url, &config.sign_in) {
         (Some(server_url), _) => Some(server_url.trim_end_matches('/').to_owned()),
         (None, Some(sign_in)) => start_embedded_server(sign_in),
@@ -53,30 +56,34 @@ pub(crate) fn init() {
         // the server; only the embedded server, from builds bundled with the app, offers them.
         FeatureFlag::SshRemoteServer.set_enabled(false);
     }
-    if config.sign_in.is_some() {
-        apply_org_flags(&OrgFlags::load(ChannelState::enable_debug_features()));
-    }
     let _ = ORGANIZATION_CONFIG.set(config);
 }
 
-/// Sets each product-area flag from the organization's flags, and turns off the upstream flags
-/// that gate parts of an area that is off.
+/// Sets each product-area flag from the organization's flags, and force-disables the flags of every
+/// area that is off so experiments, user preferences, and overrides can't turn them back on.
 fn apply_org_flags(flags: &OrgFlags) {
     for area in ProductArea::ALL {
-        let enabled = flags.is_enabled(area);
         log::info!(
             "Organization flag {} is {}",
             area.key(),
-            if enabled { "on" } else { "off" }
+            if flags.is_enabled(area) { "on" } else { "off" }
         );
-        let (flag, upstream_flags) = feature_flags_for(area);
-        flag.set_enabled(enabled);
-        if !enabled {
-            for upstream in upstream_flags {
-                upstream.set_enabled(false);
-            }
-        }
     }
+    for flag in flags_to_disable(flags) {
+        flag.force_disable();
+    }
+}
+
+/// The product-area and upstream flags that `flags` turns off.
+fn flags_to_disable(flags: &OrgFlags) -> Vec<FeatureFlag> {
+    ProductArea::ALL
+        .into_iter()
+        .filter(|area| !flags.is_enabled(*area))
+        .flat_map(|area| {
+            let (flag, upstream_flags) = feature_flags_for(area);
+            std::iter::once(flag).chain(upstream_flags.iter().copied())
+        })
+        .collect()
 }
 
 fn feature_flags_for(area: ProductArea) -> (FeatureFlag, &'static [FeatureFlag]) {
@@ -140,7 +147,16 @@ fn feature_flags_for(area: ProductArea) -> (FeatureFlag, &'static [FeatureFlag])
             &[FeatureFlag::CloudConversations],
         ),
         ProductArea::VoiceInput => (FeatureFlag::VoiceInput, &[]),
-        ProductArea::CodebaseIndexing => (FeatureFlag::CodebaseIndexing, &[]),
+        ProductArea::CodebaseIndexing => (
+            FeatureFlag::CodebaseIndexing,
+            &[
+                FeatureFlag::FullSourceCodeEmbedding,
+                FeatureFlag::CodebaseIndexPersistence,
+                FeatureFlag::CodebaseIndexSpeedbump,
+                FeatureFlag::CrossRepoContext,
+                FeatureFlag::RemoteCodebaseIndexing,
+            ],
+        ),
         ProductArea::AiPromptSuggestions => (FeatureFlag::AiPromptSuggestions, &[]),
         ProductArea::AiCommandSearch => (FeatureFlag::AiCommandSearch, &[]),
     }
@@ -160,7 +176,9 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
         session_max_age: EMBEDDED_SESSION_MAX_AGE,
         remote_server_artifacts: bundled_remote_server_builds(),
         transcriber: local_transcriber(),
-        codebase_index_dir: Some(warp_core::paths::data_dir().join("codebase-index")),
+        codebase_index_dir: FeatureFlag::CodebaseIndexing
+            .is_enabled()
+            .then(|| warp_core::paths::data_dir().join("codebase-index")),
     }) {
         Ok(address) => Some(format!("http://{address}")),
         Err(error) => {
@@ -266,3 +284,7 @@ pub fn model_specs_config() -> Option<&'static org_sign_in::ModelSpecsConfig> {
 pub fn sign_in_config() -> Option<&'static OrganizationSignInConfig> {
     ORGANIZATION_CONFIG.get()?.sign_in.as_ref()
 }
+
+#[cfg(test)]
+#[path = "organization_tests.rs"]
+mod tests;

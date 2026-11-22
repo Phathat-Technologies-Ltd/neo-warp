@@ -1158,7 +1158,8 @@ impl View for ShareBlockModal {
 
 fn should_send_title_gen_request(ctx: &ViewContext<ShareBlockModal>) -> bool {
     let workspaces = UserWorkspaces::as_ref(ctx);
-    FeatureFlag::SharedBlockTitleGeneration.is_enabled()
+    FeatureFlag::BlockTitles.is_enabled()
+        && FeatureFlag::SharedBlockTitleGeneration.is_enabled()
         && AISettings::as_ref(ctx).is_shared_block_title_generation_enabled(ctx)
         && UserWorkspaces::ai_allowed_for_team(workspaces.team_for_view(ctx))
 }
