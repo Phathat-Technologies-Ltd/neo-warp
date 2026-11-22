@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, bail};
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,12 @@ use sha2::{Digest as _, Sha256};
 
 const NODES_FILE: &str = "nodes.jsonl";
 const FRAGMENTS_DIR: &str = "fragments";
+/// Where fragments are written before being renamed into place, outside the zvec-grep workspace
+/// so a partial write is never indexed.
+const INCOMING_DIR: &str = "incoming";
+/// Fragment contents kept in memory per namespace for the built-in ranker, so it doesn't re-read
+/// every fragment from disk on each query.
+const MAX_CACHED_BYTES: usize = 64 * 1024 * 1024;
 
 /// Whether `hash` has the client's hash format: 64 lowercase hex characters. Only valid hashes
 /// become file names.
@@ -29,8 +36,12 @@ pub struct Namespace {
     dir: PathBuf,
     nodes: HashMap<String, Vec<String>>,
     fragments: HashSet<String>,
-    /// Whether fragments were added since zvec-grep last indexed the workspace.
-    pub needs_reindex: bool,
+    cache: HashMap<String, Arc<str>>,
+    cached_bytes: usize,
+    /// Incremented whenever a fragment is added.
+    generation: u64,
+    /// The `generation` zvec-grep last indexed, if any.
+    indexed_generation: Option<u64>,
 }
 
 impl Namespace {
@@ -38,6 +49,11 @@ impl Namespace {
         let fragments_dir = dir.join(FRAGMENTS_DIR);
         fs::create_dir_all(&fragments_dir)
             .with_context(|| format!("couldn't create {}", fragments_dir.display()))?;
+        let incoming_dir = dir.join(INCOMING_DIR);
+        // Leftovers of writes interrupted by a crash.
+        let _ = fs::remove_dir_all(&incoming_dir);
+        fs::create_dir_all(&incoming_dir)
+            .with_context(|| format!("couldn't create {}", incoming_dir.display()))?;
         let mut nodes = HashMap::new();
         match fs::File::open(dir.join(NODES_FILE)) {
             Ok(file) => {
@@ -64,13 +80,35 @@ impl Namespace {
             dir,
             nodes,
             fragments,
-            needs_reindex: true,
+            cache: HashMap::new(),
+            cached_bytes: 0,
+            generation: 0,
+            indexed_generation: None,
         })
     }
 
     /// The zvec-grep workspace holding one `<hash>.txt` file per fragment.
     pub fn fragments_dir(&self) -> PathBuf {
         self.dir.join(FRAGMENTS_DIR)
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Whether fragments were added since zvec-grep last indexed the workspace.
+    pub fn needs_reindex(&self) -> bool {
+        self.indexed_generation != Some(self.generation)
+    }
+
+    /// Records that zvec-grep indexed the workspace as of `generation`.
+    pub fn mark_indexed(&mut self, generation: u64) {
+        if self
+            .indexed_generation
+            .is_none_or(|indexed| indexed < generation)
+        {
+            self.indexed_generation = Some(generation);
+        }
     }
 
     pub fn knows(&self, hash: &str) -> bool {
@@ -99,27 +137,57 @@ impl Namespace {
         Ok(true)
     }
 
+    /// Stores a fragment whose `hash` must be the SHA-256 of `content`.
     pub fn add_fragment(&mut self, hash: &str, content: &str) -> anyhow::Result<()> {
         if !is_valid_hash(hash) {
             bail!("invalid fragment hash");
+        }
+        if hex::encode(Sha256::digest(content.as_bytes())) != hash {
+            bail!("fragment hash doesn't match its content");
         }
         if self.fragments.contains(hash) {
             return Ok(());
         }
         let path = self.fragment_path(hash);
-        let partial = path.with_extension("partial");
-        fs::write(&partial, content)?;
-        fs::rename(&partial, &path)?;
+        let partial = self.dir.join(INCOMING_DIR).join(format!("{hash}.partial"));
+        if let Err(error) = fs::write(&partial, content).and_then(|()| fs::rename(&partial, &path))
+        {
+            let _ = fs::remove_file(&partial);
+            return Err(error.into());
+        }
         self.fragments.insert(hash.to_owned());
-        self.needs_reindex = true;
+        self.cache_content(hash, content.into());
+        self.generation += 1;
         Ok(())
     }
 
-    pub fn fragment(&self, hash: &str) -> Option<String> {
+    /// The content of `hash` if it's in memory, otherwise the path to read it from. Fragment files
+    /// never change once written, so the path can be read without holding the namespace.
+    pub fn fragment_source(&self, hash: &str) -> Option<FragmentSource> {
         if !self.fragments.contains(hash) {
             return None;
         }
-        fs::read_to_string(self.fragment_path(hash)).ok()
+        Some(match self.cache.get(hash) {
+            Some(content) => FragmentSource::Cached(content.clone()),
+            None => FragmentSource::File(self.fragment_path(hash)),
+        })
+    }
+
+    /// Keeps `content` in memory for later queries while the cache has room.
+    pub fn cache_content(&mut self, hash: &str, content: Arc<str>) {
+        if self.cached_bytes + content.len() > MAX_CACHED_BYTES || self.cache.contains_key(hash) {
+            return;
+        }
+        self.cached_bytes += content.len();
+        self.cache.insert(hash.to_owned(), content);
+    }
+
+    #[cfg(test)]
+    pub fn fragment(&self, hash: &str) -> Option<String> {
+        match self.fragment_source(hash)? {
+            FragmentSource::Cached(content) => Some(content.to_string()),
+            FragmentSource::File(path) => fs::read_to_string(path).ok(),
+        }
     }
 
     fn fragment_path(&self, hash: &str) -> PathBuf {
@@ -145,10 +213,23 @@ impl Namespace {
     }
 }
 
+pub enum FragmentSource {
+    Cached(Arc<str>),
+    File(PathBuf),
+}
+
+/// A namespace shared between requests.
+pub struct NamespaceHandle {
+    pub state: Mutex<Namespace>,
+    /// Held while zvec-grep runs over the namespace's workspace, so runs don't overlap while
+    /// requests that only touch `state` proceed.
+    pub zvec_grep: Mutex<()>,
+}
+
 /// Every user's namespaces under one root directory.
 pub struct IndexStore {
     root: PathBuf,
-    namespaces: HashMap<(String, String), Namespace>,
+    namespaces: HashMap<(String, String), Arc<NamespaceHandle>>,
 }
 
 impl IndexStore {
@@ -163,13 +244,18 @@ impl IndexStore {
         &mut self,
         uid: &str,
         embedding_config: &str,
-    ) -> anyhow::Result<&mut Namespace> {
+    ) -> anyhow::Result<Arc<NamespaceHandle>> {
         let key = (uid.to_owned(), embedding_config.to_owned());
-        if !self.namespaces.contains_key(&key) {
-            let dir = namespace_dir(&self.root, uid, embedding_config)?;
-            self.namespaces.insert(key.clone(), Namespace::open(dir)?);
+        if let Some(handle) = self.namespaces.get(&key) {
+            return Ok(handle.clone());
         }
-        Ok(self.namespaces.get_mut(&key).expect("inserted above"))
+        let dir = namespace_dir(&self.root, uid, embedding_config)?;
+        let handle = Arc::new(NamespaceHandle {
+            state: Mutex::new(Namespace::open(dir)?),
+            zvec_grep: Mutex::new(()),
+        });
+        self.namespaces.insert(key, handle.clone());
+        Ok(handle)
     }
 }
 

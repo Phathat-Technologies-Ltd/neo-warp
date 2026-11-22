@@ -6,14 +6,15 @@ mod lexical;
 mod store;
 mod zvec;
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use store::IndexStore;
+use store::{FragmentSource, IndexStore, Namespace, NamespaceHandle};
 use zvec::ZvecGrep;
 
 /// How often, in seconds, the client syncs changes to an index.
@@ -166,9 +167,17 @@ impl CodebaseIndex {
         }
     }
 
+    /// The namespace for `uid` and `embedding_config`. The store lock is only held to look it up.
+    fn namespace(&self, uid: &str, embedding_config: &str) -> anyhow::Result<Arc<NamespaceHandle>> {
+        self.store
+            .lock()
+            .expect("index store lock")
+            .namespace(uid, embedding_config)
+    }
+
     fn sync_merkle_tree(&self, uid: &str, vars: SyncVariables) -> anyhow::Result<Vec<String>> {
-        let mut store = self.store.lock().expect("index store lock");
-        let namespace = store.namespace(uid, &vars.input.embedding_config)?;
+        let handle = self.namespace(uid, &vars.input.embedding_config)?;
+        let namespace = lock(&handle);
         Ok(vars
             .input
             .hashed_nodes
@@ -178,8 +187,8 @@ impl CodebaseIndex {
     }
 
     fn update_merkle_tree(&self, uid: &str, vars: UpdateVariables) -> anyhow::Result<Vec<Value>> {
-        let mut store = self.store.lock().expect("index store lock");
-        let namespace = store.namespace(uid, &vars.input.embedding_config)?;
+        let handle = self.namespace(uid, &vars.input.embedding_config)?;
+        let mut namespace = lock(&handle);
         vars.input
             .nodes
             .into_iter()
@@ -195,8 +204,8 @@ impl CodebaseIndex {
         uid: &str,
         vars: EmbeddingsVariables,
     ) -> anyhow::Result<Vec<Value>> {
-        let mut store = self.store.lock().expect("index store lock");
-        let namespace = store.namespace(uid, &vars.input.embedding_config)?;
+        let handle = self.namespace(uid, &vars.input.embedding_config)?;
+        let mut namespace = lock(&handle);
         Ok(vars
             .input
             .fragments
@@ -216,10 +225,8 @@ impl CodebaseIndex {
     }
 
     fn populate_merkle_tree_cache(&self, uid: &str, vars: RootVariables) -> anyhow::Result<bool> {
-        let mut store = self.store.lock().expect("index store lock");
-        Ok(store
-            .namespace(uid, &vars.embedding_config)?
-            .knows(&vars.root_hash))
+        let handle = self.namespace(uid, &vars.embedding_config)?;
+        Ok(lock(&handle).knows(&vars.root_hash))
     }
 
     fn get_relevant_fragments(
@@ -227,49 +234,97 @@ impl CodebaseIndex {
         uid: &str,
         vars: RelevantFragmentsVariables,
     ) -> anyhow::Result<Vec<String>> {
-        let mut store = self.store.lock().expect("index store lock");
-        let namespace = store.namespace(uid, &vars.embedding_config)?;
-        let candidates = namespace.fragments_under(&vars.root_hash);
+        let handle = self.namespace(uid, &vars.embedding_config)?;
+        let (candidates, workspace) = {
+            let namespace = lock(&handle);
+            (
+                namespace.fragments_under(&vars.root_hash),
+                namespace.fragments_dir(),
+            )
+        };
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
         if let Some(zvec_grep) = &self.zvec_grep {
-            let workspace = namespace.fragments_dir();
-            let searched =
-                (!namespace.needs_reindex || zvec_grep.index(&workspace).is_ok()).then(|| {
-                    namespace.needs_reindex = false;
-                    zvec_grep.search(
-                        &workspace,
-                        &vars.query,
-                        MAX_RELEVANT_FRAGMENTS * ZVEC_OVERFETCH,
-                    )
-                });
-            match searched {
-                Some(Ok(hits)) => {
-                    let candidates: std::collections::HashSet<_> = candidates.iter().collect();
+            match search_with_zvec_grep(zvec_grep, &handle, &workspace, &vars.query) {
+                Ok(hits) => {
+                    let candidates: HashSet<_> = candidates.iter().collect();
                     return Ok(hits
                         .into_iter()
                         .filter(|hash| candidates.contains(hash))
                         .take(MAX_RELEVANT_FRAGMENTS)
                         .collect());
                 }
-                Some(Err(error)) => {
-                    log::debug!("zvec-grep search failed, using the built-in ranker: {error:#}");
+                Err(error) => {
+                    log::debug!("zvec-grep failed, using the built-in ranker: {error:#}");
                 }
-                None => log::debug!("zvec-grep indexing failed, using the built-in ranker"),
             }
         }
-        let contents: Vec<String> = candidates
-            .iter()
-            .map(|hash| namespace.fragment(hash).unwrap_or_default())
-            .collect();
-        let documents: Vec<&str> = contents.iter().map(String::as_str).collect();
+        let contents = fragment_contents(&handle, &candidates);
+        let documents: Vec<&str> = contents.iter().map(|content| &**content).collect();
         Ok(lexical::rank(&vars.query, &documents)
             .into_iter()
             .take(MAX_RELEVANT_FRAGMENTS)
             .map(|index| candidates[index].clone())
             .collect())
     }
+}
+
+fn lock(handle: &NamespaceHandle) -> MutexGuard<'_, Namespace> {
+    handle.state.lock().expect("index namespace lock")
+}
+
+/// Searches `workspace` with zvec-grep, reindexing it first if fragments were added. The
+/// namespace's state isn't locked while `zg` runs, so uploads and syncs aren't blocked by it.
+fn search_with_zvec_grep(
+    zvec_grep: &ZvecGrep,
+    handle: &NamespaceHandle,
+    workspace: &Path,
+    query: &str,
+) -> anyhow::Result<Vec<String>> {
+    let _running = handle.zvec_grep.lock().expect("zvec-grep lock");
+    let (needs_reindex, generation) = {
+        let namespace = lock(handle);
+        (namespace.needs_reindex(), namespace.generation())
+    };
+    if needs_reindex {
+        zvec_grep.index(workspace)?;
+        lock(handle).mark_indexed(generation);
+    }
+    zvec_grep.search(workspace, query, MAX_RELEVANT_FRAGMENTS * ZVEC_OVERFETCH)
+}
+
+/// The contents of `hashes`, from the namespace's cache where possible. Files are read without
+/// holding the namespace, and what's read is cached for later queries.
+fn fragment_contents(handle: &NamespaceHandle, hashes: &[String]) -> Vec<Arc<str>> {
+    let sources: Vec<Option<FragmentSource>> = {
+        let namespace = lock(handle);
+        hashes
+            .iter()
+            .map(|hash| namespace.fragment_source(hash))
+            .collect()
+    };
+    let mut read = Vec::new();
+    let contents = hashes
+        .iter()
+        .zip(sources)
+        .map(|(hash, source)| match source {
+            Some(FragmentSource::Cached(content)) => content,
+            Some(FragmentSource::File(path)) => {
+                let content: Arc<str> = std::fs::read_to_string(path).unwrap_or_default().into();
+                read.push((hash, content.clone()));
+                content
+            }
+            None => Arc::from(""),
+        })
+        .collect();
+    if !read.is_empty() {
+        let mut namespace = lock(handle);
+        for (hash, content) in read {
+            namespace.cache_content(hash, content);
+        }
+    }
+    contents
 }
 
 /// Orders fragments by relevance to the query, matches first, keeping every fragment.
@@ -287,7 +342,7 @@ fn rerank_fragments(vars: RerankVariables) -> Vec<Value> {
         .collect();
     let documents: Vec<&str> = documents.iter().map(String::as_str).collect();
     let mut order = lexical::rank(&vars.query, &documents);
-    let ranked: std::collections::HashSet<usize> = order.iter().copied().collect();
+    let ranked: HashSet<usize> = order.iter().copied().collect();
     order.extend((0..vars.fragments.len()).filter(|index| !ranked.contains(index)));
     order
         .into_iter()
