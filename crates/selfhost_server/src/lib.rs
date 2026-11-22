@@ -8,6 +8,7 @@ pub mod config;
 pub mod graphql;
 pub mod oidc;
 pub mod sessions;
+mod transcribe;
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -35,6 +36,8 @@ pub struct AppState {
     pub required_group: Option<String>,
     /// Directory of the Linux builds the app installs on SSH hosts, if this server offers them.
     pub remote_server_artifacts: Option<PathBuf>,
+    /// Answers `/ai/transcribe`; `None` when voice input is off.
+    pub transcriber: Option<Arc<dyn local_transcription::Transcriber>>,
 }
 
 impl AppState {
@@ -47,6 +50,7 @@ impl AppState {
             ),
             required_group: config.oidc.required_group.clone(),
             remote_server_artifacts: config.remote_server_artifacts.clone(),
+            transcriber: None,
         }
     }
 }
@@ -61,6 +65,7 @@ pub struct EmbeddedConfig {
     /// Directory of the Linux builds the app installs on SSH hosts (`remote-server-linux-<arch>
     /// .tar.gz`).
     pub remote_server_artifacts: Option<PathBuf>,
+    pub transcriber: Option<Arc<dyn local_transcription::Transcriber>>,
 }
 
 /// Starts the server on its own thread, listening on an OS-assigned `127.0.0.1` port, and
@@ -78,6 +83,7 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         sessions: SessionStore::new(Some(&config.signing_secret), config.session_max_age),
         required_group: None,
         remote_server_artifacts: config.remote_server_artifacts,
+        transcriber: config.transcriber,
     });
     std::thread::Builder::new()
         .name("embedded-selfhost-server".to_owned())
@@ -125,6 +131,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/graphql/v2", post(graphql))
         .route("/ai/multi-agent", post(agent::multi_agent))
         .route("/ai/passive-suggestions", post(agent::passive_suggestions))
+        .route("/ai/transcribe", post(transcribe::transcribe))
         .route("/download/cli", get(download_remote_server))
         // Agent requests carry the whole conversation, tool output included, so they outgrow
         // axum's 2 MB default.

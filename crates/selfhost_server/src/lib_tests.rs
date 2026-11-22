@@ -22,6 +22,7 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
         sessions: SessionStore::new(Some(b"test-secret"), max_age),
         required_group: required_group.map(str::to_owned),
         remote_server_artifacts: None,
+        transcriber: None,
     })
 }
 
@@ -551,6 +552,7 @@ fn embedded_server_answers_on_its_reported_port() {
         signing_secret: b"test-secret".to_vec(),
         session_max_age: Duration::from_secs(3600),
         remote_server_artifacts: None,
+        transcriber: None,
     })
     .expect("embedded server should start");
     assert!(address.ip().is_loopback());

@@ -29,6 +29,7 @@ base64.workspace = true
 env_logger.workspace = true
 hex.workspace = true
 jsonwebtoken = "9.3"
+local_transcription.workspace = true
 log.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
@@ -40,6 +41,7 @@ toml = "0.8.13"
 url.workspace = true
 
 [dev-dependencies]
+hound = "3.5.1"
 cynic.workspace = true
 tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
