@@ -12870,6 +12870,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "session_recording",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
@@ -13305,6 +13306,22 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "session_recording"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "log",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -16131,6 +16148,7 @@ dependencies = [
  "serde_yaml 0.8.26",
  "serial_test",
  "session-sharing-protocol",
+ "session_recording",
  "settings",
  "settings_value",
  "sha2 0.10.9",

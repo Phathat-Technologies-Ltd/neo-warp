@@ -18,13 +18,17 @@ use crate::appearance::Appearance;
 use crate::features::FeatureFlag;
 use crate::menu::{MenuItem, MenuItemFields};
 use crate::pane_group::pane::view::PaneHeaderAction;
+use crate::server::server_api::ServerApiProvider;
 use crate::terminal::TerminalView;
 use crate::terminal::session_recording::SessionRecordingSettings;
 use crate::terminal::session_recording::asciicast::Header;
-use crate::terminal::session_recording::recorder::{ActiveRecording, RecordingOptions};
-use crate::terminal::session_recording::store::new_recording_path;
+use crate::terminal::session_recording::client::{RecordingsClient, sync_local_store_root};
+use crate::terminal::session_recording::recorder::{
+    ActiveRecording, RecordingOptions, UploadPolicy,
+};
 use crate::view_components::{DismissibleToast, ToastLink};
 use crate::workspace::{ToastStack, WorkspaceAction};
+use ::session_recording::{CreateRecording, RecordingMetadata};
 
 /// Per-pane recording state.
 pub(crate) struct CastRecordingState {
@@ -123,7 +127,7 @@ impl TerminalView {
             .unwrap_or_else(|| self.terminal_title_text());
         let now = Local::now();
         let settings = SessionRecordingSettings::as_ref(ctx);
-        let dir = settings.recordings_dir();
+        sync_local_store_root(settings.recordings_dir());
         let mut extra_redact_patterns =
             crate::auth::organization::recording_redact_patterns().to_vec();
         extra_redact_patterns.extend(settings.user_redact_patterns());
@@ -131,28 +135,32 @@ impl TerminalView {
             record_input: *settings.record_input.value(),
             extra_redact_patterns,
         };
-        let path = new_recording_path(&dir, now, &self.terminal_title_text());
-        let header = Header {
-            timestamp: Some(now.timestamp()),
-            title: Some(title),
-            env: recording_env(),
-            ..Header::new(
-                clamp_u16(self.size_info.columns()),
-                clamp_u16(self.size_info.rows()),
-            )
+        let request = CreateRecording {
+            header: Header {
+                timestamp: Some(now.timestamp()),
+                title: Some(title),
+                env: recording_env(),
+                ..Header::new(
+                    clamp_u16(self.size_info.columns()),
+                    clamp_u16(self.size_info.rows()),
+                )
+            },
+            name: self.terminal_title_text(),
         };
+        let client: Arc<dyn RecordingsClient> = ServerApiProvider::as_ref(ctx).get();
         let records_input = options.record_input;
         match ActiveRecording::start(
-            path.clone(),
-            header,
+            client,
+            request,
             pty_reads_rx.activate_cloned(),
             options,
+            UploadPolicy::default(),
         ) {
             Ok(active) => {
                 log::info!("Started session recording");
                 self.cast_recording.active = Some(active);
                 self.cast_recording.is_recording_input = records_input;
-                self.show_recording_toast("Recording started".to_owned(), path, ctx);
+                self.show_recording_toast("Recording started".to_owned(), None, ctx);
             }
             Err(error) => {
                 log::warn!("Couldn't start session recording: {error}");
@@ -165,32 +173,32 @@ impl TerminalView {
         let Some(active) = self.cast_recording.active.take() else {
             return;
         };
-        match active.stop() {
-            Ok(path) => {
-                let name = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                self.show_recording_toast(format!("Recording saved: {name}"), path, ctx);
+        let _ = ctx.spawn(active.stop(), |me, result, ctx| match result {
+            Ok(RecordingMetadata { id, local_path, .. }) => {
+                me.show_recording_toast(format!("Recording saved: {id}.cast"), local_path, ctx);
             }
             Err(error) => {
-                self.show_error_toast(format!("Couldn't save recording: {error}"), ctx);
+                me.show_error_toast(format!("Couldn't save recording: {error:#}"), ctx);
             }
-        }
+        });
     }
 
+    /// `path` adds a "Show in folder" link, for recordings stored on this machine.
     fn show_recording_toast(
         &self,
         message: String,
-        path: std::path::PathBuf,
+        path: Option<std::path::PathBuf>,
         ctx: &mut ViewContext<Self>,
     ) {
         let window_id = ctx.window_id();
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-            let toast = DismissibleToast::default(message).with_link(
-                ToastLink::new("Show in folder".to_owned())
-                    .with_onclick_action(WorkspaceAction::OpenInExplorer { path }),
-            );
+            let mut toast = DismissibleToast::default(message);
+            if let Some(path) = path {
+                toast = toast.with_link(
+                    ToastLink::new("Show in folder".to_owned())
+                        .with_onclick_action(WorkspaceAction::OpenInExplorer { path }),
+                );
+            }
             toast_stack.add_ephemeral_toast(toast, window_id, ctx);
         });
     }

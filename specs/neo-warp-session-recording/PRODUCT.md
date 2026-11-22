@@ -9,13 +9,14 @@ format, so they also work with the asciinema CLI (`asciinema play`), its web pla
 ## Goals
 
 - Start and stop recording any local terminal pane in one step.
-- Recordings are saved locally, with no upload, and are readable by standard asciinema tools.
+- Recordings are saved on this machine by the app's built-in server, with no upload to any outside
+  service, and are readable by standard asciinema tools.
 - Find, play, rename, delete, reveal, and copy recordings inside the app.
 - Keep secrets out of recordings by default.
 
 ## Non-goals (v1)
 
-- Uploading to asciinema.org or any server.
+- Uploading to asciinema.org or any outside service (a cloud recordings server is a follow-up).
 - Recording remote (SSH-extension), shared-session viewer, or cloud-agent panes.
 - GIF/MP4 export (see Follow-ups).
 - Recording Warp UI around the terminal (blocks chrome, agent views, input editor).
@@ -70,15 +71,22 @@ cannot recognize every secret, and users should still review a recording before 
 - Slash command `/record` toggles recording for the current pane.
 - While recording, the pane header shows a red **● REC** indicator. Clicking it stops recording.
   (The pane header is shown while recording even when the pane is not split.)
-- Starting shows a toast with the file name and **Show in folder**. Stopping shows "Recording
-  saved" with the same link.
+- Starting shows a "Recording started" toast. Stopping shows "Recording saved" with the file name
+  and, when the recording is stored on this machine, **Show in folder**.
 - Closing the pane stops and saves the recording. If the app quits or crashes, everything up to
-  the last idle moment is already on disk (the writer flushes whenever the terminal is idle).
+  the last idle moment (at most about a fifth of a second earlier) is already on disk.
+- Secrets are redacted before events leave the recording pane. If the recordings server can't be
+  reached, recording continues: events are kept in memory and resent, and the terminal never
+  waits. If the server is still unreachable two minutes after stopping, the stop toast reports
+  that the recording couldn't be saved.
 
 ### Storage
 
-- Default: `<app data dir>/recordings/<YYYY-MM-DD_HH-MM-SS>-<pane title>.cast`. A number is added
-  if the name is taken.
+- Default: `<app data dir>/recordings/user-<id>/<YYYY-MM-DD_HH-MM-SS>-<pane title>.cast`, where
+  `user-<id>` is a per-user folder derived from the signed-in account. A number is added if the
+  name is taken. Recordings saved directly in the recordings folder by earlier builds are moved
+  into the user's folder the first time that user lists or starts a recording, as long as no
+  other user has a folder there; otherwise they are left in place.
 - **Save recordings to** on the Recordings settings page changes the directory (`~` works). Empty
   means the default.
 - The file header records the terminal width and height, start time, title (pane title and
@@ -87,8 +95,10 @@ cannot recognize every secret, and users should still review a recording before 
 ### Recordings page (Settings > Recordings)
 
 - Lists recordings in the directory, newest first: title, date, duration, size.
-- Per recording: **Play**, **Reveal in Finder** (Show in folder on other platforms), **Copy**,
-  **Rename**, **Delete** (asks for a second click to confirm).
+- Per recording: **Play**, **Reveal in Finder** (Show in folder on other platforms; shown only
+  for recordings stored on this machine), **Copy**, **Rename** (not while the recording is still in
+  progress), **Delete** (asks for a second click to confirm).
+- Recordings require being signed in; each user sees only their own.
 - **Copy** puts the file's contents on the clipboard (and the file path, where the platform takes
   file paths), ready to paste or upload.
 - **Play** opens a read-only player at the top of the page: the terminal screen, Play/Pause,

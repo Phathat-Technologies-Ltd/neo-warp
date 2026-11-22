@@ -53,6 +53,7 @@ org_flags = { path = "crates/org_flags" }
 local_transcription = { path = "crates/local_transcription" }
 org_sign_in = { path = "crates/org_sign_in" }
 selfhost_server = { path = "crates/selfhost_server" }
+session_recording = { path = "crates/session_recording" }
 http_server = { path = "crates/http_server" }
 input_classifier = { path = "crates/input_classifier" }
 integration = { path = "crates/integration" }

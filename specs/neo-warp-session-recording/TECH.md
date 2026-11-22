@@ -2,6 +2,60 @@
 
 See `PRODUCT.md` for scope.
 
+## Architecture: client capture, server store
+
+Capture and redaction run in the app; storage is a service. Like `/ai/transcribe` and codebase
+indexing, the store is served by the embedded server (`crates/selfhost_server`), so it can move
+to a standalone or cloud server by pointing the app at a different server URL.
+
+- `crates/session_recording`: the asciicast format, the redactor, naming helpers, the API types
+  (`CreateRecording`, `RecordingMetadata`, ...), the `RecordingStore` trait, and `LocalDirStore`.
+- `crates/selfhost_server/src/recordings.rs`: the `/recordings` routes over
+  `AppState::recordings: Option<Arc<dyn RecordingStore>>`. A cloud backend (object storage plus
+  a metadata table) implements the same trait and is configured in place of `LocalDirStore`; the
+  standalone server reads `recordings_dir` from its config.
+- App: `ActiveRecording` captures and redacts, and uploads through `RecordingsClient`
+  (`app/src/terminal/session_recording/client.rs`, implemented for `ServerApi` in
+  `app/src/server/server_api/recordings.rs`). Secrets never leave the machine unredacted.
+
+The embedded server's store is a process-wide `LocalDirStore` (`client::local_store()`). The app
+points it at `SessionRecordingSettings::recordings_dir()` before starting a recording and before
+listing (`sync_local_store_root`), so changing **Save recordings to** takes effect without a
+restart.
+
+### API
+
+All routes need a bearer ID token from the server's sign-in; the owner is the token's user ID.
+Missing or invalid tokens get 401; a server without a store gets 501.
+
+| Route | Body | Response |
+| --- | --- | --- |
+| `POST /recordings` | `{header, name}` (asciicast header) | 201 `{id}` |
+| `POST /recordings/{id}/events?seq=N` | asciicast event lines (NDJSON) | 204 |
+| `POST /recordings/{id}/finish` | none | 200 metadata |
+| `GET /recordings` | none | 200 `[metadata]`, newest first |
+| `GET /recordings/{id}` | `Range: bytes=a-b` optional | 200 or 206 cast content |
+| `PATCH /recordings/{id}` | `{name}` | 200 metadata (the ID may change) |
+| `DELETE /recordings/{id}` | none | 204 |
+
+Metadata is `{id, title, started_at, duration, size_bytes, local_path?}`; `local_path` is set
+only when the store is on the client's machine, which is what shows **Reveal in Finder**.
+
+Batches are numbered from 0 per recording. The store acknowledges a batch it already has without
+writing it again (so resending after a lost response is safe) and rejects a gap with 409
+`{expected_seq}`. Event lines are validated as `[time, code, data]` arrays. IDs are file stems;
+an ID containing a path separator or starting with `.` is never resolved.
+
+`LocalDirStore` keeps each owner in `<root>/user-<first 16 hex of sha256(owner)>/`. It holds the
+next expected sequence number of in-progress recordings in memory; after a server restart the
+next batch is accepted as-is. Metadata reports `in_progress` for those, and `PATCH` on one
+returns 409 (`StoreError::InProgress`), since the uploader keeps appending under the old ID; the
+page hides **Rename** for them.
+
+On `create` and `list`, `LocalDirStore` moves `.cast` files in the root (the pre-per-user layout)
+into the caller's folder when no other `user-*` folder exists, skipping names already taken.
+With other users present it leaves them and logs. Repeating it is a no-op.
+
 ## Format
 
 asciicast v2 (<https://docs.asciinema.org/manual/asciicast/v2/>): a JSON header line
@@ -11,8 +65,8 @@ asciicast v2 (<https://docs.asciinema.org/manual/asciicast/v2/>): a JSON header 
 and skips unknown codes. Event data must be a UTF-8 string, so PTY bytes go through an incremental
 decoder that holds a character split across reads and replaces invalid bytes with U+FFFD.
 
-Code: `app/src/terminal/session_recording/asciicast.rs` (`CastWriter`, `Utf8Decoder`, `parse`,
-`read_summary`).
+Code: `crates/session_recording/src/asciicast.rs` (`CastWriter`, `Utf8Decoder`, `parse`,
+`read_summary`, `validate_event_lines`).
 
 ## Capturing PTY output
 
@@ -21,13 +75,22 @@ The local PTY event loop already broadcasts every read on an `async_broadcast` c
 inactive and handed to `TerminalView` as `inactive_pty_reads_rx` (used today by the debug
 `PtyRecorder`). The sender only allocates when a receiver is active, so idle panes pay nothing.
 
-`ActiveRecording` (`session_recording/recorder.rs`) activates a receiver and runs a dedicated
-thread that:
+`ActiveRecording` (`app/src/terminal/session_recording/recorder.rs`) activates a receiver and
+runs two threads. The capture thread:
 
 - waits on either the PTY receiver or a control channel (resize, input, password prompt, stop),
 - timestamps each event with a monotonic `Instant` measured from the start,
-- decodes, redacts, and writes through a `BufWriter`, flushing whenever both channels are empty,
-- on stop: flushes the redactors' held text, then the file, and joins.
+- decodes, redacts, and encodes event lines into a batch, cut when it reaches 64 KB or when both
+  channels are idle and 200 ms have passed since the last batch,
+- on stop: flushes the redactors' held text into a last batch and exits.
+
+The upload thread creates the recording on the server, then sends batches in order. A failed or
+timed-out (15 s) request leaves the batch queued and retries with exponential backoff (250 ms to
+10 s) while new batches keep queuing, so the capture thread never waits on the network. More than
+256 MB unsent is dropped with a warning. After stop it keeps retrying for up to two minutes, then
+calls finish; `stop()` returns a future of the result, which the view turns into the "saved" or
+error toast. Dropping `ActiveRecording` stops capture and lets the upload finish in the
+background.
 
 This never touches `TerminalModel` or its lock: bytes come from the event loop's broadcast, and
 size changes come from `TerminalView::resize_internal` after the model is already resized, using
@@ -55,7 +118,7 @@ Input is dropped up to the next line end when either:
 
 ## Redaction
 
-`session_recording/redact.rs`. One `Redactor` per stream (output, input), built from the
+`crates/session_recording/src/redact.rs`. One `Redactor` per stream (output, input), built from the
 built-in patterns plus org (`organization.toml` `[recording] redact_patterns`, read in
 `crates/org_sign_in`) and user (`session_recording.redact_patterns`, one per line) patterns.
 
@@ -78,9 +141,11 @@ finishes it. Prompts usually end in a space, so this is rarely visible.
 
 ## Storage and listing
 
-`session_recording/store.rs`: file naming (`<timestamp>-<sanitized title>.cast`, de-duplicated),
+`crates/session_recording/src/naming.rs`: file naming (`<timestamp>-<sanitized title>.cast`, de-duplicated),
 listing (`.cast` files in the directory, header plus last event time, newest first, unreadable
-files skipped and logged), rename (sanitized, keeps `.cast`, refuses to overwrite), and delete.
+files skipped and logged), rename (sanitized, keeps `.cast`, refuses to overwrite), and delete,
+used by `LocalDirStore`. The Recordings page lists, plays (fetching the content), copies,
+renames, and deletes through `RecordingsClient`.
 `session_recording/settings.rs` holds the `SessionRecordingSettings` group: `directory`,
 `record_input`, `redact_patterns`. These are not synced to the cloud.
 
@@ -122,13 +187,20 @@ Moving to a full pane with Warp's renderer is a follow-up.
 
 - `asciicast_tests.rs`: round trip, line shape, split UTF-8, invalid bytes, parsing asciinema
   files, bad input, summary.
-- `recorder_tests.rs`: output and resize order and timing, flush on drop, no overwrite, output
-  redaction, input off by default, input recording with redaction and password suppression.
+- `recorder_tests.rs` (fake `RecordingsClient`): output and resize order and timing, contiguous
+  in-order batches, retry after failed start and appends without losing events, giving up after
+  the finish deadline, upload after drop, output redaction, input off by default, input
+  recording with redaction and password suppression.
+- `crates/session_recording/src/local_tests.rs`: round trip, duplicate and out-of-order batches,
+  invalid events, byte ranges, rename and delete, owner isolation, path-escaping IDs, root
+  changes.
+- `crates/selfhost_server/src/recordings_tests.rs`: HTTP round trip (start, append, finish, list,
+  get, range get, rename, delete), sign-in required, users isolated, missing store.
 - `redact_tests.rs`: each built-in pattern, ordinary text untouched, secrets split across chunks
   (including one byte at a time), private-key blocks across chunks, held-word behavior, extra
   and invalid patterns.
 - `player_tests.rs`: paused start, timing, speed, end and replay, seek back and forward, restart.
-- `store_tests.rs`: sanitizing, collision-free names, listing, missing directory, rename and
+- `naming_tests.rs`: sanitizing, collision-free names, listing, missing directory, rename and
   delete, formatting.
 - `org_sign_in` reads `[recording] redact_patterns`; `org_flags` defaults include
   `session_recording`.

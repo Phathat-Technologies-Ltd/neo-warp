@@ -8,6 +8,7 @@ pub mod config;
 pub mod graphql;
 pub mod indexing;
 pub mod oidc;
+mod recordings;
 pub mod sessions;
 mod transcribe;
 
@@ -26,6 +27,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+use session_recording::RecordingStore;
 
 use crate::config::ServerConfig;
 use crate::graphql::Operation;
@@ -46,6 +48,8 @@ pub struct AppState {
     pub make_provider: agent::ProviderFactory,
     /// Answers codebase indexing operations; `None` leaves them unsupported.
     pub codebase_index: Option<Arc<CodebaseIndex>>,
+    /// Backs `/recordings`; `None` leaves session recording storage unsupported.
+    pub recordings: Option<Arc<dyn RecordingStore>>,
 }
 
 impl AppState {
@@ -65,6 +69,9 @@ impl AppState {
                 .codebase_index_dir
                 .clone()
                 .map(|dir| Arc::new(CodebaseIndex::new(dir))),
+            recordings: config.recordings_dir.clone().map(|dir| {
+                Arc::new(session_recording::LocalDirStore::new(dir)) as Arc<dyn RecordingStore>
+            }),
         }
     }
 }
@@ -82,6 +89,8 @@ pub struct EmbeddedConfig {
     pub transcriber: Option<Arc<dyn local_transcription::Transcriber>>,
     /// Where codebase indexes are stored; `None` turns codebase indexing off.
     pub codebase_index_dir: Option<PathBuf>,
+    /// Stores session recordings; `None` turns `/recordings` off.
+    pub recording_store: Option<Arc<dyn RecordingStore>>,
 }
 
 /// Starts the server on its own thread, listening on an OS-assigned `127.0.0.1` port, and
@@ -105,6 +114,7 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         codebase_index: config
             .codebase_index_dir
             .map(|dir| Arc::new(CodebaseIndex::new(dir))),
+        recordings: config.recording_store,
     });
     std::thread::Builder::new()
         .name("embedded-selfhost-server".to_owned())
@@ -159,6 +169,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/ai/relevant_files", post(relevant_files))
         .route("/download/cli", get(download_remote_server))
+        .route(
+            "/recordings",
+            get(recordings::list).post(recordings::create),
+        )
+        .route(
+            "/recordings/{id}",
+            get(recordings::read)
+                .patch(recordings::rename)
+                .delete(recordings::delete),
+        )
+        .route("/recordings/{id}/events", post(recordings::append))
+        .route("/recordings/{id}/finish", post(recordings::finish))
         // Agent requests carry the whole conversation, tool output included, so they outgrow
         // axum's 2 MB default.
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))

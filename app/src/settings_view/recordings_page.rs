@@ -1,11 +1,12 @@
 //! The "Recordings" settings page: lists session recordings and plays them back.
 
-use std::fs::File;
-use std::io::BufReader;
-use std::path::PathBuf;
+use std::io::Cursor;
+use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{Local, TimeZone as _};
 use instant::Instant;
+use session_recording::RecordingMetadata;
 
 use settings::Setting as _;
 use warp_core::features::FeatureFlag;
@@ -28,13 +29,13 @@ use super::settings_page::{
 use crate::appearance::Appearance;
 use crate::editor::{EditorView, Event as EditorEvent, SingleLineEditorOptions, TextOptions};
 use crate::report_if_error;
+use crate::server::server_api::ServerApiProvider;
 use crate::terminal::session_recording::SessionRecordingSettings;
 use crate::terminal::session_recording::asciicast;
+use crate::terminal::session_recording::client::{RecordingsClient, sync_local_store_root};
+use crate::terminal::session_recording::naming::{format_duration, format_size};
 use crate::terminal::session_recording::player::{PlaybackState, Player};
 use crate::terminal::session_recording::settings::default_recordings_dir;
-use crate::terminal::session_recording::store::{
-    self, RecordingInfo, format_duration, format_size,
-};
 use crate::workspace::WorkspaceAction;
 
 const PAGE_TITLE: &str = "Recordings";
@@ -51,7 +52,7 @@ struct RowMouseStates {
 }
 
 struct RecordingRow {
-    info: RecordingInfo,
+    info: RecordingMetadata,
     mouse_states: RowMouseStates,
 }
 
@@ -163,57 +164,92 @@ impl RecordingsPageView {
         })
     }
 
-    fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
-        let dir = SessionRecordingSettings::as_ref(ctx).recordings_dir();
-        match store::list_recordings(&dir) {
-            Ok(recordings) => {
-                self.rows = recordings
-                    .into_iter()
-                    .map(|info| RecordingRow {
-                        info,
-                        mouse_states: Default::default(),
-                    })
-                    .collect();
-                self.list_error = None;
-            }
-            Err(error) => {
-                self.rows.clear();
-                self.list_error = Some(format!("Couldn't read {}: {error}", dir.display()));
-            }
-        }
-        self.renaming = None;
-        self.confirming_delete = None;
-        ctx.notify();
+    fn client(ctx: &AppContext) -> Arc<dyn RecordingsClient> {
+        ServerApiProvider::as_ref(ctx).get()
     }
 
-    fn row_path(&self, index: usize) -> Option<PathBuf> {
-        self.rows.get(index).map(|row| row.info.path.clone())
+    fn refresh(&mut self, ctx: &mut ViewContext<Self>) {
+        sync_local_store_root(SessionRecordingSettings::as_ref(ctx).recordings_dir());
+        let client = Self::client(ctx);
+        let _ = ctx.spawn(async move { client.list().await }, |me, result, ctx| {
+            match result {
+                Ok(recordings) => {
+                    me.rows = recordings
+                        .into_iter()
+                        .map(|info| RecordingRow {
+                            info,
+                            mouse_states: Default::default(),
+                        })
+                        .collect();
+                    me.list_error = None;
+                }
+                Err(error) => {
+                    me.rows.clear();
+                    me.list_error = Some(format!("Couldn't list recordings: {error:#}"));
+                }
+            }
+            me.renaming = None;
+            me.confirming_delete = None;
+            ctx.notify();
+        });
+    }
+
+    fn row(&self, index: usize) -> Option<&RecordingMetadata> {
+        self.rows.get(index).map(|row| &row.info)
+    }
+
+    fn show_error(&mut self, message: String, ctx: &mut ViewContext<Self>) {
+        self.list_error = Some(message);
+        ctx.notify();
     }
 
     fn play(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
-        let Some(row) = self.rows.get(index) else {
+        let Some(info) = self.row(index).cloned() else {
             return;
         };
-        let parsed = File::open(&row.info.path)
-            .map_err(anyhow::Error::from)
-            .and_then(|file| asciicast::parse(BufReader::new(file)));
-        match parsed {
-            Ok(cast) => {
-                let mut player = Player::new(cast);
-                player.play();
-                self.playback = Some(PlaybackSession {
-                    player,
-                    name: row.info.title.clone(),
-                    last_frame: Instant::now(),
-                    controls: Default::default(),
-                });
-                self.schedule_frame(ctx);
-            }
-            Err(error) => {
-                self.list_error = Some(format!("Couldn't open recording: {error:#}"));
-            }
-        }
-        ctx.notify();
+        let client = Self::client(ctx);
+        let _ = ctx.spawn(
+            async move { client.read(&info.id).await },
+            move |me, result, ctx| {
+                match result.and_then(|bytes| asciicast::parse(Cursor::new(bytes))) {
+                    Ok(cast) => {
+                        let mut player = Player::new(cast);
+                        player.play();
+                        me.playback = Some(PlaybackSession {
+                            player,
+                            name: info.title,
+                            last_frame: Instant::now(),
+                            controls: Default::default(),
+                        });
+                        me.schedule_frame(ctx);
+                    }
+                    Err(error) => {
+                        me.list_error = Some(format!("Couldn't open recording: {error:#}"));
+                    }
+                }
+                ctx.notify();
+            },
+        );
+    }
+
+    fn copy(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        let Some(info) = self.row(index).cloned() else {
+            return;
+        };
+        let client = Self::client(ctx);
+        let _ = ctx.spawn(
+            async move { client.read(&info.id).await },
+            move |me, result, ctx| match result.and_then(|bytes| Ok(String::from_utf8(bytes)?)) {
+                Ok(contents) => ctx.clipboard().write(ClipboardContent {
+                    plain_text: contents,
+                    paths: info
+                        .local_path
+                        .map(|path| vec![path.to_string_lossy().into_owned()]),
+                    ..Default::default()
+                }),
+                Err(error) => me.show_error(format!("Couldn't copy: {error:#}"), ctx),
+            },
+        );
     }
 
     fn schedule_frame(&mut self, ctx: &mut ViewContext<Self>) {
@@ -257,17 +293,12 @@ impl RecordingsPageView {
     }
 
     fn start_rename(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
-        let Some(stem) = self.rows.get(index).and_then(|row| {
-            row.info
-                .path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-        }) else {
+        let Some(id) = self.row(index).map(|info| info.id.clone()) else {
             return;
         };
         self.renaming = Some(index);
         self.rename_editor.update(ctx, |editor, ctx| {
-            editor.set_buffer_text(&stem, ctx);
+            editor.set_buffer_text(&id, ctx);
             editor.select_all(ctx);
         });
         ctx.focus(&self.rename_editor);
@@ -275,16 +306,23 @@ impl RecordingsPageView {
     }
 
     fn finish_rename(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(path) = self.renaming.take().and_then(|index| self.row_path(index)) else {
+        let Some(id) = self
+            .renaming
+            .take()
+            .and_then(|index| self.row(index))
+            .map(|info| info.id.clone())
+        else {
             return;
         };
         let new_name = self.rename_editor.as_ref(ctx).buffer_text(ctx);
-        if let Err(error) = store::rename_recording(&path, &new_name) {
-            self.list_error = Some(format!("Couldn't rename: {error}"));
-            ctx.notify();
-            return;
-        }
-        self.refresh(ctx);
+        let client = Self::client(ctx);
+        let _ = ctx.spawn(
+            async move { client.rename(&id, &new_name).await },
+            |me, result, ctx| match result {
+                Ok(_) => me.refresh(ctx),
+                Err(error) => me.show_error(format!("Couldn't rename: {error:#}"), ctx),
+            },
+        );
     }
 
     fn delete(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
@@ -293,15 +331,17 @@ impl RecordingsPageView {
             ctx.notify();
             return;
         }
-        let Some(path) = self.row_path(index) else {
+        let Some(id) = self.row(index).map(|info| info.id.clone()) else {
             return;
         };
-        if let Err(error) = store::delete_recording(&path) {
-            self.list_error = Some(format!("Couldn't delete: {error}"));
-            ctx.notify();
-            return;
-        }
-        self.refresh(ctx);
+        let client = Self::client(ctx);
+        let _ = ctx.spawn(
+            async move { client.delete(&id).await },
+            |me, result, ctx| match result {
+                Ok(()) => me.refresh(ctx),
+                Err(error) => me.show_error(format!("Couldn't delete: {error:#}"), ctx),
+            },
+        );
     }
 
     fn save_directory(&mut self, ctx: &mut ViewContext<Self>) {
@@ -343,26 +383,11 @@ impl TypedActionView for RecordingsPageView {
             RecordingsPageAction::Refresh => self.refresh(ctx),
             RecordingsPageAction::Play(index) => self.play(*index, ctx),
             RecordingsPageAction::Reveal(index) => {
-                if let Some(path) = self.row_path(*index) {
+                if let Some(path) = self.row(*index).and_then(|info| info.local_path.clone()) {
                     ctx.dispatch_typed_action(&WorkspaceAction::OpenInExplorer { path });
                 }
             }
-            RecordingsPageAction::Copy(index) => {
-                let Some(path) = self.row_path(*index) else {
-                    return;
-                };
-                match std::fs::read_to_string(&path) {
-                    Ok(contents) => ctx.clipboard().write(ClipboardContent {
-                        plain_text: contents,
-                        paths: Some(vec![path.to_string_lossy().into_owned()]),
-                        ..Default::default()
-                    }),
-                    Err(error) => {
-                        self.list_error = Some(format!("Couldn't copy: {error}"));
-                        ctx.notify();
-                    }
-                }
-            }
+            RecordingsPageAction::Copy(index) => self.copy(*index, ctx),
             RecordingsPageAction::StartRename(index) => self.start_rename(*index, ctx),
             RecordingsPageAction::Delete(index) => self.delete(*index, ctx),
             RecordingsPageAction::TogglePlayPause => {
@@ -735,6 +760,7 @@ fn render_row(
     let states = &row.mouse_states;
     let date = info
         .started_at
+        .and_then(|secs| Local.timestamp_opt(secs, 0).single())
         .map(|time| time.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_default();
     let details = format!(
@@ -776,6 +802,47 @@ fn render_row(
     } else {
         "Show in folder"
     };
+    let mut buttons = vec![button(
+        appearance,
+        "Play",
+        ButtonVariant::Accent,
+        &states.play,
+        RecordingsPageAction::Play(index),
+    )];
+    // Only recordings stored on this machine have a folder to show.
+    if info.local_path.is_some() {
+        buttons.push(button(
+            appearance,
+            reveal_label,
+            ButtonVariant::Secondary,
+            &states.reveal,
+            RecordingsPageAction::Reveal(index),
+        ));
+    }
+    buttons.extend([button(
+        appearance,
+        "Copy",
+        ButtonVariant::Secondary,
+        &states.copy,
+        RecordingsPageAction::Copy(index),
+    )]);
+    // A recording still in progress keeps receiving events under its ID, so it can't be renamed.
+    if !info.in_progress {
+        buttons.push(button(
+            appearance,
+            "Rename",
+            ButtonVariant::Secondary,
+            &states.rename,
+            RecordingsPageAction::StartRename(index),
+        ));
+    }
+    buttons.push(button(
+        appearance,
+        delete_label,
+        ButtonVariant::Warn,
+        &states.delete,
+        RecordingsPageAction::Delete(index),
+    ));
     Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -786,47 +853,6 @@ fn render_row(
                 .with_child(sub_text(appearance, details))
                 .finish(),
         )
-        .with_child(
-            Flex::row()
-                .with_spacing(6.)
-                .with_children([
-                    button(
-                        appearance,
-                        "Play",
-                        ButtonVariant::Accent,
-                        &states.play,
-                        RecordingsPageAction::Play(index),
-                    ),
-                    button(
-                        appearance,
-                        reveal_label,
-                        ButtonVariant::Secondary,
-                        &states.reveal,
-                        RecordingsPageAction::Reveal(index),
-                    ),
-                    button(
-                        appearance,
-                        "Copy",
-                        ButtonVariant::Secondary,
-                        &states.copy,
-                        RecordingsPageAction::Copy(index),
-                    ),
-                    button(
-                        appearance,
-                        "Rename",
-                        ButtonVariant::Secondary,
-                        &states.rename,
-                        RecordingsPageAction::StartRename(index),
-                    ),
-                    button(
-                        appearance,
-                        delete_label,
-                        ButtonVariant::Warn,
-                        &states.delete,
-                        RecordingsPageAction::Delete(index),
-                    ),
-                ])
-                .finish(),
-        )
+        .with_child(Flex::row().with_spacing(6.).with_children(buttons).finish())
         .finish()
 }
