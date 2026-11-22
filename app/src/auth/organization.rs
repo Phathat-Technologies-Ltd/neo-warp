@@ -68,6 +68,7 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
         signing_secret,
         session_max_age: EMBEDDED_SESSION_MAX_AGE,
         remote_server_artifacts: bundled_remote_server_builds(),
+        codebase_index_dir: Some(warp_core::paths::data_dir().join("codebase-index")),
     }) {
         Ok(address) => Some(format!("http://{address}")),
         Err(error) => {

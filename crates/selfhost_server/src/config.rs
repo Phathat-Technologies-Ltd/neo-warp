@@ -17,6 +17,9 @@ pub struct ServerConfig {
     /// (`remote-server-linux-<arch>.tar.gz`).
     #[serde(default)]
     pub remote_server_artifacts: Option<PathBuf>,
+    /// Where codebase indexes are stored; unset turns codebase indexing off.
+    #[serde(default)]
+    pub codebase_index_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

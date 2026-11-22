@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod config;
 pub mod graphql;
+pub mod indexing;
 pub mod oidc;
 pub mod sessions;
 
@@ -16,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 
+use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Form, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -26,6 +28,7 @@ use serde_json::json;
 
 use crate::config::ServerConfig;
 use crate::graphql::Operation;
+use crate::indexing::{CodebaseIndex, IndexOperation};
 use crate::oidc::OidcVerifier;
 use crate::sessions::{ID_TOKEN_LIFETIME, IssuedTokens, SessionStore, TokenError};
 
@@ -35,6 +38,8 @@ pub struct AppState {
     pub required_group: Option<String>,
     /// Directory of the Linux builds the app installs on SSH hosts, if this server offers them.
     pub remote_server_artifacts: Option<PathBuf>,
+    /// Answers codebase indexing operations; `None` leaves them unsupported.
+    pub codebase_index: Option<Arc<CodebaseIndex>>,
 }
 
 impl AppState {
@@ -47,6 +52,10 @@ impl AppState {
             ),
             required_group: config.oidc.required_group.clone(),
             remote_server_artifacts: config.remote_server_artifacts.clone(),
+            codebase_index: config
+                .codebase_index_dir
+                .clone()
+                .map(|dir| Arc::new(CodebaseIndex::new(dir))),
         }
     }
 }
@@ -61,6 +70,8 @@ pub struct EmbeddedConfig {
     /// Directory of the Linux builds the app installs on SSH hosts (`remote-server-linux-<arch>
     /// .tar.gz`).
     pub remote_server_artifacts: Option<PathBuf>,
+    /// Where codebase indexes are stored; `None` turns codebase indexing off.
+    pub codebase_index_dir: Option<PathBuf>,
 }
 
 /// Starts the server on its own thread, listening on an OS-assigned `127.0.0.1` port, and
@@ -78,6 +89,9 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         sessions: SessionStore::new(Some(&config.signing_secret), config.session_max_age),
         required_group: None,
         remote_server_artifacts: config.remote_server_artifacts,
+        codebase_index: config
+            .codebase_index_dir
+            .map(|dir| Arc::new(CodebaseIndex::new(dir))),
     });
     std::thread::Builder::new()
         .name("embedded-selfhost-server".to_owned())
@@ -125,6 +139,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/graphql/v2", post(graphql))
         .route("/ai/multi-agent", post(agent::multi_agent))
         .route("/ai/passive-suggestions", post(agent::passive_suggestions))
+        .route("/ai/relevant_files", post(relevant_files))
         .route("/download/cli", get(download_remote_server))
         // Agent requests carry the whole conversation, tool output included, so they outgrow
         // axum's 2 MB default.
@@ -282,16 +297,34 @@ struct GraphqlQuery {
     op: Option<String>,
 }
 
+#[derive(Deserialize, Default)]
+struct GraphqlBody {
+    #[serde(default)]
+    variables: serde_json::Value,
+}
+
 async fn graphql(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GraphqlQuery>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
     let operation = query.op.unwrap_or_default();
     let user = match bearer_token(&headers) {
         Some(token) => state.sessions.user_for_id_token(token),
         None => None,
     };
+    if let (Some(index_operation), Some(index)) =
+        (IndexOperation::from_name(&operation), &state.codebase_index)
+    {
+        let Some(user) = user else {
+            return (StatusCode::UNAUTHORIZED, "sign in required").into_response();
+        };
+        let variables = serde_json::from_slice::<GraphqlBody>(&body)
+            .unwrap_or_default()
+            .variables;
+        return Json(index.respond(index_operation, user.uid, variables).await).into_response();
+    }
     match (Operation::from_name(&operation), user) {
         (Some(operation), Some(user)) => Json(operation.response(&user)).into_response(),
         (Some(_), None) => (StatusCode::UNAUTHORIZED, "sign in required").into_response(),
@@ -300,6 +333,44 @@ async fn graphql(
             Json(graphql::unsupported_operation_response(&operation)).into_response()
         }
     }
+}
+
+#[derive(Deserialize)]
+struct RelevantFilesRequest {
+    query: String,
+    files: Vec<RelevantFileContext>,
+}
+
+#[derive(Deserialize)]
+struct RelevantFileContext {
+    path: String,
+    symbols: String,
+}
+
+/// Picks the files most relevant to a query from their paths and symbols, locally.
+async fn relevant_files(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<RelevantFilesRequest>,
+) -> Response {
+    if state.codebase_index.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if bearer_token(&headers)
+        .and_then(|token| state.sessions.user_for_id_token(token))
+        .is_none()
+    {
+        return (StatusCode::UNAUTHORIZED, "sign in required").into_response();
+    }
+    let files: Vec<(String, String)> = request
+        .files
+        .into_iter()
+        .map(|file| (file.path, file.symbols))
+        .collect();
+    Json(json!({
+        "relevant_file_paths": indexing::relevant_files(&request.query, &files),
+    }))
+    .into_response()
 }
 
 pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
