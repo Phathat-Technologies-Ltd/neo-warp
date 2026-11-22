@@ -38,10 +38,7 @@ impl Transcriber for ParakeetTranscriber {
         if model.is_none() {
             let engine_error =
                 |error: &dyn std::fmt::Display| TranscribeError::Engine(error.to_string());
-            let environment = parakeet_rs::ort::init()
-                .with_name("local_transcription")
-                .build()
-                .map_err(|error| engine_error(&error))?;
+            let environment = crate::ort_env::environment()?;
             let config = ExecutionConfig::new().with_environment(environment);
             let loaded = ParakeetTDT::from_pretrained(self.store.model_dir(), Some(config))
                 .map_err(|error| engine_error(&error))?;

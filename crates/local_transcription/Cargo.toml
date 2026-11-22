@@ -9,6 +9,8 @@ license.workspace = true
 # Runs NVIDIA Parakeet TDT 0.6B v3 through ONNX Runtime. Off by default so crates that only need
 # the trait and the model store don't build ONNX Runtime.
 parakeet = ["dep:parakeet-rs"]
+# Runs Silero VAD v5 on the same ONNX Runtime.
+silero = ["dep:parakeet-rs"]
 
 [dependencies]
 futures.workspace = true
@@ -17,6 +19,8 @@ hound = "3.5.1"
 log.workspace = true
 parakeet-rs = { version = "0.4.4", default-features = false, features = ["cpu", "ort-defaults", "api-28"], optional = true }
 reqwest = { workspace = true, features = ["stream"] }
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
