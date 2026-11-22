@@ -492,7 +492,9 @@ impl Input {
                 ctx.dispatch_typed_action(&TerminalAction::OpenAddMCPPane);
             }
             SlashCommandKind::ApiKeys => {
-                ctx.dispatch_typed_action(&WorkspaceAction::ShowSettingsPageWithSearch {
+                // Opening Settings closes the input's own menus, which can't happen while this
+                // input is still mid-update.
+                ctx.dispatch_typed_action_deferred(WorkspaceAction::ShowSettingsPageWithSearch {
                     search_query: "API keys".to_owned(),
                     section: Some(SettingsSection::WarpAgent),
                 });
