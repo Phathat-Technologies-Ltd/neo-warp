@@ -21,6 +21,29 @@ fn billing_metadata(customer_type: CustomerType) -> BillingMetadata {
 }
 
 #[test]
+fn product_area_sections_follow_their_flag() {
+    let cases = [
+        (SettingsSection::Teams, FeatureFlag::SharingAndTeams),
+        (SettingsSection::SharedBlocks, FeatureFlag::SharingAndTeams),
+        (
+            SettingsSection::BillingAndUsage,
+            FeatureFlag::BillingAndReferrals,
+        ),
+        (SettingsSection::Referrals, FeatureFlag::BillingAndReferrals),
+        (SettingsSection::CloudEnvironments, FeatureFlag::CloudAgents),
+    ];
+    for (section, flag) in cases {
+        {
+            let _off = flag.override_enabled(false);
+            assert!(!section.is_available(), "{section:?} should hide");
+        }
+        let _on = flag.override_enabled(true);
+        assert!(section.is_available(), "{section:?} should show");
+    }
+    assert!(SettingsSection::Account.is_available());
+}
+
+#[test]
 fn paid_workspace_without_team_shows_only_workspace_badge() {
     let billing_metadata = billing_metadata(CustomerType::Enterprise);
 

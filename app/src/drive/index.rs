@@ -4575,7 +4575,7 @@ impl DriveIndex {
                             .with_icon(Icon::Link)
                             .into_item(),
                     );
-                    if editability.can_edit() {
+                    if editability.can_edit() && FeatureFlag::SharingAndTeams.is_enabled() {
                         menu_items.push(
                             MenuItemFields::new("Share")
                                 .with_on_select_action(DriveIndexAction::ToggleShareDialog {
@@ -4803,7 +4803,7 @@ impl DriveIndex {
                                     .into_item(),
                             );
                         }
-                        if editability.can_edit() {
+                        if editability.can_edit() && FeatureFlag::SharingAndTeams.is_enabled() {
                             menu_items.push(
                                 MenuItemFields::new("Share")
                                     .with_on_select_action(DriveIndexAction::ToggleShareDialog {
@@ -4993,6 +4993,9 @@ impl DriveIndex {
         source: SharingDialogSource,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::SharingAndTeams.is_enabled() {
+            return;
+        }
         let WarpDriveItemId::Object(cloud_object_type_and_id) = warp_drive_item_id else {
             return;
         };

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use serde_json::{Value, json};
 use strum_macros::{EnumDiscriminants, EnumIter};
+use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::telemetry::{EnablementState, TelemetryEvent, TelemetryEventDesc};
 use warp_core::user_preferences::GetUserPreferences;
@@ -67,7 +68,7 @@ impl PricingPromotionState {
         surface: PricingPromotionSurface,
         app: &AppContext,
     ) -> Option<String> {
-        if self.is_dismissed(surface) {
+        if !FeatureFlag::BillingAndReferrals.is_enabled() || self.is_dismissed(surface) {
             return None;
         }
         PricingInfoModel::as_ref(app)
