@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use bytes::Bytes;
 
 use axum::extract::{DefaultBodyLimit, Form, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -38,6 +39,9 @@ pub struct AppState {
     pub remote_server_artifacts: Option<PathBuf>,
     /// Answers `/ai/transcribe`; `None` when voice input is off.
     pub transcriber: Option<Arc<dyn local_transcription::Transcriber>>,
+    /// Model settings for AI helper requests that carry no credentials of their own.
+    pub ai_settings: agent::ModelSettingsCache,
+    pub make_provider: agent::ProviderFactory,
 }
 
 impl AppState {
@@ -51,6 +55,8 @@ impl AppState {
             required_group: config.oidc.required_group.clone(),
             remote_server_artifacts: config.remote_server_artifacts.clone(),
             transcriber: None,
+            ai_settings: Default::default(),
+            make_provider: agent::default_provider_factory(),
         }
     }
 }
@@ -84,6 +90,8 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         required_group: None,
         remote_server_artifacts: config.remote_server_artifacts,
         transcriber: config.transcriber,
+        ai_settings: Default::default(),
+        make_provider: agent::default_provider_factory(),
     });
     std::thread::Builder::new()
         .name("embedded-selfhost-server".to_owned())
@@ -132,6 +140,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ai/multi-agent", post(agent::multi_agent))
         .route("/ai/passive-suggestions", post(agent::passive_suggestions))
         .route("/ai/transcribe", post(transcribe::transcribe))
+        .route(
+            "/ai/generate_am_query_suggestions",
+            post(agent::suggestions::generate_am_query_suggestions),
+        )
         .route("/download/cli", get(download_remote_server))
         // Agent requests carry the whole conversation, tool output included, so they outgrow
         // axum's 2 MB default.
@@ -293,12 +305,22 @@ async fn graphql(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GraphqlQuery>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
     let operation = query.op.unwrap_or_default();
     let user = match bearer_token(&headers) {
         Some(token) => state.sessions.user_for_id_token(token),
         None => None,
     };
+    if operation == "GenerateCommands" {
+        return match user {
+            Some(user) => {
+                Json(agent::command_search::generate_commands(&state, &user, &body).await)
+                    .into_response()
+            }
+            None => (StatusCode::UNAUTHORIZED, "sign in required").into_response(),
+        };
+    }
     match (Operation::from_name(&operation), user) {
         (Some(operation), Some(user)) => Json(operation.response(&user)).into_response(),
         (Some(_), None) => (StatusCode::UNAUTHORIZED, "sign in required").into_response(),

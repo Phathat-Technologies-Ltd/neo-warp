@@ -23,6 +23,8 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
         required_group: required_group.map(str::to_owned),
         remote_server_artifacts: None,
         transcriber: None,
+        ai_settings: Default::default(),
+        make_provider: crate::agent::default_provider_factory(),
     })
 }
 
@@ -636,4 +638,123 @@ async fn remote_server_downloads_need_configured_builds() {
         send(&state(), download_request("linux", "x86_64")).await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+fn generate_commands_post(id_token: &str, prompt: &str) -> Request<Body> {
+    Request::post("/graphql/v2?op=GenerateCommands")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {id_token}"))
+        .body(Body::from(
+            json!({
+                "query": "",
+                "variables": {
+                    "input": { "prompt": prompt },
+                    "requestContext": {
+                        "clientContext": { "version": null },
+                        "osContext": { "category": "macOS", "name": "macOS", "version": "15.0" },
+                    },
+                },
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
+fn parse_generate_commands(
+    body: Value,
+) -> warp_graphql::mutations::generate_commands::GenerateCommandsStatus {
+    use warp_graphql::mutations::generate_commands::{GenerateCommands, GenerateCommandsResult};
+    let response: cynic::GraphQlResponse<GenerateCommands> = serde_json::from_value(body)
+        .expect("GenerateCommands response must match the client's mutation");
+    let GenerateCommandsResult::GenerateCommandsOutput(output) =
+        response.data.unwrap().generate_commands
+    else {
+        panic!("GenerateCommands should return a GenerateCommandsOutput");
+    };
+    output.status
+}
+
+#[tokio::test]
+async fn command_search_needs_model_settings_from_an_earlier_request() {
+    use warp_graphql::mutations::generate_commands::{
+        GenerateCommandsFailureType, GenerateCommandsStatus,
+    };
+    let state = state();
+    let (id_token, _) = sign_in(&state).await;
+    let (status, body) = send(&state, generate_commands_post(&id_token, "list files")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(matches!(
+        parse_generate_commands(body),
+        GenerateCommandsStatus::GenerateCommandsFailure(failure)
+            if matches!(failure.type_, GenerateCommandsFailureType::AiProviderError)
+    ));
+}
+
+#[tokio::test]
+async fn command_search_uses_the_settings_of_the_latest_suggestion_request() {
+    use prost::Message as _;
+    use warp_graphql::mutations::generate_commands::GenerateCommandsStatus;
+    use warp_multi_agent_api as api;
+
+    let provider = crate::agent::scripted::TextProvider::new(vec![Ok(
+        r#"[{"command": "ls -la", "description": "List all files", "parameters": []}]"#,
+    )]);
+    let state = Arc::new(AppState {
+        make_provider: provider.factory(),
+        ..Arc::into_inner(state()).unwrap()
+    });
+    let (id_token, _) = sign_in(&state).await;
+
+    let suggestion_request = api::Request {
+        settings: Some(api::request::Settings {
+            model_config: Some(api::request::settings::ModelConfig {
+                base: "claude-haiku-5-5".to_owned(),
+                ..Default::default()
+            }),
+            api_keys: Some(api::request::settings::ApiKeys {
+                anthropic: "sk-ant-key".to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (status, _) = send(
+        &state,
+        Request::post("/ai/passive-suggestions")
+            .header(header::AUTHORIZATION, format!("Bearer {id_token}"))
+            .body(Body::from(suggestion_request.encode_to_vec()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, body) = send(&state, generate_commands_post(&id_token, "list all files")).await;
+    let GenerateCommandsStatus::GenerateCommandsSuccess(success) = parse_generate_commands(body)
+    else {
+        panic!("command search should succeed");
+    };
+    assert_eq!(success.commands.len(), 1);
+    assert_eq!(success.commands[0].command, "ls -la");
+    assert!(provider.calls()[0].2.contains("macOS 15.0"));
+}
+
+#[tokio::test]
+async fn legacy_prompt_suggestions_answer_null_without_settings() {
+    let state = state();
+    let (id_token, _) = sign_in(&state).await;
+    let (status, body) = send(
+        &state,
+        Request::post("/ai/generate_am_query_suggestions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {id_token}"))
+            .body(Body::from(
+                json!({ "context_messages": ["ls"], "exit_code": 0 }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["suggestion"].is_null());
+    assert!(body["id"].is_string());
 }
