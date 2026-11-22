@@ -233,6 +233,14 @@ impl HandsFreeController {
             (text.trim().to_owned(), None)
         };
         let mut effects = Vec::new();
+        // An empty final (rejected speaker, or taken by conversation mode) only removes its
+        // partial: it must not route, correct, or schedule a send of what is already typed.
+        if text.is_empty() && command.is_none() {
+            if shown {
+                effects.push(HandsFreeEffect::DiscardPartial);
+            }
+            return effects;
+        }
         if !text.is_empty() || shown {
             effects.push(HandsFreeEffect::Commit(text));
         }
