@@ -31,32 +31,65 @@ impl LiveCapture {
             .context("failed to get the default input config")?;
         let channels = usize::from(config.channels().max(1));
         let mut resampler = LinearResampler::new(f64::from(config.sample_rate()), TARGET_RATE);
-        let mut logged_error = false;
-        let stream = device
-            .build_input_stream(
-                config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mono: Vec<f32> = data
-                        .chunks_exact(channels)
-                        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-                        .collect();
-                    let samples = resampler.process(&mono);
-                    if !samples.is_empty() {
-                        on_chunk(to_chunk(&samples));
-                    }
-                },
-                move |error| {
-                    if !logged_error {
-                        logged_error = true;
-                        log::error!("Hands-free microphone stream error: {error}");
-                    }
-                },
-                None,
-            )
-            .context("failed to build the input stream")?;
+        let on_mono = move |mono: Vec<f32>| {
+            let samples = resampler.process(&mono);
+            if !samples.is_empty() {
+                on_chunk(to_chunk(&samples));
+            }
+        };
+        let sample_format = config.sample_format();
+        let config: cpal::StreamConfig = config.into();
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => build_stream::<f32>(&device, &config, channels, on_mono),
+            cpal::SampleFormat::I16 => build_stream::<i16>(&device, &config, channels, on_mono),
+            cpal::SampleFormat::U16 => build_stream::<u16>(&device, &config, channels, on_mono),
+            cpal::SampleFormat::I32 => build_stream::<i32>(&device, &config, channels, on_mono),
+            other => anyhow::bail!("unsupported microphone sample format {other:?}"),
+        }?;
         stream.play().context("failed to start the input stream")?;
         Ok(Self { _stream: stream })
     }
+}
+
+/// Builds an input stream for samples of type `T`, downmixing each callback to mono `f32`.
+fn build_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    mut on_mono: impl FnMut(Vec<f32>) + Send + 'static,
+) -> anyhow::Result<cpal::Stream>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let mut logged_error = false;
+    device
+        .build_input_stream(
+            *config,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                on_mono(downmix(data, channels));
+            },
+            move |error| {
+                if !logged_error {
+                    logged_error = true;
+                    log::error!("Hands-free microphone stream error: {error}");
+                }
+            },
+            None,
+        )
+        .context("failed to build the input stream")
+}
+
+/// Averages interleaved frames of `channels` samples into mono `f32`.
+pub fn downmix<T>(data: &[T], channels: usize) -> Vec<f32>
+where
+    T: cpal::Sample,
+    f32: cpal::FromSample<T>,
+{
+    use cpal::Sample as _;
+    data.chunks_exact(channels)
+        .map(|frame| frame.iter().map(|&s| f32::from_sample(s)).sum::<f32>() / channels as f32)
+        .collect()
 }
 
 fn to_chunk(samples: &[f32]) -> LiveChunk {

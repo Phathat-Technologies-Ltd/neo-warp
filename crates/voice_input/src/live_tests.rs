@@ -32,3 +32,11 @@ fn chunks_carry_pcm_and_level() {
     );
     assert!((chunk.level - 1.0).abs() < 1e-6);
 }
+
+#[test]
+fn integer_samples_downmix_to_mono_floats() {
+    let mono = downmix(&[i16::MAX, 0, i16::MIN, i16::MIN], 2);
+    assert_eq!(mono.len(), 2);
+    assert!((mono[0] - 0.5).abs() < 0.01);
+    assert!((mono[1] + 1.0).abs() < 0.01);
+}

@@ -81,6 +81,107 @@ pub fn silero_vad_v5() -> ModelSpec {
     }
 }
 
+const CMUDICT_COMMIT: &str = "74790861f652b15e4ac49015a90074ad62a27690";
+
+/// CMUdict (BSD-style license), which the speech output models pronounce words with.
+fn cmudict_file() -> ModelFile {
+    ModelFile {
+        name: "cmudict.dict".to_owned(),
+        url: format!(
+            "https://raw.githubusercontent.com/cmusphinx/cmudict/{CMUDICT_COMMIT}/cmudict.dict"
+        ),
+        size: 3_618_488,
+        sha256: "81917843c7f44ce2b094ac63873c2c7a4cf802040792c455ba3ca406891c3d22".to_owned(),
+    }
+}
+
+const KOKORO_REPO: &str = "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/1939ad2a8e416c0acfeecc08a694d14ef25f2231";
+
+/// Kokoro-82M v1.0 (Apache-2.0), int8 ONNX export, with four American English voices.
+pub fn kokoro_82m_v1_int8() -> ModelSpec {
+    let file = |name: &str, path: &str, size, sha256: &str| ModelFile {
+        name: name.to_owned(),
+        url: format!("{KOKORO_REPO}/{path}"),
+        size,
+        sha256: sha256.to_owned(),
+    };
+    let voice = |id: &str, sha256: &str| {
+        file(
+            &format!("{id}.bin"),
+            &format!("voices/{id}.bin"),
+            522_240,
+            sha256,
+        )
+    };
+    ModelSpec {
+        id: "kokoro-82m-v1.0-int8".to_owned(),
+        display_name: "Kokoro 82M".to_owned(),
+        files: vec![
+            file(
+                "model_quantized.onnx",
+                "onnx/model_quantized.onnx",
+                92_361_116,
+                "fbae9257e1e05ffc727e951ef9b9c98418e6d79f1c9b6b13bd59f5c9028a1478",
+            ),
+            file(
+                "tokenizer.json",
+                "tokenizer.json",
+                3_497,
+                "77a02c8e164413299b4b4c403b14f8e0e1c1b727db4d46a09d6327b861060a34",
+            ),
+            voice(
+                "af_heart",
+                "d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b",
+            ),
+            voice(
+                "af_bella",
+                "f69d836209b78eb8c66e75e3cda491e26ea838a3674257e9d4e5703cbaf55c8b",
+            ),
+            voice(
+                "am_michael",
+                "1d1f21dd8da39c30705cd4c75d039d265e9bc4a2a93ed09bc9e1b1225eb95ba1",
+            ),
+            voice(
+                "am_adam",
+                "162b035ed91cfc48b6046982184c645f72edcdd1b82843347f605d7bf7b15716",
+            ),
+            cmudict_file(),
+        ],
+    }
+}
+
+const TINY_VOCA_REPO: &str =
+    "https://huggingface.co/n4ze3m/tiny-voca/resolve/5fe06641d0afecb3c04bc9faca2cf64d9b2b1600";
+
+/// tiny-voca (Apache-2.0), a 4.5M-parameter model with two American English voices.
+pub fn tiny_voca() -> ModelSpec {
+    let file = |name: &str, path: &str, size, sha256: &str| ModelFile {
+        name: name.to_owned(),
+        url: format!("{TINY_VOCA_REPO}/{path}"),
+        size,
+        sha256: sha256.to_owned(),
+    };
+    ModelSpec {
+        id: "tiny-voca-5fe0664".to_owned(),
+        display_name: "tiny-voca".to_owned(),
+        files: vec![
+            file(
+                "model.onnx",
+                "onnx/model.onnx",
+                21_386_372,
+                "fe6d918791a15b82e37465981d7f27a070e46b46635e5a3482fc8dff87a1ae46",
+            ),
+            file(
+                "config.json",
+                "config.json",
+                2_129,
+                "27bcbf322fc428581f0e959be1c141dd7751c61f4fed5eded326e779b215f69c",
+            ),
+            cmudict_file(),
+        ],
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelStatus {
     NotInstalled,
