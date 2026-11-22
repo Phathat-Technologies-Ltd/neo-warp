@@ -380,3 +380,18 @@ artificial_analysis_api_key = "aa-key"
         Some("gpt-6-2-sol-medium")
     );
 }
+
+#[test]
+fn recording_redact_patterns_are_read() {
+    let (_dir, path) = write_config_file(
+        r#"
+[recording]
+redact_patterns = ["corp-[0-9]+", "internal_[a-z]+"]
+"#,
+    );
+    let config = OrganizationConfig::from_file(&path).unwrap();
+    assert_eq!(
+        config.recording.redact_patterns,
+        ["corp-[0-9]+", "internal_[a-z]+"]
+    );
+}

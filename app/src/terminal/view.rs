@@ -39,6 +39,7 @@ mod pending_user_query;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod plugin_instructions_block;
 pub mod rich_content;
+pub(crate) mod session_recording;
 mod shared_session;
 mod shell_terminated_banner;
 pub mod ssh_file_upload;
@@ -2985,6 +2986,7 @@ pub struct TerminalView {
 
     /// Per-session PTY recorder for writing PTY bytes to a file.
     pty_recorder: ModelHandle<PtyRecorder>,
+    cast_recording: session_recording::CastRecordingState,
 
     /// When viewer-driven sizing is active on the sharer, this stores the
     /// viewer's last reported (rows, cols).
@@ -4541,6 +4543,9 @@ impl TerminalView {
             pending_cloud_mode_start_callback: None,
             pending_cloud_mode_start_abort_handle: None,
             ephemeral_message_model,
+            cast_recording: session_recording::CastRecordingState::new(
+                inactive_pty_reads_rx.clone(),
+            ),
             pty_recorder: ctx
                 .add_model(|ctx| PtyRecorder::new(inactive_pty_reads_rx, window_id, ctx)),
             active_viewer_driven_size: None,
@@ -10035,6 +10040,7 @@ impl TerminalView {
 
         let bytes = data.into();
         let bytes_vec = bytes.to_vec();
+        self.cast_recording.input(&bytes_vec);
         self.clear_selected_blocks(ctx);
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterWriteUserBytesToPty, ctx);
         self.write_to_pty(bytes, ctx);
@@ -17173,6 +17179,10 @@ impl TerminalView {
             positioner.set_size_info(size_update.new_size, ctx);
         });
         *self.size_info = size_update.new_size;
+        if size_update.rows_or_columns_changed() {
+            self.cast_recording
+                .resize(self.size_info.columns(), self.size_info.rows());
+        }
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterResize, ctx);
 
         // Notify subscribers.
@@ -18345,6 +18355,10 @@ impl TerminalView {
                     ))
                     .into_item(),
             ]);
+        }
+
+        if let Some(item) = self.cast_recording_menu_item() {
+            items.push(item);
         }
 
         let pane_state = self.split_pane_state(ctx);
@@ -27516,7 +27530,9 @@ impl TerminalSurface for TerminalView {
                     && notification_settings.is_needs_attention_enabled);
         let pane_handling_ssh_upload =
             self.is_ssh_uploader() && FeatureFlag::SshDragAndDrop.is_enabled();
-        password_notification_setting_on || pane_handling_ssh_upload
+        password_notification_setting_on
+            || pane_handling_ssh_upload
+            || self.cast_recording.is_recording_input()
     }
     #[cfg(unix)]
     fn should_stop_password_prompt_polling(&self, completed: &AfterBlockCompletedEvent) -> bool {
@@ -27532,6 +27548,7 @@ impl TerminalSurface for TerminalView {
         block_index: Option<BlockIndex>,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.cast_recording.on_password_prompt();
         if FeatureFlag::SshDragAndDrop.is_enabled() {
             self.propagate_password_request(ctx);
         }
@@ -27927,6 +27944,7 @@ impl TypedActionView for TerminalView {
             | CycleNextOrchestrationChildAgent
             | ToggleCLIAgentRichInput
             | ToggleSessionRecording
+            | ToggleCastRecording
             | Osc52AllowBlockedClipboardOperation => Empty,
         }
     }
@@ -29075,6 +29093,7 @@ impl TypedActionView for TerminalView {
                     recorder.toggle_recording(ctx);
                 });
             }
+            ToggleCastRecording => self.toggle_cast_recording(ctx),
             ToggleCLIAgentRichInput => {
                 if self.has_active_cli_agent_input_session(ctx) {
                     self.close_cli_agent_rich_input_and_disable_auto_toggle(ctx);

@@ -577,7 +577,15 @@ impl TerminalView {
             && self.agent_view_controller.as_ref(app).is_fullscreen();
         let parent_conversation_header_card = self.render_parent_conversation_header_card(app);
 
-        let left = self.maybe_render_header_back_button(app);
+        let back_button = self.maybe_render_header_back_button(app);
+        let left = match self.render_recording_indicator(app) {
+            Some(indicator) => Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(back_button)
+                .with_child(indicator)
+                .finish(),
+            None => back_button,
+        };
         let center = self.render_header_title(is_fullscreen_agent_view, header_ctx, app);
         let (right, min_actions_width) = self.render_header_actions(header_ctx, app);
 
@@ -703,6 +711,13 @@ impl BackingView for TerminalView {
             );
         }
 
+        if let Some(item) = self.cast_recording_menu_item() {
+            if !items.is_empty() {
+                items.push(MenuItem::Separator);
+            }
+            items.push(item);
+        }
+
         // Split-pane related items.
         if self.split_pane_state(ctx).is_in_split_pane() {
             if !items.is_empty() {
@@ -734,6 +749,7 @@ impl BackingView for TerminalView {
             && self.agent_view_controller.as_ref(app).is_fullscreen();
         is_shared
             || is_fullscreen_agent_view
+            || self.cast_recording.is_recording()
             || FeatureFlag::ContextWindowUsageV2.is_enabled()
                 && self.split_pane_state(app).is_in_split_pane()
     }

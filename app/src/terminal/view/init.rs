@@ -1042,6 +1042,14 @@ pub fn init(app: &mut AppContext) {
     .with_context_predicate(id!("Terminal"))]);
 
     app.register_editable_bindings([EditableBinding::new(
+        "terminal:toggle_cast_recording",
+        BindingDescription::new("Start or stop recording this pane"),
+        TerminalAction::ToggleCastRecording,
+    )
+    .with_enabled(|| cfg!(feature = "local_fs") && FeatureFlag::SessionRecording.is_enabled())
+    .with_context_predicate(id!("Terminal"))]);
+
+    app.register_editable_bindings([EditableBinding::new(
         "workspace:init_project_rules",
         BindingDescription::new("Initiate project for warp"),
         TerminalAction::InitProject,

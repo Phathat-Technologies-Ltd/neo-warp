@@ -34,10 +34,11 @@ pub enum ProductArea {
     CodebaseIndexing,
     AiPromptSuggestions,
     AiCommandSearch,
+    SessionRecording,
 }
 
 impl ProductArea {
-    pub const ALL: [ProductArea; 12] = [
+    pub const ALL: [ProductArea; 13] = [
         ProductArea::WarpDrive,
         ProductArea::SettingsSync,
         ProductArea::CloudAgents,
@@ -50,6 +51,7 @@ impl ProductArea {
         ProductArea::CodebaseIndexing,
         ProductArea::AiPromptSuggestions,
         ProductArea::AiCommandSearch,
+        ProductArea::SessionRecording,
     ];
 
     /// The flag key in flag files.
@@ -67,6 +69,7 @@ impl ProductArea {
             ProductArea::CodebaseIndexing => "codebase_indexing",
             ProductArea::AiPromptSuggestions => "ai_prompt_suggestions",
             ProductArea::AiCommandSearch => "ai_command_search",
+            ProductArea::SessionRecording => "session_recording",
         }
     }
 

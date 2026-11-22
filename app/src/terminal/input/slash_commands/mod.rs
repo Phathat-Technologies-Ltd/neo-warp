@@ -637,6 +637,9 @@ impl Input {
                     ctx.dispatch_typed_action(&TerminalAction::OpenConversationsPalette);
                 }
             }
+            SlashCommandKind::Record => {
+                ctx.dispatch_typed_action(&TerminalAction::ToggleCastRecording);
+            }
             SlashCommandKind::RenameTab => {
                 let Some(name) = argument
                     .map(|name| name.trim())
