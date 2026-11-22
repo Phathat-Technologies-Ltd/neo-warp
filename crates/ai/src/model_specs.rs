@@ -114,28 +114,31 @@ impl From<FreeModel> for BenchmarkedModel {
     }
 }
 
-/// The benchmarked models, with the maxima scores are scaled against.
+/// The benchmarked models, with what scores are scaled against.
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
     models: Vec<BenchmarkedModel>,
     max_intelligence: f32,
-    max_speed: f32,
-    max_price: f32,
+    /// Sorted speeds and prices of the models with an intelligence score.
+    speeds: Vec<f32>,
+    prices: Vec<f32>,
 }
 
 impl Catalog {
     pub fn new(models: Vec<BenchmarkedModel>) -> Self {
-        let max = |value: fn(&BenchmarkedModel) -> Option<f32>| {
-            models
-                .iter()
-                .filter_map(value)
-                .filter(|v| v.is_finite())
-                .fold(0., f32::max)
+        let rated = || models.iter().filter(|m| m.intelligence.is_some());
+        let sorted = |values: Vec<f32>| {
+            let mut values: Vec<f32> = values.into_iter().filter(|v| v.is_finite()).collect();
+            values.sort_by(f32::total_cmp);
+            values
         };
         Self {
-            max_intelligence: max(|m| m.intelligence),
-            max_speed: max(|m| m.output_tokens_per_second),
-            max_price: max(blended_price),
+            max_intelligence: rated()
+                .filter_map(|m| m.intelligence)
+                .filter(|v| v.is_finite())
+                .fold(0., f32::max),
+            speeds: sorted(rated().filter_map(|m| m.output_tokens_per_second).collect()),
+            prices: sorted(rated().filter_map(blended_price).collect()),
             models,
         }
     }
@@ -164,8 +167,8 @@ impl Catalog {
             quality: ratio(intelligence, self.max_intelligence),
             speed: model
                 .output_tokens_per_second
-                .map_or(0., |tps| log_ratio(tps, self.max_speed)),
-            cost: blended_price(model).map_or(0., |price| log_ratio(price, self.max_price)),
+                .map_or(0., |tps| percentile(tps, &self.speeds)),
+            cost: blended_price(model).map_or(0., |price| percentile(price, &self.prices)),
         })
     }
 
@@ -270,13 +273,18 @@ fn ratio(value: f32, max: f32) -> f32 {
     (value / max).clamp(0., 1.)
 }
 
-/// `value` against `max` on a log scale, so a 10x difference reads as a clear gap rather than an
-/// empty bar.
-fn log_ratio(value: f32, max: f32) -> f32 {
-    if max <= 0. {
-        return 0.;
+/// Where `value` ranks among `sorted`, from 0 to 1. A rank rather than a ratio, because a few
+/// outliers (very fast or very expensive models) would otherwise squeeze everyone else together.
+/// Never quite empty, so a measured model doesn't look unmeasured.
+fn percentile(value: f32, sorted: &[f32]) -> f32 {
+    const MIN: f32 = 0.05;
+    if sorted.is_empty() {
+        return MIN;
     }
-    ((1. + value).ln() / (1. + max).ln()).clamp(0., 1.)
+    let below = sorted.partition_point(|v| *v < value);
+    let equal = sorted[below..].partition_point(|v| *v <= value);
+    let rank = (below as f32 + equal as f32 / 2.) / sorted.len() as f32;
+    rank.clamp(MIN, 1.)
 }
 
 #[cfg(not(target_family = "wasm"))]

@@ -96,12 +96,21 @@ fn falls_back_to_the_display_name_and_honors_aliases() {
 }
 
 #[test]
-fn speed_and_cost_use_a_log_scale_against_the_maximum() {
+fn speed_and_cost_rank_models_instead_of_dividing_by_the_extreme() {
+    // Qwen is 13x faster than the next model; ranking keeps the rest spread out.
     let qwen = scores("qwen-3-coder-480b").unwrap();
-    assert_eq!(qwen.speed, 1.);
     let scout = scores("llama-4-scout").unwrap();
-    assert!(scout.speed > 0.5 && scout.speed < 1., "{}", scout.speed);
+    let gpt = scores("gpt-6").unwrap();
+    assert!(qwen.speed > scout.speed && scout.speed > gpt.speed);
+    assert!(
+        scout.speed - gpt.speed > 0.1,
+        "{} vs {}",
+        scout.speed,
+        gpt.speed
+    );
     assert!(scout.cost < scores("claude-opus-5").unwrap().cost);
+    assert_eq!(percentile(1., &[]), 0.05);
+    assert_eq!(percentile(5., &[1., 5., 9.]), 0.5);
 }
 
 #[test]
