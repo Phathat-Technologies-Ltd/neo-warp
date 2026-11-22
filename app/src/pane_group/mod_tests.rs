@@ -738,6 +738,7 @@ fn initialize_app_with_streamer(
     app.add_singleton_model(NotebookKeybindings::new);
     app.add_singleton_model(TerminalKeybindings::new);
     app.add_singleton_model(move |_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
+    crate::test_util::register_voice_models_for_tests(app);
     // QueuedQueryModel subscribes to history events; register after the
     // history model is in place.
     app.add_singleton_model(QueuedQueryModel::new);

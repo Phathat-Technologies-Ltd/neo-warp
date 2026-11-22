@@ -3,8 +3,8 @@
 
 use local_transcription::speech::spoken::fallback_readout;
 use local_transcription::speech::summary::{
-    SpokenSummary, command_approval_subject, command_denied_readout, command_description,
-    command_result_readout, plural,
+    command_approval_subject, command_denied_readout, command_description, command_result_readout,
+    plural, SpokenSummary,
 };
 
 use crate::ai::agent::{
@@ -125,12 +125,15 @@ pub fn spoken_action_result(result: &AIAgentActionResultType) -> Option<String> 
 pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     let has_spoken = reply_has_spoken_summary(output);
-    let last_index = output.messages.len().saturating_sub(1);
-    for (index, message) in output.messages.iter().enumerate() {
+    for message in &output.messages {
         match &message.message {
             AIAgentOutputMessageType::Text(text) => {
                 let part = match &text.spoken {
                     Some(spoken) => spoken.clone(),
+                    // The server narrates turns that end without `<spoken>`, so prose is read
+                    // only when the finished turn still has no summary; reading it earlier
+                    // would speak the reply twice.
+                    None if has_spoken || !finished => String::new(),
                     None => {
                         let prose = text
                             .sections
@@ -144,7 +147,7 @@ pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
                             })
                             .collect::<Vec<_>>()
                             .join("\n\n");
-                        fallback_readout(&prose, finished || index < last_index)
+                        fallback_readout(&prose, true)
                     }
                 };
                 if !part.is_empty() {
