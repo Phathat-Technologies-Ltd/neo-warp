@@ -23,6 +23,7 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
         required_group: required_group.map(str::to_owned),
         remote_server_artifacts: None,
         transcriber: None,
+        vad: None,
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
@@ -556,6 +557,7 @@ fn embedded_server_answers_on_its_reported_port() {
         session_max_age: Duration::from_secs(3600),
         remote_server_artifacts: None,
         transcriber: None,
+        vad: None,
         codebase_index_dir: None,
     })
     .expect("embedded server should start");
@@ -769,6 +771,7 @@ fn state_with_codebase_index(dir: &std::path::Path) -> Arc<AppState> {
         required_group: None,
         remote_server_artifacts: None,
         transcriber: None,
+        vad: None,
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: Some(Arc::new(CodebaseIndex::with_zvec_grep_binary(

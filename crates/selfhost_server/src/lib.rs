@@ -10,6 +10,7 @@ pub mod indexing;
 pub mod oidc;
 pub mod sessions;
 mod transcribe;
+mod transcribe_stream;
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
@@ -41,6 +42,8 @@ pub struct AppState {
     pub remote_server_artifacts: Option<PathBuf>,
     /// Answers `/ai/transcribe`; `None` when voice input is off.
     pub transcriber: Option<Arc<dyn local_transcription::Transcriber>>,
+    /// Splits `/ai/transcribe/stream` audio into utterances; `None` when hands-free voice is off.
+    pub vad: Option<local_transcription::VadFactory>,
     /// Model settings for AI helper requests that carry no credentials of their own.
     pub ai_settings: agent::ModelSettingsCache,
     pub make_provider: agent::ProviderFactory,
@@ -59,6 +62,7 @@ impl AppState {
             required_group: config.oidc.required_group.clone(),
             remote_server_artifacts: config.remote_server_artifacts.clone(),
             transcriber: None,
+            vad: None,
             ai_settings: Default::default(),
             make_provider: agent::default_provider_factory(),
             codebase_index: config
@@ -80,6 +84,7 @@ pub struct EmbeddedConfig {
     /// .tar.gz`).
     pub remote_server_artifacts: Option<PathBuf>,
     pub transcriber: Option<Arc<dyn local_transcription::Transcriber>>,
+    pub vad: Option<local_transcription::VadFactory>,
     /// Where codebase indexes are stored; `None` turns codebase indexing off.
     pub codebase_index_dir: Option<PathBuf>,
 }
@@ -100,6 +105,7 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         required_group: None,
         remote_server_artifacts: config.remote_server_artifacts,
         transcriber: config.transcriber,
+        vad: config.vad,
         ai_settings: Default::default(),
         make_provider: agent::default_provider_factory(),
         codebase_index: config
@@ -153,6 +159,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ai/multi-agent", post(agent::multi_agent))
         .route("/ai/passive-suggestions", post(agent::passive_suggestions))
         .route("/ai/transcribe", post(transcribe::transcribe))
+        .route(
+            "/ai/transcribe/stream",
+            get(transcribe_stream::transcribe_stream),
+        )
         .route(
             "/ai/generate_am_query_suggestions",
             post(agent::suggestions::generate_am_query_suggestions),
