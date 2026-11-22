@@ -1653,7 +1653,9 @@ impl SettingsWidget for CloudConversationStorageWidget {
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
-        if !FeatureFlag::CloudConversations.is_enabled() {
+        if !FeatureFlag::CloudConversations.is_enabled()
+            || !FeatureFlag::ConversationCloudSync.is_enabled()
+        {
             return false;
         }
 

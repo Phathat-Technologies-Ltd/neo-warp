@@ -2805,10 +2805,14 @@ impl BlocklistAIHistoryModel {
     /// Returns whether a conversation can be shared.
     ///
     /// A conversation can be shared if we have server metadata available
-    /// (either from a loaded conversation or from conversation metadata).
+    /// (either from a loaded conversation or from conversation metadata) and the
+    /// `SharingAndTeams` and `ConversationCloudSync` product areas are enabled.
     pub fn can_conversation_be_shared(&self, conversation_id: &AIConversationId) -> bool {
-        self.get_server_conversation_metadata(conversation_id)
-            .is_some()
+        FeatureFlag::SharingAndTeams.is_enabled()
+            && FeatureFlag::ConversationCloudSync.is_enabled()
+            && self
+                .get_server_conversation_metadata(conversation_id)
+                .is_some()
     }
 
     /// Returns the server conversation metadata, used by the sharing dialog.
