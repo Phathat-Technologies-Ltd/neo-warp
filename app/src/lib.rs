@@ -2323,8 +2323,6 @@ pub(crate) fn initialize_app(
         );
         voice::local_model::SpeechOutputModel::new(engine)
     });
-    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
-    ctx.add_singleton_model(voice::conversation::ConversationSession::new);
 
     let notebooks = cloud_objects
         .iter()
@@ -2409,6 +2407,9 @@ pub(crate) fn initialize_app(
     // Per-conversation queued prompts. Registered after the history model
     // since it subscribes to history events for cleanup.
     ctx.add_singleton_model(ai::blocklist::QueuedQueryModel::new);
+    // Speaks agent replies, so it needs the AI history model registered above.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    ctx.add_singleton_model(voice::conversation::ConversationSession::new);
     // Cross-pane UI state for the orchestration pill bar. Registered
     // after the history model since it subscribes to history events.
     ctx.add_singleton_model(move |ctx| {
