@@ -96,9 +96,18 @@ Add `FeatureFlag::VoiceHandsFree` to `crates/warp_features`, add it to the org d
 - Spoken-form normalization runs on finals only when the input that applies them is in shell mode,
   read when the edit is applied (so switching modes or inputs mid-session uses the right rule).
   Agent prompts are natural language, and normalization would strip their punctuation and casing.
-- Auto-send after a pause applies only to agent prompts. In shell mode a command runs only after
-  the explicit "send" command, so a misrecognized utterance never runs on its own
-  (`HandsFreeEffect::AutoSend` versus `Send`, decided by `sends_input`).
+- Auto-send submits agent prompts, and shell commands only when `is_low_risk_command` accepts
+  them (a conservative read-only allowlist; any shell metacharacter disqualifies). Other commands
+  run only after the explicit "send" or Enter (`HandsFreeEffect::AutoSend` versus `Send`, decided
+  by `sends_input`), and committing one shows a toast saying so. The agent profile command
+  allowlist is not reused because it includes `echo` and `find`, which can write or delete.
+- Routing: when a final starts an empty input (`PendingVoiceRange::starts_input`),
+  `route_utterance` picks `InputRoute::Agent` or `InputRoute::Shell` synchronously, before shell
+  normalization, and the input locks to that mode (`set_input_config` also pauses the async NLD
+  classifier, so it cannot flip the mode back before the send; the lock is released on submit
+  like any other). The async classifier cannot be used here because its debounced result can land
+  after a spoken "send". Inputs locked by a manual toggle or `!` prefix keep their mode. Send and
+  auto-send call `input_enter`, the Enter path, which routes on the input mode.
 - State changes reach every input, so each refreshes or clears its "Mic on" placeholder and footer
   indicator; transcript edits apply only in the focused input of the window that started the
   session, so two windows never submit the same transcript.

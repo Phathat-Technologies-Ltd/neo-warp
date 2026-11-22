@@ -130,11 +130,20 @@ fn finals_are_normalized_only_for_shell_inputs() {
 }
 
 #[test]
-fn auto_send_never_runs_shell_commands() {
-    assert!(sends_input(&HandsFreeEffect::AutoSend, false));
-    assert!(!sends_input(&HandsFreeEffect::AutoSend, true));
-    assert!(sends_input(&HandsFreeEffect::Send, true));
-    assert!(!sends_input(&HandsFreeEffect::ClearInput, false));
+fn auto_send_runs_only_low_risk_shell_commands() {
+    assert!(sends_input(
+        &HandsFreeEffect::AutoSend,
+        false,
+        "rm -rf build"
+    ));
+    assert!(sends_input(&HandsFreeEffect::AutoSend, true, "git status"));
+    assert!(!sends_input(
+        &HandsFreeEffect::AutoSend,
+        true,
+        "rm -rf build"
+    ));
+    assert!(sends_input(&HandsFreeEffect::Send, true, "rm -rf build"));
+    assert!(!sends_input(&HandsFreeEffect::ClearInput, false, "ls"));
 }
 
 #[test]
@@ -209,4 +218,91 @@ fn pending_range_recovers_when_the_buffer_shrank() {
     let mut range = PendingVoiceRange::default();
     range.replace("a long prefix", "partial");
     assert_eq!(range.replace("a", "x"), "a x");
+}
+
+#[test]
+fn natural_language_routes_to_agent() {
+    for text in [
+        "Hey, can you please list all the items?",
+        "list all the items",
+        "make sure the tests pass",
+        "find me the config file",
+        "git is confusing, what does rebase do?",
+        "run git status and tell me what changed",
+        "Run, list all the items",
+    ] {
+        assert_eq!(
+            route_utterance(text),
+            (InputRoute::Agent, text.to_owned()),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn clear_commands_route_to_shell() {
+    for text in ["git status", "ls", "cargo test -p warp", "make build"] {
+        assert_eq!(
+            route_utterance(text),
+            (InputRoute::Shell, text.to_owned()),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn spoken_run_prefix_routes_to_shell_without_the_prefix() {
+    assert_eq!(
+        route_utterance("Run, git status"),
+        (InputRoute::Shell, "git status".to_owned())
+    );
+    assert_eq!(
+        route_utterance("command echo hello"),
+        (InputRoute::Shell, "echo hello".to_owned())
+    );
+    assert_eq!(
+        route_utterance("run"),
+        (InputRoute::Agent, "run".to_owned())
+    );
+}
+
+#[test]
+fn low_risk_commands_are_read_only() {
+    for command in [
+        "ls -la",
+        "pwd",
+        "cat README.md",
+        "git status",
+        "git log -5",
+        "git diff",
+    ] {
+        assert!(is_low_risk_command(command), "{command}");
+    }
+    for command in [
+        "rm -rf build",
+        "mv a b",
+        "sudo ls",
+        "git push --force",
+        "git checkout .",
+        "git",
+        "cat a > b",
+        "ls; rm x",
+        "ls $(rm x)",
+        "git diff --output=patch",
+        "make build",
+        "",
+    ] {
+        assert!(!is_low_risk_command(command), "{command}");
+    }
+}
+
+#[test]
+fn starts_input_ignores_the_open_utterance() {
+    let mut range = PendingVoiceRange::default();
+    assert!(range.starts_input(""));
+    let buffer = range.replace("", "hello");
+    assert!(range.starts_input(&buffer));
+    let mut range = PendingVoiceRange::default();
+    let buffer = range.replace("git", "status");
+    assert!(!range.starts_input(&buffer));
 }
