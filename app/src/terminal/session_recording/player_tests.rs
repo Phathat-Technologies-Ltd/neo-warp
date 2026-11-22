@@ -200,3 +200,78 @@ fn recordings_without_markers_have_no_chapters() {
     player.previous_chapter();
     assert_eq!(player.position(), 0.);
 }
+
+/// A long recording with colors, cursor moves, a resize, and markers, so seeking crosses several
+/// snapshots.
+fn long_cast() -> Cast {
+    let mut events = Vec::new();
+    for i in 0..400 {
+        let time = f64::from(i) * 0.25;
+        let text = match i % 4 {
+            0 => format!("\x1b[3{}mline {i}\x1b[0m\r\n", i % 8),
+            1 => format!("\x1b[2;5H#{i}"),
+            2 => "\x1b[K partial".to_owned(),
+            _ => "\r\n".to_owned(),
+        };
+        events.push(output(time, &text));
+        if i == 150 {
+            events.push(Event {
+                time,
+                data: EventData::Resize { cols: 50, rows: 8 },
+            });
+        }
+        if i % 97 == 0 {
+            events.push(Event {
+                time,
+                data: EventData::Marker(format!("cmd {i}")),
+            });
+        }
+    }
+    Cast {
+        header: Header::new(40, 6),
+        events,
+    }
+}
+
+fn played_to(time: f64) -> Vec<u8> {
+    let mut player = Player::new(long_cast());
+    player.play();
+    player.advance(time);
+    player.screen().contents_formatted()
+}
+
+#[test]
+fn recording_seek_matches_playing_to_the_same_time() {
+    let mut player = Player::new(long_cast());
+    // Play through once so every snapshot exists, then seek around in both directions.
+    player.seek(player.duration());
+    assert!(player.snapshots.len() >= 10);
+    for time in [97.3, 3.1, 50., 12.6, 0., 37.5, 99.6, 6.0, 74.2] {
+        player.seek(time);
+        assert_eq!(player.position(), time);
+        assert_eq!(
+            player.screen().contents_formatted(),
+            played_to(time),
+            "screen differs at {time}s"
+        );
+    }
+}
+
+#[test]
+fn recording_seek_uses_snapshots_after_skip_idle_changes() {
+    let mut player = Player::new(long_cast());
+    player.seek(player.duration());
+    player.set_skip_idle(false);
+    player.seek(10.);
+    player.seek(80.);
+    assert_eq!(player.screen().contents_formatted(), played_to(80.));
+}
+
+#[test]
+fn recording_playback_time_formatting() {
+    assert_eq!(format_playback_time(0., 65.), "0:00 / 1:05");
+    assert_eq!(format_playback_time(4.9, 65.), "0:04 / 1:05");
+    assert_eq!(format_playback_time(65., 65.), "1:05 / 1:05");
+    assert_eq!(format_playback_time(64.8, 64.6), "1:05 / 1:05");
+    assert_eq!(format_playback_time(3725., 3725.), "1:02:05 / 1:02:05");
+}

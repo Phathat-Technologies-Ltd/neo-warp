@@ -1,5 +1,7 @@
 //! State of the Recordings pane's list, independent of rendering.
 
+use std::path::Path;
+
 use chrono::{Local, TimeZone as _};
 use session_recording::RecordingMetadata;
 use warpui::elements::MouseStateHandle;
@@ -9,18 +11,37 @@ use super::naming::{format_duration, format_size};
 #[derive(Default)]
 pub struct RowMouseStates {
     pub play: MouseStateHandle,
-    pub reveal: MouseStateHandle,
-    pub copy: MouseStateHandle,
-    pub rename: MouseStateHandle,
-    pub delete: MouseStateHandle,
+    pub overflow: MouseStateHandle,
+    pub confirm_delete: MouseStateHandle,
+    pub cancel_delete: MouseStateHandle,
 }
+
+/// Recordings shorter or smaller than this hold no meaningful output.
+const EMPTY_DURATION_SECONDS: f64 = 0.5;
+const EMPTY_SIZE_BYTES: u64 = 256;
 
 pub struct RecordingRow {
     pub info: RecordingMetadata,
+    pub short_title: String,
     pub mouse_states: RowMouseStates,
 }
 
 impl RecordingRow {
+    fn new(info: RecordingMetadata) -> Self {
+        let short_title = short_title(&info.title, dirs::home_dir().as_deref());
+        Self {
+            info,
+            short_title,
+            mouse_states: Default::default(),
+        }
+    }
+
+    pub fn is_empty_recording(&self) -> bool {
+        !self.info.in_progress
+            && (self.info.duration < EMPTY_DURATION_SECONDS
+                || self.info.size_bytes < EMPTY_SIZE_BYTES)
+    }
+
     /// Date, duration, and size, e.g. `2026-11-22 10:15  ·  1:05  ·  12 KB`.
     pub fn details(&self) -> String {
         let date = self
@@ -79,13 +100,7 @@ impl RecordingsList {
                         .cmp(&a.started_at)
                         .then_with(|| a.id.cmp(&b.id))
                 });
-                self.rows = recordings
-                    .into_iter()
-                    .map(|info| RecordingRow {
-                        info,
-                        mouse_states: Default::default(),
-                    })
-                    .collect();
+                self.rows = recordings.into_iter().map(RecordingRow::new).collect();
                 self.error = None;
             }
             Err(error) => {
@@ -127,6 +142,10 @@ impl RecordingsList {
         self.confirming_delete == Some(index)
     }
 
+    pub fn cancel_delete(&mut self) {
+        self.confirming_delete = None;
+    }
+
     /// The first request for a row asks for confirmation; a second one returns its ID to delete.
     pub fn request_delete(&mut self, index: usize) -> Option<String> {
         let id = self.row(index)?.id.clone();
@@ -137,6 +156,54 @@ impl RecordingsList {
             self.confirming_delete = Some(index);
             None
         }
+    }
+}
+
+/// A recording title without repeated parts: titles join the pane title and its directory with
+/// `": "`, and the pane title often already names that directory (`user@host:~/dir: /home/user/dir`).
+/// Paths under `home` are shown relative to `~`, and a `user@host:` prompt prefix is dropped.
+pub fn short_title(title: &str, home: Option<&Path>) -> String {
+    let home = home.and_then(Path::to_str).filter(|home| !home.is_empty());
+    let parts: Vec<String> = title
+        .split(": ")
+        .map(|part| tildify(strip_prompt_prefix(part.trim()), home))
+        .filter(|part| !part.is_empty())
+        .collect();
+    let mut kept: Vec<&String> = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        let repeated = parts.iter().enumerate().any(|(other_index, other)| {
+            other_index != index
+                && other.contains(part.as_str())
+                && (other.len() > part.len() || other_index < index)
+        });
+        if !repeated {
+            kept.push(part);
+        }
+    }
+    if kept.is_empty() {
+        return title.trim().to_owned();
+    }
+    kept.into_iter().cloned().collect::<Vec<_>>().join(" · ")
+}
+
+fn strip_prompt_prefix(part: &str) -> &str {
+    match part.split_once(':') {
+        Some((prefix, rest))
+            if prefix.contains('@')
+                && !prefix.contains(char::is_whitespace)
+                && !rest.is_empty() =>
+        {
+            rest
+        }
+        _ => part,
+    }
+}
+
+fn tildify(part: &str, home: Option<&str>) -> String {
+    match home.and_then(|home| part.strip_prefix(home)) {
+        Some("") => "~".to_owned(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => part.to_owned(),
     }
 }
 

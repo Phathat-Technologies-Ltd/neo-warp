@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::anyhow;
 
 use super::*;
@@ -63,4 +65,61 @@ fn in_progress_recordings_cant_be_renamed() {
     list.start_rename(1);
     list.set_listing(Ok(vec![]));
     assert_eq!(list.finish_rename(), None);
+}
+
+#[test]
+fn recording_short_title_dedupes_pane_title_and_directory() {
+    let home = Some(Path::new("/Users/amit"));
+    assert_eq!(
+        short_title(
+            "amit@mac:~/atm-design-analyzer: /Users/amit/atm-design-analyzer",
+            home
+        ),
+        "~/atm-design-analyzer"
+    );
+    assert_eq!(
+        short_title("cargo test: /Users/amit/dev/warp", home),
+        "cargo test · ~/dev/warp"
+    );
+    assert_eq!(short_title("/Users/amit", home), "~");
+    assert_eq!(short_title("/Users/amitpaz/x", home), "/Users/amitpaz/x");
+    assert_eq!(short_title("vim: vim", None), "vim");
+    assert_eq!(short_title("  ", None), "");
+}
+
+#[test]
+fn recording_rows_flag_empty_recordings() {
+    let mut list = RecordingsList::default();
+    let mut empty = recording("empty", 1, false);
+    empty.duration = 0.;
+    let mut tiny = recording("tiny", 2, false);
+    tiny.size_bytes = 40;
+    let mut live = recording("live", 3, true);
+    live.duration = 0.;
+    list.set_listing(Ok(vec![empty, tiny, live, recording("full", 0, false)]));
+    let flags: Vec<_> = list
+        .rows()
+        .iter()
+        .map(|row| (row.info.id.as_str(), row.is_empty_recording()))
+        .collect();
+    assert_eq!(
+        flags,
+        vec![
+            ("live", false),
+            ("tiny", true),
+            ("empty", true),
+            ("full", false)
+        ]
+    );
+}
+
+#[test]
+fn recording_delete_can_be_cancelled() {
+    let mut list = RecordingsList::default();
+    list.set_listing(Ok(vec![recording("a", 1, false)]));
+    assert_eq!(list.request_delete(0), None);
+    list.cancel_delete();
+    assert!(!list.is_confirming_delete(0));
+    assert_eq!(list.request_delete(0), None);
+    assert_eq!(list.request_delete(0).as_deref(), Some("a"));
 }

@@ -1,7 +1,9 @@
 //! The Recordings pane: lists session recordings and plays them back with their colors.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,16 +12,16 @@ use pathfinder_color::ColorU;
 use warpui::r#async::Timer;
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
-    ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container, CrossAxisAlignment,
-    Element, Expanded, Fill, Flex, Highlight, HighlightedRange, MainAxisAlignment, MainAxisSize,
-    MouseStateHandle, ParentElement, ScrollbarWidth, Shrinkable, Text,
+    ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container, CornerRadius,
+    CrossAxisAlignment, Element, Expanded, Fill, Flex, Highlight, HighlightedRange,
+    MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement, Radius, ScrollbarWidth,
+    Shrinkable, Text,
 };
 use warpui::fonts::{Properties, Style, Weight};
 use warpui::keymap::FixedBinding;
 use warpui::text_layout::{ClipConfig, TextStyle};
 use warpui::ui_components::button::ButtonVariant;
 use warpui::ui_components::components::{UiComponent, UiComponentStyles};
-use warpui::ui_components::slider::SliderStateHandle;
 use warpui::{
     AppContext, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     ViewHandle, WindowId,
@@ -30,15 +32,19 @@ use super::asciicast;
 use super::client::{RecordingsClient, sync_local_store_root};
 use super::list::{RecordingRow, RecordingsList};
 use super::naming::format_duration;
-use super::player::{Chapter, PlaybackState, Player};
+use super::player::{Chapter, PlaybackState, Player, SPEEDS, format_playback_time};
+use super::player_elements::{FitScreen, Timeline, TimelineColors};
 use super::screen_style::{Palette, grid_lines};
 use crate::appearance::Appearance;
 use crate::editor::{EditorView, Event as EditorEvent, SingleLineEditorOptions, TextOptions};
+use crate::menu::{Event as MenuEvent, Menu, MenuItemFields};
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::pane_group::pane::view::{self, HeaderContent, StandardHeader, StandardHeaderOptions};
 use crate::pane_group::{BackingView, PaneConfiguration, PaneEvent};
 use crate::server::server_api::ServerApiProvider;
 use crate::settings_view::SettingsSection;
+use crate::ui_components::icons::Icon;
+use crate::ui_components::menu_button::{MenuDirection, icon_button_with_context_menu};
 use crate::workspace::{PaneViewLocator, WorkspaceAction};
 
 pub const HEADER_TEXT: &str = "Recordings";
@@ -46,6 +52,11 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const SEEK_STEP_SECONDS: f64 = 5.;
 const LIST_HEIGHT_WITH_PLAYER: f32 = 200.;
 const CHAPTERS_HEIGHT: f32 = 140.;
+const ROW_MENU_WIDTH: f32 = 180.;
+/// Bounds for the scale-to-fit screen font, so huge recordings stay legible and tiny ones don't
+/// balloon.
+const MIN_SCREEN_FONT_SIZE: f32 = 5.;
+const MAX_SCREEN_FONT_SIZE: f32 = 22.;
 
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
@@ -68,8 +79,9 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             "right",
             RecordingsViewAction::SeekBy(SEEK_STEP_SECONDS),
-            context,
+            context.clone(),
         ),
+        FixedBinding::new("escape", RecordingsViewAction::ClosePlayer, context),
     ]);
 }
 
@@ -102,21 +114,20 @@ impl SingletonEntity for RecordingsPaneManager {}
 #[derive(Default)]
 struct PlayerControls {
     play_pause: MouseStateHandle,
-    restart: MouseStateHandle,
     back: MouseStateHandle,
     forward: MouseStateHandle,
     previous: MouseStateHandle,
     next: MouseStateHandle,
-    speed: MouseStateHandle,
+    speeds: [MouseStateHandle; SPEEDS.len()],
     skip_idle: MouseStateHandle,
     close: MouseStateHandle,
-    seek: SliderStateHandle,
+    timeline_dragging: Rc<Cell<bool>>,
     chapters_scroll: ClippedScrollStateHandle,
-    screen_scroll: ClippedScrollStateHandle,
 }
 
 struct PlaybackSession {
     player: Player,
+    id: String,
     name: String,
     chapters: Vec<Chapter>,
     chapter_mouse_states: Vec<MouseStateHandle>,
@@ -145,13 +156,13 @@ pub enum RecordingsViewAction {
     StartRename(usize),
     Delete(usize),
     TogglePlayPause,
-    Restart,
+    ToggleRowMenu(usize),
+    CancelDelete,
     SeekBy(f64),
-    SeekToFraction(f32),
     SeekTo(f64),
     NextChapter,
     PreviousChapter,
-    CycleSpeed,
+    SetSpeed(f64),
     ToggleSkipIdle,
     ClosePlayer,
 }
@@ -160,6 +171,9 @@ pub struct RecordingsView {
     list: RecordingsList,
     playback: Option<PlaybackSession>,
     rename_editor: ViewHandle<EditorView>,
+    row_menu: ViewHandle<Menu<RecordingsViewAction>>,
+    /// Row whose overflow menu is open.
+    row_menu_index: Option<usize>,
     is_frame_scheduled: bool,
     toolbar: ToolbarMouseStates,
     list_scroll: ClippedScrollStateHandle,
@@ -188,10 +202,25 @@ impl RecordingsView {
             }
             _ => {}
         });
+        let row_menu = ctx.add_typed_action_view(|_| {
+            Menu::new()
+                .prevent_interaction_with_other_elements()
+                .with_drop_shadow()
+                .with_width(ROW_MENU_WIDTH)
+        });
+        ctx.subscribe_to_view(&row_menu, |me, _, event, ctx| match event {
+            MenuEvent::Close { .. } | MenuEvent::ItemSelected => {
+                me.row_menu_index = None;
+                ctx.notify();
+            }
+            MenuEvent::ItemHovered => {}
+        });
         let mut view = Self {
             list: RecordingsList::default(),
             playback: None,
             rename_editor,
+            row_menu,
+            row_menu_index: None,
             is_frame_scheduled: false,
             toolbar: Default::default(),
             list_scroll: Default::default(),
@@ -219,6 +248,7 @@ impl RecordingsView {
         let client = Self::client(ctx);
         let _ = ctx.spawn(async move { client.list().await }, |me, result, ctx| {
             me.list.set_listing(result);
+            me.row_menu_index = None;
             ctx.notify();
         });
     }
@@ -229,12 +259,15 @@ impl RecordingsView {
     }
 
     fn play(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
-        let Some(info) = self.list.row(index).cloned() else {
+        let Some(row) = self.list.rows().get(index) else {
             return;
         };
+        let info = row.info.clone();
+        let name = row.short_title.clone();
         let client = Self::client(ctx);
+        let read_id = info.id.clone();
         let _ = ctx.spawn(
-            async move { client.read(&info.id).await },
+            async move { client.read(&read_id).await },
             move |me, result, ctx| {
                 match result.and_then(|bytes| asciicast::parse(Cursor::new(bytes))) {
                     Ok(cast) => {
@@ -248,7 +281,8 @@ impl RecordingsView {
                                 .collect(),
                             chapters,
                             player,
-                            name: info.title,
+                            id: info.id,
+                            name,
                             last_frame: Instant::now(),
                             controls: Default::default(),
                         });
@@ -303,7 +337,6 @@ impl RecordingsView {
         let elapsed = now.duration_since(playback.last_frame).as_secs_f64();
         playback.last_frame = now;
         playback.player.advance(elapsed);
-        playback.controls.seek.reset_offset();
         if playback.player.state() == PlaybackState::Playing {
             self.schedule_frame(ctx);
         }
@@ -318,10 +351,57 @@ impl RecordingsView {
         // Chapter times depend on whether idle time is skipped.
         playback.chapters = playback.player.chapters();
         playback.last_frame = Instant::now();
-        playback.controls.seek.reset_offset();
         if playback.player.state() == PlaybackState::Playing {
             self.schedule_frame(ctx);
         }
+        ctx.notify();
+    }
+
+    fn toggle_row_menu(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        if self.row_menu_index == Some(index) {
+            self.row_menu_index = None;
+            ctx.notify();
+            return;
+        }
+        let Some(row) = self.list.rows().get(index) else {
+            return;
+        };
+        let item = |label: &str, action, icon| {
+            MenuItemFields::new(label)
+                .with_on_select_action(action)
+                .with_icon(icon)
+                .into_item()
+        };
+        let mut items = Vec::new();
+        // Only recordings stored on this machine have a folder to show.
+        if row.info.local_path.is_some() {
+            let reveal_label = if cfg!(target_os = "macos") {
+                "Reveal in Finder"
+            } else {
+                "Show in folder"
+            };
+            items.push(item(
+                reveal_label,
+                RecordingsViewAction::Reveal(index),
+                Icon::Folder,
+            ));
+        }
+        items.push(item("Copy", RecordingsViewAction::Copy(index), Icon::Copy));
+        if row.can_rename() {
+            items.push(item(
+                "Rename",
+                RecordingsViewAction::StartRename(index),
+                Icon::Pencil,
+            ));
+        }
+        items.push(item(
+            "Delete",
+            RecordingsViewAction::Delete(index),
+            Icon::Trash,
+        ));
+        self.row_menu
+            .update(ctx, |menu, ctx| menu.set_items(items, ctx));
+        self.row_menu_index = Some(index);
         ctx.notify();
     }
 
@@ -430,6 +510,16 @@ impl RecordingsView {
         let info = &row.info;
         let states = &row.mouse_states;
         let theme = appearance.theme();
+        let is_playing = self
+            .playback
+            .as_ref()
+            .is_some_and(|playback| playback.id == info.id);
+        let is_empty = row.is_empty_recording();
+        let title_color = if is_empty {
+            theme.disabled_text_color(theme.background())
+        } else {
+            theme.main_text_color(theme.background())
+        };
         let name: Box<dyn Element> = if self.list.renaming() == Some(index) {
             appearance
                 .ui_builder()
@@ -441,102 +531,135 @@ impl RecordingsView {
                 .build()
                 .finish()
         } else {
-            let mut title = Flex::row().with_spacing(6.).with_child(
-                Text::new(
-                    info.title.clone(),
-                    appearance.ui_font_family(),
-                    appearance.ui_font_size(),
-                )
-                .with_color(theme.main_text_color(theme.background()).into())
-                .finish(),
-            );
-            if info.in_progress {
-                title.add_child(
-                    Container::new(
+            let mut title = Flex::row()
+                .with_spacing(6.)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(
+                    Shrinkable::new(
+                        1.,
                         Text::new(
-                            "Recording",
+                            row.short_title.clone(),
                             appearance.ui_font_family(),
-                            appearance.ui_font_size() - 2.,
+                            appearance.ui_font_size(),
                         )
-                        .with_color(theme.background().into_solid())
+                        .with_color(title_color.into())
+                        .with_clip(ClipConfig::end())
+                        .soft_wrap(false)
                         .finish(),
                     )
-                    .with_horizontal_padding(6.)
-                    .with_vertical_padding(1.)
-                    .with_background(theme.ui_error_color())
-                    .with_corner_radius(warpui::elements::CornerRadius::with_all(
-                        warpui::elements::Radius::Pixels(4.),
-                    ))
                     .finish(),
                 );
+            if info.in_progress {
+                title.add_child(tag(
+                    appearance,
+                    "Recording",
+                    theme.background().into_solid(),
+                    theme.ui_error_color().into(),
+                ));
+            }
+            if is_empty {
+                title.add_child(tag(
+                    appearance,
+                    "Empty",
+                    theme.sub_text_color(theme.surface_3()).into_solid(),
+                    theme.surface_3().into(),
+                ));
             }
             title.finish()
         };
-        let reveal_label = if cfg!(target_os = "macos") {
-            "Reveal in Finder"
+        let details = Text::new(
+            row.details(),
+            appearance.ui_font_family(),
+            appearance.ui_font_size() - 1.,
+        )
+        .with_color(theme.sub_text_color(theme.background()).into())
+        .with_clip(ClipConfig::end())
+        .soft_wrap(false)
+        .finish();
+
+        let actions = if self.list.is_confirming_delete(index) {
+            Flex::row()
+                .with_spacing(6.)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(sub_text(appearance, "Delete this recording?".to_owned()))
+                .with_child(button(
+                    appearance,
+                    "Delete",
+                    ButtonVariant::Warn,
+                    &states.confirm_delete,
+                    RecordingsViewAction::Delete(index),
+                ))
+                .with_child(button(
+                    appearance,
+                    "Cancel",
+                    ButtonVariant::Secondary,
+                    &states.cancel_delete,
+                    RecordingsViewAction::CancelDelete,
+                ))
+                .finish()
         } else {
-            "Show in folder"
-        };
-        let mut buttons = vec![button(
-            appearance,
-            "Play",
-            ButtonVariant::Accent,
-            &states.play,
-            RecordingsViewAction::Play(index),
-        )];
-        // Only recordings stored on this machine have a folder to show.
-        if info.local_path.is_some() {
-            buttons.push(button(
-                appearance,
-                reveal_label,
-                ButtonVariant::Secondary,
-                &states.reveal,
-                RecordingsViewAction::Reveal(index),
-            ));
-        }
-        buttons.push(button(
-            appearance,
-            "Copy",
-            ButtonVariant::Secondary,
-            &states.copy,
-            RecordingsViewAction::Copy(index),
-        ));
-        if row.can_rename() {
-            buttons.push(button(
-                appearance,
-                "Rename",
-                ButtonVariant::Secondary,
-                &states.rename,
-                RecordingsViewAction::StartRename(index),
-            ));
-        }
-        buttons.push(button(
-            appearance,
-            if self.list.is_confirming_delete(index) {
-                "Confirm delete"
+            let (play_label, play_variant) = if is_playing {
+                ("Playing", ButtonVariant::Secondary)
             } else {
-                "Delete"
-            },
-            ButtonVariant::Warn,
-            &states.delete,
-            RecordingsViewAction::Delete(index),
-        ));
-        Flex::row()
+                ("Play", ButtonVariant::Accent)
+            };
+            Flex::row()
+                .with_spacing(6.)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(button(
+                    appearance,
+                    play_label,
+                    play_variant,
+                    &states.play,
+                    RecordingsViewAction::Play(index),
+                ))
+                .with_child(
+                    icon_button_with_context_menu(
+                        Icon::DotsVertical,
+                        move |ctx, _, _| {
+                            ctx.dispatch_typed_action(RecordingsViewAction::ToggleRowMenu(index))
+                        },
+                        states.overflow.clone(),
+                        &self.row_menu,
+                        self.row_menu_index == Some(index),
+                        MenuDirection::Left,
+                        None,
+                        None,
+                        appearance,
+                    )
+                    .finish(),
+                )
+                .finish()
+        };
+
+        let content = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(12.)
             .with_child(
                 Shrinkable::new(
                     1.,
                     Flex::column()
+                        .with_spacing(2.)
                         .with_child(name)
-                        .with_child(sub_text(appearance, row.details()))
+                        .with_child(details)
                         .finish(),
                 )
                 .finish(),
             )
-            .with_child(Flex::row().with_spacing(6.).with_children(buttons).finish())
-            .finish()
+            .with_child(actions)
+            .finish();
+        let mut container = Container::new(content)
+            .with_horizontal_padding(10.)
+            .with_vertical_padding(6.)
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(6.)));
+        if is_playing {
+            container = container
+                .with_background(theme.surface_2())
+                .with_border(warpui::elements::Border::all(1.).with_border_fill(theme.accent()));
+        }
+        container.finish()
     }
 
     fn render_player(
@@ -547,105 +670,94 @@ impl RecordingsView {
         let player = &playback.player;
         let controls = &playback.controls;
         let theme = appearance.theme();
-        let palette = palette(appearance);
 
-        let mut screen = Flex::column();
-        for runs in grid_lines(player.screen(), &palette) {
-            let mut text = String::new();
-            let mut highlights = Vec::new();
-            for run in &runs {
-                let start = text.chars().count();
-                text.push_str(&run.text);
-                let end = text.chars().count();
-                let highlight = Highlight::new()
-                    .with_text_style(TextStyle {
-                        foreground_color: Some(run.foreground),
-                        background_color: run.background,
-                        underline_color: run.underline.then_some(run.foreground),
+        let header = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(12.)
+            .with_child(
+                Shrinkable::new(
+                    1.,
+                    Text::new(
+                        format!("Playing: {}", playback.name),
+                        appearance.ui_font_family(),
+                        appearance.ui_font_size() + 1.,
+                    )
+                    .with_color(theme.main_text_color(theme.background()).into())
+                    .with_style(Properties {
+                        weight: Weight::Semibold,
                         ..Default::default()
                     })
-                    .with_properties(Properties {
-                        weight: if run.bold {
-                            Weight::Bold
-                        } else {
-                            Weight::Normal
-                        },
-                        style: if run.italic {
-                            Style::Italic
-                        } else {
-                            Style::Normal
-                        },
-                    });
-                highlights.push(HighlightedRange {
-                    highlight,
-                    highlight_indices: (start..end).collect(),
-                });
-            }
-            if text.is_empty() {
-                text.push(' ');
-            }
-            screen.add_child(
-                Text::new(
-                    text,
-                    appearance.monospace_font_family(),
-                    appearance.monospace_font_size(),
+                    .with_clip(ClipConfig::end())
+                    .soft_wrap(false)
+                    .finish(),
                 )
-                .with_color(palette.foreground)
-                .with_highlights(highlights)
-                .with_clip(ClipConfig::end())
-                .with_selectable(true)
                 .finish(),
-            );
-        }
-        let screen = Container::new(screen.finish())
+            )
+            .with_child(button(
+                appearance,
+                "Close player",
+                ButtonVariant::Secondary,
+                &controls.close,
+                RecordingsViewAction::ClosePlayer,
+            ))
+            .finish();
+
+        let palette = palette(appearance);
+        let screen = Container::new(render_screen(player, &palette, appearance))
             .with_uniform_padding(8.)
             .with_background(Fill::Solid(palette.background))
             .with_border(warpui::elements::Border::all(1.).with_border_fill(theme.outline()))
+            .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
             .finish();
-        let screen = ClippedScrollable::horizontal(
-            controls.screen_scroll.clone(),
-            screen,
-            ScrollbarWidth::Auto,
-            theme.disabled_text_color(theme.background()).into(),
-            theme.main_text_color(theme.background()).into(),
-            Fill::None,
+
+        let timeline = Timeline::new(
+            player.position(),
+            player.duration(),
+            playback
+                .chapters
+                .iter()
+                .map(|chapter| chapter.time)
+                .collect(),
+            TimelineColors {
+                track: theme.surface_3().into_solid(),
+                played: theme.accent().into_solid(),
+                tick: theme.main_text_color(theme.background()).into_solid(),
+                thumb: theme.accent().into_solid(),
+            },
+            controls.timeline_dragging.clone(),
+            |ctx, time| ctx.dispatch_typed_action(RecordingsViewAction::SeekTo(time)),
         )
         .finish();
+        let timeline_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(10.)
+            .with_child(Expanded::new(1., timeline).finish())
+            .with_child(
+                Text::new(
+                    format_playback_time(player.position(), player.duration()),
+                    appearance.monospace_font_family(),
+                    appearance.ui_font_size(),
+                )
+                .with_color(theme.sub_text_color(theme.background()).into())
+                .finish(),
+            )
+            .finish();
 
         let play_label = match player.state() {
             PlaybackState::Playing => "Pause",
             PlaybackState::Paused => "Play",
             PlaybackState::Ended => "Replay",
         };
-        let slider = appearance
-            .ui_builder()
-            .slider(controls.seek.clone())
-            .with_range(0.0..1.)
-            .with_default_value(player.progress())
-            .with_style(UiComponentStyles {
-                width: Some(240.),
-                ..Default::default()
-            })
-            .on_change(|ctx, _, value| {
-                ctx.dispatch_typed_action(RecordingsViewAction::SeekToFraction(value));
-            })
-            .build()
-            .finish();
-        let has_chapters = !playback.chapters.is_empty();
-        let mut control_buttons = vec![
+        let mut transport = vec![
             button(
                 appearance,
                 play_label,
                 ButtonVariant::Accent,
                 &controls.play_pause,
                 RecordingsViewAction::TogglePlayPause,
-            ),
-            button(
-                appearance,
-                "Restart",
-                ButtonVariant::Secondary,
-                &controls.restart,
-                RecordingsViewAction::Restart,
             ),
             button(
                 appearance,
@@ -662,8 +774,9 @@ impl RecordingsView {
                 RecordingsViewAction::SeekBy(SEEK_STEP_SECONDS),
             ),
         ];
+        let has_chapters = !playback.chapters.is_empty();
         if has_chapters {
-            control_buttons.extend([
+            transport.extend([
                 button(
                     appearance,
                     "Previous command",
@@ -680,66 +793,69 @@ impl RecordingsView {
                 ),
             ]);
         }
-        control_buttons.extend([
-            button(
-                appearance,
-                &format!("{}x", player.speed()),
-                ButtonVariant::Secondary,
-                &controls.speed,
-                RecordingsViewAction::CycleSpeed,
-            ),
-            button(
-                appearance,
-                if player.skip_idle() {
-                    "Skip idle: on"
+        let speeds = SPEEDS
+            .iter()
+            .zip(&controls.speeds)
+            .map(|(speed, mouse_state)| {
+                let variant = if (player.speed() - speed).abs() < f64::EPSILON {
+                    ButtonVariant::Accent
                 } else {
-                    "Skip idle: off"
-                },
-                ButtonVariant::Secondary,
-                &controls.skip_idle,
-                RecordingsViewAction::ToggleSkipIdle,
-            ),
-        ]);
-        let control_row = Flex::row()
+                    ButtonVariant::Secondary
+                };
+                button(
+                    appearance,
+                    &format!("{speed}×"),
+                    variant,
+                    mouse_state,
+                    RecordingsViewAction::SetSpeed(*speed),
+                )
+            });
+        let options = Flex::row()
+            .with_spacing(6.)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(8.)
-            .with_children(control_buttons)
-            .finish();
-        let seek_row = Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_spacing(8.)
-            .with_child(slider)
-            .with_child(sub_text(
-                appearance,
-                format!(
-                    "{} / {}",
-                    format_duration(player.position()),
-                    format_duration(player.duration())
-                ),
-            ))
+            .with_children(speeds)
             .with_child(button(
                 appearance,
-                "Close player",
-                ButtonVariant::Secondary,
-                &controls.close,
-                RecordingsViewAction::ClosePlayer,
+                &format!(
+                    "Skip idle > {}s: {}",
+                    player.idle_time_limit(),
+                    if player.skip_idle() { "on" } else { "off" }
+                ),
+                if player.skip_idle() {
+                    ButtonVariant::Accent
+                } else {
+                    ButtonVariant::Secondary
+                },
+                &controls.skip_idle,
+                RecordingsViewAction::ToggleSkipIdle,
             ))
+            .finish();
+        let transport_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Flex::row()
+                    .with_spacing(6.)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_children(transport)
+                    .finish(),
+            )
+            .with_child(options)
             .finish();
 
         let mut column = Flex::column()
             .with_spacing(8.)
-            .with_child(
-                Text::new(
-                    format!("Playing: {}", playback.name),
-                    appearance.ui_font_family(),
-                    appearance.ui_font_size() + 1.,
-                )
-                .with_color(theme.main_text_color(theme.background()).into())
-                .finish(),
-            )
-            .with_child(screen)
-            .with_child(control_row)
-            .with_child(seek_row);
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_child(header)
+            .with_child(Expanded::new(1., screen).finish())
+            .with_child(timeline_row)
+            .with_child(transport_row)
+            .with_child(sub_text(
+                appearance,
+                "Space play/pause · ← → seek 5s · n / p next/previous command · Esc close"
+                    .to_owned(),
+            ));
         if has_chapters {
             column.add_child(self.render_chapters(playback, appearance));
         }
@@ -859,14 +975,9 @@ impl TypedActionView for RecordingsView {
             RecordingsViewAction::TogglePlayPause => {
                 self.update_player(ctx, Player::toggle_play_pause)
             }
-            RecordingsViewAction::Restart => self.update_player(ctx, Player::restart),
             RecordingsViewAction::SeekBy(delta) => {
                 let delta = *delta;
                 self.update_player(ctx, |player| player.seek(player.position() + delta))
-            }
-            RecordingsViewAction::SeekToFraction(fraction) => {
-                let fraction = *fraction;
-                self.update_player(ctx, |player| player.seek_to_fraction(fraction))
             }
             RecordingsViewAction::SeekTo(time) => {
                 let time = *time;
@@ -878,7 +989,15 @@ impl TypedActionView for RecordingsView {
             RecordingsViewAction::PreviousChapter => {
                 self.update_player(ctx, Player::previous_chapter)
             }
-            RecordingsViewAction::CycleSpeed => self.update_player(ctx, Player::cycle_speed),
+            RecordingsViewAction::SetSpeed(speed) => {
+                let speed = *speed;
+                self.update_player(ctx, |player| player.set_speed(speed))
+            }
+            RecordingsViewAction::ToggleRowMenu(index) => self.toggle_row_menu(*index, ctx),
+            RecordingsViewAction::CancelDelete => {
+                self.list.cancel_delete();
+                ctx.notify();
+            }
             RecordingsViewAction::ToggleSkipIdle => {
                 self.update_player(ctx, |player| player.set_skip_idle(!player.skip_idle()))
             }
@@ -992,4 +1111,93 @@ fn sub_text(appearance: &Appearance, text: String) -> Box<dyn Element> {
     Text::new(text, appearance.ui_font_family(), appearance.ui_font_size())
         .with_color(theme.sub_text_color(theme.background()).into())
         .finish()
+}
+
+/// The recorded screen, scaled so its full width and height fit; recorded lines never wrap.
+fn render_screen(player: &Player, palette: &Palette, appearance: &Appearance) -> Box<dyn Element> {
+    let (_, cols) = player.screen().size();
+    let lines: Vec<(String, Vec<HighlightedRange>)> = grid_lines(player.screen(), palette)
+        .into_iter()
+        .map(|runs| {
+            let mut text = String::new();
+            let mut highlights = Vec::new();
+            for run in &runs {
+                let start = text.chars().count();
+                text.push_str(&run.text);
+                let end = text.chars().count();
+                let highlight = Highlight::new()
+                    .with_text_style(TextStyle {
+                        foreground_color: Some(run.foreground),
+                        background_color: run.background,
+                        underline_color: run.underline.then_some(run.foreground),
+                        ..Default::default()
+                    })
+                    .with_properties(Properties {
+                        weight: if run.bold {
+                            Weight::Bold
+                        } else {
+                            Weight::Normal
+                        },
+                        style: if run.italic {
+                            Style::Italic
+                        } else {
+                            Style::Normal
+                        },
+                    });
+                highlights.push(HighlightedRange {
+                    highlight,
+                    highlight_indices: (start..end).collect(),
+                });
+            }
+            // Padding to the recorded width makes every line measure the full screen width.
+            let len = text.chars().count();
+            text.extend(std::iter::repeat_n(
+                ' ',
+                usize::from(cols).saturating_sub(len),
+            ));
+            (text, highlights)
+        })
+        .collect();
+    let family = appearance.monospace_font_family();
+    let foreground = palette.foreground;
+    FitScreen::new(
+        appearance.monospace_font_size(),
+        MIN_SCREEN_FONT_SIZE,
+        MAX_SCREEN_FONT_SIZE,
+        move |font_size| {
+            Flex::column()
+                .with_children(lines.iter().map(|(text, highlights)| {
+                    Text::new(text.clone(), family, font_size)
+                        .with_color(foreground)
+                        .with_highlights(highlights.clone())
+                        .soft_wrap(false)
+                        .with_selectable(true)
+                        .finish()
+                }))
+                .finish()
+        },
+    )
+    .finish()
+}
+
+fn tag(
+    appearance: &Appearance,
+    label: &str,
+    text_color: ColorU,
+    background: Fill,
+) -> Box<dyn Element> {
+    Container::new(
+        Text::new(
+            label.to_owned(),
+            appearance.ui_font_family(),
+            appearance.ui_font_size() - 2.,
+        )
+        .with_color(text_color)
+        .finish(),
+    )
+    .with_horizontal_padding(6.)
+    .with_vertical_padding(1.)
+    .with_background(background)
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+    .finish()
 }

@@ -4,6 +4,7 @@
 pub mod client;
 pub mod list;
 pub mod player;
+pub mod player_elements;
 pub mod recorder;
 pub mod recordings_view;
 pub mod screen_style;
