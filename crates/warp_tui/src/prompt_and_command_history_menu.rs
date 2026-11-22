@@ -7,21 +7,24 @@
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
     ActiveSession, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
-    History, HistoryEvent, InputType, InputTypeAutoDetectionSource, SessionId,
-    TuiUpArrowHistoryItemKind, UpArrowHistoryConfig, tui_up_arrow_history,
+    History, HistoryEvent, HistoryScope, InputSettings, InputType, InputTypeAutoDetectionSource,
+    SessionId, TuiUpArrowHistoryItemKind, UpArrowHistoryConfig, tui_up_arrow_history,
 };
+use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
+use warp_errors::report_error;
 use warpui_core::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::inline_menu::{
     MAX_INLINE_MENU_ROWS, TuiInlineMenuHeader, TuiInlineMenuListState, TuiInlineMenuRow,
     TuiInlineMenuRowPrefix, TuiInlineMenuRowPrefixStyle, TuiInlineMenuRowStyle,
-    TuiInlineMenuSnapshot, TuiInlineMenuStatus, result_row_capacity, single_line_menu_title,
+    TuiInlineMenuSnapshot, TuiInlineMenuStatus, TuiInlineMenuTab, result_row_capacity,
+    single_line_menu_title,
 };
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 use crate::terminal_block::SHELL_COMMAND_PREFIX;
 
-const MAX_VISIBLE_ROWS: usize = result_row_capacity(MAX_INLINE_MENU_ROWS, true, false);
+const MAX_VISIBLE_ROWS: usize = result_row_capacity(MAX_INLINE_MENU_ROWS, true, true);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TuiPromptAndCommandHistoryRow {
@@ -141,6 +144,21 @@ impl TuiPromptAndCommandHistoryMenuModel {
             original_input_type,
             query,
         };
+        self.refresh_rows(ctx);
+        self.preview_selection(ctx);
+    }
+
+    /// Switches to the next [`HistoryScope`], persists it, and re-filters the open list.
+    pub(crate) fn cycle_scope(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.is_open(ctx) {
+            return;
+        }
+        let next = InputSettings::as_ref(ctx).history_scope.next();
+        InputSettings::handle(ctx).update(ctx, |settings, ctx| {
+            if let Err(error) = settings.history_scope.set_value(next, ctx) {
+                report_error!(error.context("failed to persist the history scope"));
+            }
+        });
         self.refresh_rows(ctx);
         self.preview_selection(ctx);
     }
@@ -280,7 +298,7 @@ impl TuiPromptAndCommandHistoryMenuModel {
         Some(TuiInlineMenuSnapshot {
             header: Some(TuiInlineMenuHeader {
                 title: Some("History".to_owned()),
-                tabs: Vec::new(),
+                tabs: scope_tabs(*InputSettings::as_ref(ctx).history_scope),
             }),
             rows: list
                 .rows()
@@ -386,13 +404,18 @@ impl TuiPromptAndCommandHistoryMenuModel {
             TuiPromptAndCommandHistoryMenuState::Closed => return,
         };
         let trimmed_query = query.trim();
-        let session_id = self.active_session.as_ref(ctx).session_id(ctx);
+        let active_session = self.active_session.as_ref(ctx);
+        let session_id = active_session.session_id(ctx);
         let rows = tui_up_arrow_history(
             self.terminal_surface_id,
             session_id,
+            active_session
+                .current_working_directory()
+                .map(String::as_str),
             UpArrowHistoryConfig {
                 include_commands: true,
                 include_prompts,
+                scope: *InputSettings::as_ref(ctx).history_scope,
             },
             ctx,
         )
@@ -458,6 +481,16 @@ impl TuiPromptAndCommandHistoryMenuModel {
                 .update(ctx, |buffer, _| buffer.reset_undo_stack());
         });
     }
+}
+
+fn scope_tabs(selected: HistoryScope) -> Vec<TuiInlineMenuTab> {
+    HistoryScope::ALL
+        .into_iter()
+        .map(|scope| TuiInlineMenuTab {
+            label: scope.label().to_owned(),
+            is_selected: scope == selected,
+        })
+        .collect()
 }
 
 /// Preserves selection by history item, falling back to the nearest previous

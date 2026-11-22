@@ -5,7 +5,7 @@ use settings::Setting;
 use warp_core::SessionId;
 use warpui::{App, AppContext, EntityId, SingletonEntity};
 
-use super::{UpArrowHistoryConfig, prompt_history_for_terminal_surface};
+use super::{HistoryScope, UpArrowHistoryConfig, prompt_history_for_terminal_surface};
 use crate::ai::agent::AIAgentExchangeId;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::history_model::AIQueryHistoryOutputStatus;
@@ -93,9 +93,11 @@ fn combined_history(
         .up_arrow_suggestions_for_terminal_surface(
             terminal_surface_id,
             Some(session_id),
+            None,
             UpArrowHistoryConfig {
                 include_commands: true,
                 include_prompts,
+                scope: HistoryScope::Host,
             },
             app,
         )

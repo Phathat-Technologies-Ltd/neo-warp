@@ -20,7 +20,9 @@ use crate::workflows::local_workflows::LocalWorkflows;
 use crate::workflows::workflow::Workflow;
 use crate::workflows::{WorkflowId, WorkflowSource, WorkflowType};
 
+mod scope;
 mod up_arrow;
+pub use scope::HistoryScope;
 pub use up_arrow::UpArrowHistoryConfig;
 
 /// Data model for a history command persisted to sqlite, used as an intermediate representation
@@ -802,6 +804,38 @@ impl History {
     /// an index into this specific concatenation.
     pub fn commands(&self, session_id: SessionId) -> Option<Vec<&HistoryEntry>> {
         self.collect_visible_commands_for_session(session_id, |h| h.as_ref())
+    }
+
+    /// Returns the commands visible from `session_id` in `scope`, in the same order as
+    /// [`Self::commands`]. [`HistoryScope::Global`] returns every known command across all hosts
+    /// and sessions.
+    pub fn commands_in_scope(
+        &self,
+        session_id: SessionId,
+        scope: HistoryScope,
+        current_pwd: Option<&str>,
+    ) -> Option<Vec<&HistoryEntry>> {
+        let candidates = match scope {
+            HistoryScope::Global => self.all_commands(),
+            HistoryScope::Host | HistoryScope::Session | HistoryScope::Directory => {
+                self.commands(session_id)?
+            }
+        };
+        Some(
+            candidates
+                .into_iter()
+                .filter(|entry| scope.includes(entry, session_id, current_pwd))
+                .collect(),
+        )
+    }
+
+    fn all_commands(&self) -> Vec<&HistoryEntry> {
+        self.history_file_commands
+            .values()
+            .flatten()
+            .chain(self.session_commands.values().flatten())
+            .map(AsRef::as_ref)
+            .collect()
     }
 
     fn collect_visible_commands_for_session<'a, T>(

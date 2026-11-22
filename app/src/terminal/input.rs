@@ -12506,6 +12506,7 @@ impl Input {
         History::as_ref(ctx).up_arrow_suggestions_for_terminal_surface(
             self.terminal_view_id,
             self.active_block_session_id(),
+            None,
             config,
             ctx,
         )

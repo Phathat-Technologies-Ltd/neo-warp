@@ -494,6 +494,12 @@ pub(crate) trait TuiInlineMenuHandle {
     }
     /// Clears the menu's selected row when supported.
     fn clear_selected(&self, _ctx: &mut AppContext) {}
+    /// Whether the menu has header tabs that [`Self::cycle_tab`] can switch between.
+    fn has_tabs(&self, _ctx: &AppContext) -> bool {
+        false
+    }
+    /// Selects the next header tab when supported.
+    fn cycle_tab(&self, _ctx: &mut AppContext) {}
 }
 
 /// Cloneable type-erased handle for one TUI inline menu, with retained
@@ -577,6 +583,14 @@ impl TuiInlineMenu {
 
     pub(crate) fn clear_selected(&self, ctx: &mut AppContext) {
         self.handle.clear_selected(ctx);
+    }
+
+    pub(crate) fn has_tabs(&self, ctx: &AppContext) -> bool {
+        self.handle.has_tabs(ctx)
+    }
+
+    pub(crate) fn cycle_tab(&self, ctx: &mut AppContext) {
+        self.handle.cycle_tab(ctx);
     }
 
     pub(crate) fn input_highlight_range(&self, ctx: &AppContext) -> Option<Range<CharOffset>> {
@@ -827,6 +841,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiPromptAndCommandHistoryMenuModel> {
 
     fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
         self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
+
+    fn has_tabs(&self, _ctx: &AppContext) -> bool {
+        true
+    }
+
+    fn cycle_tab(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.cycle_scope(ctx));
     }
 }
 

@@ -18,6 +18,7 @@ use crate::input_suggestions::{HistoryInputSuggestion, HistoryOrder};
 use crate::search::SyncDataSource;
 use crate::search::data_source::{Query, QueryFilter, QueryResult};
 use crate::search::mixer::DataSourceRunErrorWrapper;
+use crate::settings::InputSettings;
 use crate::terminal::history::{History, LinkedWorkflowData, UpArrowHistoryConfig};
 use crate::terminal::input::inline_history::search_item::InlineHistoryItem;
 use crate::terminal::input::inline_menu::{
@@ -84,6 +85,13 @@ impl InlineHistoryMenuDataSource {
         }
     }
 
+    fn current_pwd<'a>(&self, app: &'a AppContext) -> Option<&'a str> {
+        self.active_session
+            .as_ref(app)
+            .current_working_directory()
+            .map(String::as_str)
+    }
+
     fn build_agent_view_results(
         &self,
         query: &Query,
@@ -101,10 +109,12 @@ impl InlineHistoryMenuDataSource {
         let config = UpArrowHistoryConfig {
             include_commands,
             include_prompts,
+            scope: *InputSettings::as_ref(app).history_scope,
         };
         let suggestions = history.up_arrow_suggestions_for_terminal_surface(
             self.terminal_view_id,
             session_id,
+            self.current_pwd(app),
             config,
             app,
         );
@@ -272,9 +282,11 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
                 .up_arrow_suggestions_for_terminal_surface(
                     self.terminal_view_id,
                     session_id,
+                    self.current_pwd(app),
                     UpArrowHistoryConfig {
                         include_commands: true,
                         include_prompts: false,
+                        scope: *InputSettings::as_ref(app).history_scope,
                     },
                     app,
                 )

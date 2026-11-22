@@ -10,7 +10,7 @@ use itertools::Itertools;
 use warp_core::command::ExitCode;
 use warpui::{App, ModelHandle};
 
-use super::{HistoryEntry, HistoryEvent, PersistedCommand, ShellHost};
+use super::{HistoryEntry, HistoryEvent, HistoryScope, PersistedCommand, ShellHost};
 use crate::ai::agent::conversation::AIConversationId;
 use crate::terminal::History;
 use crate::terminal::model::block::{
@@ -1017,6 +1017,115 @@ fn is_appendable_vs_is_queryable() {
         history_handle.read(&app, |history, _| {
             assert!(history.is_appendable(&session_id));
             assert!(history.is_queryable(&session_id));
+        });
+    });
+}
+
+fn scoped_commands(
+    history: &History,
+    session_id: SessionId,
+    scope: HistoryScope,
+    pwd: Option<&str>,
+) -> Vec<String> {
+    history
+        .commands_in_scope(session_id, scope, pwd)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.command.clone())
+        .sorted()
+        .collect()
+}
+
+#[test]
+fn test_commands_in_scope() {
+    App::test((), |mut app| async move {
+        let remote_session = |id, hostname: &str| {
+            Arc::new(Session::new(
+                SessionInfo::new_for_test()
+                    .with_id(id)
+                    .with_shell_type(ShellType::Zsh)
+                    .with_session_type(BootstrapSessionType::WarpifiedRemote)
+                    .with_hostname(hostname.to_string())
+                    .with_user("user".to_string())
+                    .with_ssh_socket_path(PathBuf::from("~/.ssh/12345"))
+                    .with_home_dir("/users/warpuser".to_owned()),
+                Arc::new(TestCommandExecutor::default()),
+            ))
+        };
+        let prod = remote_session(0, "prod");
+        let prod_other = remote_session(1, "prod");
+        let dev = remote_session(2, "dev");
+
+        let mut history_handle = app.add_model(|_| History::default());
+        initialize_history_for_testing(
+            &mut history_handle,
+            prod.clone(),
+            async { vec!["histfile".to_string()] },
+            vec!["prod-session".to_string()],
+            &mut app,
+        )
+        .await;
+        initialize_history_for_testing(
+            &mut history_handle,
+            prod_other.clone(),
+            async { vec!["histfile".to_string()] },
+            vec![],
+            &mut app,
+        )
+        .await;
+        initialize_history_for_testing(
+            &mut history_handle,
+            dev.clone(),
+            async { vec!["dev-histfile".to_string()] },
+            vec!["dev-session".to_string()],
+            &mut app,
+        )
+        .await;
+        history_handle.update(&mut app, |history, _| {
+            let mut in_repo = HistoryEntry::with_session_id(prod.id(), "in-repo");
+            in_repo.pwd = Some("/repo".to_owned());
+            history.append_commands(prod.id(), vec![in_repo]);
+            let mut other_session_in_repo =
+                HistoryEntry::with_session_id(prod_other.id(), "other-session-in-repo");
+            other_session_in_repo.pwd = Some("/repo/".to_owned());
+            history.append_commands(prod_other.id(), vec![other_session_in_repo]);
+        });
+
+        history_handle.read(&app, |history, _| {
+            let id = prod.id();
+            assert_eq!(
+                scoped_commands(history, id, HistoryScope::Host, Some("/repo")),
+                vec!["histfile", "in-repo", "prod-session"],
+                "host scope keeps the existing per-host list"
+            );
+            assert_eq!(
+                scoped_commands(history, id, HistoryScope::Session, Some("/repo")),
+                vec!["in-repo", "prod-session"]
+            );
+            assert_eq!(
+                scoped_commands(history, id, HistoryScope::Directory, Some("/repo")),
+                vec!["in-repo"]
+            );
+            assert_eq!(
+                scoped_commands(
+                    history,
+                    prod_other.id(),
+                    HistoryScope::Directory,
+                    Some("/repo")
+                ),
+                vec!["other-session-in-repo"],
+            );
+            assert_eq!(
+                scoped_commands(history, id, HistoryScope::Global, None),
+                vec![
+                    "dev-histfile",
+                    "dev-session",
+                    "histfile",
+                    "in-repo",
+                    "other-session-in-repo",
+                    "prod-session",
+                ]
+            );
         });
     });
 }

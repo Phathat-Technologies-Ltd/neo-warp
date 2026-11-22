@@ -79,6 +79,13 @@ impl<A: InlineMenuAction, T: Clone + PartialEq> InlineMenuModel<A, T> {
             .get(self.active_tab_index)
             .map(|config| config.id.clone())
     }
+
+    /// Makes the tab with `id` active without emitting a tab-change event. No-op if absent.
+    pub fn set_active_tab_id(&mut self, id: &T) {
+        if let Some(index) = self.tab_configs.iter().position(|config| &config.id == id) {
+            self.active_tab_index = index;
+        }
+    }
 }
 
 impl<A: InlineMenuAction, T> InlineMenuModel<A, T> {

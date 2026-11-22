@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, EntityId, SingletonEntity};
 
-use super::History;
+use super::{History, HistoryScope};
 use crate::ai::blocklist::history_model::AIQueryHistory;
 use crate::ai::blocklist::{BlocklistAIHistoryModel, InputConfig};
 use crate::input_suggestions::HistoryInputSuggestion;
@@ -16,6 +16,7 @@ use crate::terminal::model::session::SessionId;
 pub struct UpArrowHistoryConfig {
     pub include_commands: bool,
     pub include_prompts: bool,
+    pub scope: HistoryScope,
 }
 
 impl UpArrowHistoryConfig {
@@ -27,11 +28,13 @@ impl UpArrowHistoryConfig {
             Self {
                 include_commands: input_config.is_shell(),
                 include_prompts: input_config.is_ai(),
+                scope: HistoryScope::Host,
             }
         } else {
             Self {
                 include_commands: true,
                 include_prompts: true,
+                scope: HistoryScope::Host,
             }
         }
     }
@@ -112,6 +115,7 @@ impl History {
         &'a self,
         terminal_surface_id: EntityId,
         session_id: Option<SessionId>,
+        current_pwd: Option<&str>,
         config: UpArrowHistoryConfig,
         app: &'a AppContext,
     ) -> Vec<HistoryInputSuggestion<'a>> {
@@ -128,7 +132,7 @@ impl History {
         };
 
         let commands = session_id
-            .and_then(|session_id| self.commands(session_id))
+            .and_then(|session_id| self.commands_in_scope(session_id, config.scope, current_pwd))
             .unwrap_or_default()
             .into_iter()
             .filter(|entry| {

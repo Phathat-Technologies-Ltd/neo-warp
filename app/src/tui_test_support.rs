@@ -259,6 +259,9 @@ pub fn register_tui_input_mode_test_settings(ctx: &mut AppContext) {
     ctx.add_singleton_model(|_| ServerApiProvider::new_for_test());
     ctx.add_singleton_model(|_| AuthStateProvider::new_for_test());
     AISettings::register_and_subscribe_to_events(ctx);
+    if !ctx.has_singleton_model::<crate::settings::InputSettings>() {
+        crate::settings::InputSettings::register(ctx);
+    }
     ctx.add_singleton_model(|ctx| {
         let provider = ServerApiProvider::as_ref(ctx);
         UserWorkspaces::mock(

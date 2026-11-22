@@ -82,6 +82,7 @@ use crate::voice_input::{
 /// after the menu branch.
 const INPUT_HANDLES_ESCAPE_FLAG: &str = "TuiInputHandlesEscape";
 const SHELL_COMPLETION_AVAILABLE_FLAG: &str = "TuiShellCompletionAvailable";
+const INLINE_MENU_HAS_TABS_FLAG: &str = "TuiInlineMenuHasTabs";
 pub(crate) const MCP_MENU_ACTIVE_FLAG: &str = "TuiMcpMenuActive";
 pub(crate) const MCP_LOGOUT_BINDING_NAME: &str = "tui:input:mcp_logout";
 pub(crate) const INLINE_MENU_CAN_CLEAR_SELECTED_FLAG: &str = "TuiInlineMenuCanClearSelected";
@@ -140,6 +141,14 @@ pub fn init(app: &mut AppContext) {
             TuiInputAction::Complete,
         )
         .with_context_predicate(id!("TuiInputView") & id!(SHELL_COMPLETION_AVAILABLE_FLAG))
+        .with_group(TUI_BINDING_GROUP)
+        .with_key_binding("tab"),
+        EditableBinding::new(
+            "tui:input:cycle_inline_menu_tab",
+            "Switch to the next tab of the open menu",
+            TuiInputAction::CycleInlineMenuTab,
+        )
+        .with_context_predicate(id!("TuiInputView") & id!(INLINE_MENU_HAS_TABS_FLAG))
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("tab"),
     ]);
@@ -211,6 +220,8 @@ pub enum TuiInputAction {
     Complete,
     /// Clear the selected row in an inline menu that supports this action.
     ClearActiveInlineMenuItem,
+    /// Switch the open inline menu to its next header tab.
+    CycleInlineMenuTab,
     /// Apply an editing command shared with generic TUI editors.
     EditorCommand(TuiEditorCommand),
     /// Place the cursor at `offset` without starting a drag selection
@@ -717,6 +728,9 @@ impl TuiView for TuiInputView {
         // In Normal mode with no pending input, escape is a no-op for vim;
         // passing it through allows session-level bindings (e.g.
         // orchestration focus-main, cancel-restore) to fire instead.
+        let inline_menu_has_tabs = self
+            .active_inline_menu(ctx)
+            .is_some_and(|menu| menu.has_tabs(ctx));
         let vim_mode_enabled = self.vim_mode_enabled(ctx);
         let vim_state = self.vim_model.as_ref(ctx).state();
         input_keymap_context(InputKeymapContextConfig {
@@ -739,7 +753,10 @@ impl TuiView for TuiInputView {
             mcp_menu_active: suggestions_mode == TuiInputSuggestionsMode::Mcp,
             plan_toggle_available: self.plan_toggle_available(ctx),
             keyboard_enhancement_supported: self.keyboard_enhancement_supported,
-            shell_completion_available: self.is_shell_mode(ctx) && !inline_menu_owns_input,
+            shell_completion_available: self.is_shell_mode(ctx)
+                && !inline_menu_owns_input
+                && !inline_menu_has_tabs,
+            inline_menu_has_tabs,
             inline_menu_can_clear_selected: self
                 .active_inline_menu(ctx)
                 .is_some_and(|menu| menu.can_clear_selected(ctx)),
@@ -771,6 +788,7 @@ struct InputKeymapContextConfig {
     plan_toggle_available: bool,
     keyboard_enhancement_supported: bool,
     shell_completion_available: bool,
+    inline_menu_has_tabs: bool,
     inline_menu_can_clear_selected: bool,
 }
 
@@ -791,6 +809,9 @@ fn input_keymap_context(config: InputKeymapContextConfig) -> keymap::Context {
     }
     if config.shell_completion_available {
         context.set.insert(SHELL_COMPLETION_AVAILABLE_FLAG);
+    }
+    if config.inline_menu_has_tabs {
+        context.set.insert(INLINE_MENU_HAS_TABS_FLAG);
     }
     if config.inline_menu_can_clear_selected {
         context.set.insert(INLINE_MENU_CAN_CLEAR_SELECTED_FLAG);
@@ -903,7 +924,7 @@ impl TypedActionView for TuiInputView {
                 }
                 TuiEditorInteractionOutcome::PreserveViewport
             }
-            TuiInputAction::ClearActiveInlineMenuItem => {
+            TuiInputAction::ClearActiveInlineMenuItem | TuiInputAction::CycleInlineMenuTab => {
                 TuiEditorInteractionOutcome::PreserveViewport
             }
             TuiInputAction::EditorCommand(command) => {
@@ -1078,6 +1099,7 @@ impl TuiInputView {
             | TuiInputAction::HandleEscape
             | TuiInputAction::LogOutSelectedMcp
             | TuiInputAction::Complete
+            | TuiInputAction::CycleInlineMenuTab
             | TuiInputAction::ClearActiveInlineMenuItem => {
                 TuiEditorInteractionOutcome::PreserveViewport
             }
@@ -1403,6 +1425,7 @@ impl TuiInputView {
                 | TuiInputAction::HandleEscape
                 | TuiInputAction::LogOutSelectedMcp
                 | TuiInputAction::Complete
+                | TuiInputAction::CycleInlineMenuTab
                 | TuiInputAction::ClearActiveInlineMenuItem
         ) {
             return false;
@@ -1446,6 +1469,9 @@ impl TuiInputView {
             TuiInputAction::HandleEscape => return self.handle_escape(ctx),
             TuiInputAction::ClearActiveInlineMenuItem => {
                 inline_menu.clear_selected(ctx);
+            }
+            TuiInputAction::CycleInlineMenuTab => {
+                inline_menu.cycle_tab(ctx);
             }
             _ => return false,
         }
