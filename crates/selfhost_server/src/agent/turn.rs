@@ -37,7 +37,7 @@ use warp_multi_agent_api::request::settings::custom_model_providers::CustomEndpo
 
 use super::mcp::McpTools;
 use super::responses::{self, ResponsesProvider};
-use super::{prompt, tools};
+use super::{helpers, prompt, tools};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com";
 const OAUTH_TOKEN_PREFIX: &str = "sk-ant-oat";
@@ -299,15 +299,21 @@ impl Stream {
                 .unwrap_or(&[]),
         );
         tools.extend(self.mcp_tools.definitions());
+        let spoken_summary = prompt::wants_spoken_summary(request.metadata.as_ref());
         let system_prompt = prompt::system_prompt(
             input.context.as_ref(),
-            prompt::wants_spoken_summary(request.metadata.as_ref()),
+            spoken_summary,
+            prompt::is_dictated(request.metadata.as_ref()),
         );
 
         let provider = make_provider(&endpoint).map_err(|error| internal(format!("{error:#}")))?;
         let messages = self
             .run_agent(messages, &model, &endpoint, provider, tools, system_prompt)
             .await?;
+        if spoken_summary && let Some(settings) = settings {
+            self.narrate_unspoken_reply(&messages, settings, make_provider)
+                .await;
+        }
         let server_data = serde_json::to_string(&messages)
             .map_err(|error| internal(format!("couldn't save the conversation: {error}")))?;
         self.actions(vec![client_action::Action::UpdateTaskServerData(
@@ -317,6 +323,35 @@ impl Stream {
             },
         )]);
         Ok(())
+    }
+
+    /// Streams a short `<spoken>` narration of the turn's final reply when the model didn't open
+    /// it with one, so voice conversation mode still has something to read aloud. The narration
+    /// goes to the client only and stays out of the saved model conversation.
+    async fn narrate_unspoken_reply(
+        &mut self,
+        messages: &[Message],
+        settings: &api::request::Settings,
+        make_provider: &ProviderFactory,
+    ) {
+        let Some(reply) = unspoken_final_reply(messages) else {
+            return;
+        };
+        match helpers::complete(
+            settings,
+            prompt::NARRATION_SYSTEM_PROMPT,
+            reply,
+            make_provider,
+        )
+        .await
+        {
+            Ok(narration) if !narration.trim().is_empty() => {
+                self.open_text_message = None;
+                self.stream_text(&format!("<spoken>{}</spoken>", narration.trim()));
+            }
+            Ok(_) => {}
+            Err(_) => log::warn!("The spoken narration call failed"),
+        }
     }
 
     /// Adds the request's input to the model conversation and returns the Warp messages that
@@ -474,6 +509,21 @@ impl Stream {
             }
         }
     }
+}
+
+/// The text of the turn's final assistant reply when the turn ended on an answer, not on tool
+/// calls, and the answer carries no `<spoken>` summary.
+fn unspoken_final_reply(messages: &[Message]) -> Option<String> {
+    let last = messages.last()?;
+    let waits_on_tools = last
+        .content
+        .iter()
+        .any(|block| matches!(block, MessageContentBlock::ToolRequest(_)));
+    if last.role != Role::Assistant || waits_on_tools {
+        return None;
+    }
+    let text = last.as_concat_text();
+    (!text.trim().is_empty() && !text.contains("<spoken>")).then_some(text)
 }
 
 /// Restores the model conversation saved in the task's `server_data`, or rebuilds a text-only

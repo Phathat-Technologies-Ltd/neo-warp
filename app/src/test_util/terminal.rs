@@ -193,6 +193,8 @@ pub fn initialize_app_for_terminal_view(app: &mut App) {
 
     app.update(experiments::init);
     AltScreenReporting::register(app);
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    crate::test_util::register_voice_models_for_tests(app);
 }
 
 /// Creates a window in `app` with a [`TerminalView`] as the root view.

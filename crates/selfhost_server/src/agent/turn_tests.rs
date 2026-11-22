@@ -709,3 +709,70 @@ fn cerebras_gets_the_history_without_earlier_reasoning() {
         MessageContentBlock::Text(_)
     ));
 }
+
+fn voice_request(input: api::request::input::Type) -> api::Request {
+    let mut request = request(input, Vec::new());
+    request.metadata = Some(api::request::Metadata {
+        logging: [(
+            prompt::VOICE_CONVERSATION_METADATA_KEY.to_owned(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::BoolValue(true)),
+            },
+        )]
+        .into(),
+        ..Default::default()
+    });
+    request
+}
+
+fn agent_texts(events: &[api::response_event::Type]) -> Vec<String> {
+    added_messages(events)
+        .into_iter()
+        .filter_map(|message| match message.message {
+            Some(Kind::AgentOutput(output)) => Some(output.text),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn voice_replies_without_a_spoken_tag_get_a_narration() {
+    let provider = ScriptedProvider::new(vec![
+        vec![Message::assistant().with_text("There are 2 modified files.")],
+        vec![Message::assistant().with_text("You have two uncommitted changes.")],
+    ]);
+    let events = run_turn(voice_request(user_query("status?")), provider.clone()).await;
+
+    assert_eq!(
+        agent_texts(&events),
+        vec![
+            "There are 2 modified files.",
+            "<spoken>You have two uncommitted changes.</spoken>",
+        ]
+    );
+    let calls = provider.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].0, prompt::NARRATION_SYSTEM_PROMPT);
+    assert!(!root_task(&events).server_data.contains("uncommitted"));
+}
+
+#[tokio::test]
+async fn spoken_replies_tool_calls_and_non_voice_turns_get_no_narration() {
+    let spoken = ScriptedProvider::new(vec![vec![
+        Message::assistant().with_text("<spoken>All good.</spoken> Done."),
+    ]]);
+    run_turn(voice_request(user_query("hi")), spoken.clone()).await;
+    assert_eq!(spoken.calls.lock().unwrap().len(), 1);
+
+    let tool = ScriptedProvider::new(vec![vec![tool_request(
+        "toolu_1",
+        "run_shell_command",
+        json!({ "command": "ls", "read_only": true, "risky": false }),
+    )]]);
+    run_turn(voice_request(user_query("ls")), tool.clone()).await;
+    assert_eq!(tool.calls.lock().unwrap().len(), 1);
+
+    let plain = ScriptedProvider::new(vec![vec![Message::assistant().with_text("Done.")]]);
+    run_turn(request(user_query("hi"), Vec::new()), plain.clone()).await;
+    assert_eq!(plain.calls.lock().unwrap().len(), 1);
+}
