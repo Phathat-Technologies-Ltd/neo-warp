@@ -15915,6 +15915,7 @@ dependencies = [
  "log",
  "objc2-audio-toolbox",
  "objc2-core-audio",
+ "objc2-core-audio-types",
  "parking_lot",
  "rubato",
  "thiserror 2.0.21",

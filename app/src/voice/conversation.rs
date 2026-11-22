@@ -238,7 +238,7 @@ impl ConversationSession {
         if !self.is_active() {
             return;
         }
-        let actions = self.controller.stop();
+        let actions = self.controller.stop(Instant::now());
         self.apply(actions, ctx);
         VOICE_CONVERSATION_ACTIVE.store(false, Ordering::Relaxed);
         self.output = None;

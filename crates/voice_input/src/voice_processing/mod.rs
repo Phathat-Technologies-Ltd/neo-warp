@@ -14,6 +14,9 @@ use crate::recovery::Signal;
 mod macos;
 #[cfg(all(target_os = "macos", feature = "voice_processing"))]
 pub(crate) use macos::{CaptureLease, OutputLease, acquire_capture, acquire_output};
+#[cfg(all(target_os = "macos", feature = "voice_processing"))]
+#[doc(hidden)]
+pub use macos::{ProbeLevels, probe_duplex};
 
 #[cfg(not(all(target_os = "macos", feature = "voice_processing")))]
 mod unsupported;

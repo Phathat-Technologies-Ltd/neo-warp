@@ -201,15 +201,28 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             headphones: self.headphones,
             muted: self.muted,
             echo_cancelled: self.echo_cancelled,
+            played_until: self.played_until,
+            talking: self.talking,
+            utterance: self.utterance,
+            recent_speech: std::mem::take(&mut self.recent_speech),
             ..Self::default()
         };
     }
 
-    pub fn stop(&mut self) -> Vec<PlaybackAction<A>> {
-        let actions = self.silence(None);
-        let reply = self.reply + 1;
-        *self = Self::default();
-        self.reply = reply;
+    /// Turns conversation mode off at `now`, silencing the speech. What the microphone may still
+    /// hear of it (the utterance under way, the echo tail, the recent sentences) stays known, so
+    /// that echo is dropped even after the mode is off or restarted.
+    pub fn stop(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
+        let actions = self.silence(Some(now));
+        *self = Self {
+            reply: self.reply + 1,
+            played_until: self.played_until,
+            talking: self.talking,
+            utterance: self.utterance,
+            headphones: self.headphones,
+            recent_speech: std::mem::take(&mut self.recent_speech),
+            ..Self::default()
+        };
         actions
     }
 
@@ -233,7 +246,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     /// Whether transcripts heard at `now` are dropped because the microphone may be hearing the
     /// assistant; the owner keeps partials off screen and holds auto-send meanwhile.
     pub fn is_echo_window(&self, now: Instant) -> bool {
-        self.is_on() && self.is_half_duplex() && self.is_audible(now)
+        self.is_half_duplex() && self.is_audible(now)
     }
 
     fn is_on(&self) -> bool {
@@ -624,7 +637,15 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     ) -> (FinalOutcome<Id>, Vec<PlaybackAction<A>>) {
         let utterance = self.utterance.take();
         if !self.is_on() {
-            return (FinalOutcome::NotConsumed, Vec::new());
+            let overlapped =
+                utterance.is_some_and(|utterance| utterance.overlapped) || self.is_audible(now);
+            let echo = (overlapped && !self.headphones) || self.repeats_recent_speech(text, now);
+            let outcome = if echo {
+                FinalOutcome::Echo
+            } else {
+                FinalOutcome::NotConsumed
+            };
+            return (outcome, Vec::new());
         }
         let barged_in = utterance.is_some_and(|utterance| utterance.barged_in);
         // A final can arrive without a speech start (the VAD missed it), and a long segment can

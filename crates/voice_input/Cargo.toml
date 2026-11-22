@@ -24,6 +24,7 @@ warpui_core.workspace = true
 coreaudio-rs = { version = "0.14.2", default-features = false, features = ["core_audio", "audio_toolbox"], optional = true }
 objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AUComponent", "AudioUnitProperties"], optional = true }
 objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"], optional = true }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std"], optional = true }
 
 [features]
 # Echo-cancelled full-duplex audio through Apple's voice-processing I/O unit (macOS only).
@@ -31,5 +32,5 @@ voice_processing = [
     "dep:coreaudio-rs",
     "dep:objc2-audio-toolbox",
     "dep:objc2-core-audio",
-
+    "dep:objc2-core-audio-types",
 ]
