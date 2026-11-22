@@ -1,4 +1,4 @@
-use super::{HistoryTab, build_tab_configs};
+use super::{HistoryTab, build_tab_configs, scope_selector_label, tabs_select_item_type};
 use crate::terminal::history::HistoryScope;
 
 #[test]
@@ -27,4 +27,31 @@ fn agent_view_tabs_select_item_type() {
         tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
         vec![HistoryTab::All, HistoryTab::Commands, HistoryTab::Prompts]
     );
+}
+
+#[test]
+fn scope_selector_only_shows_when_tabs_select_item_type() {
+    assert!(tabs_select_item_type(&build_tab_configs(true)));
+    assert!(!tabs_select_item_type(&build_tab_configs(false)));
+}
+
+#[test]
+fn scope_selector_label_names_scope() {
+    assert_eq!(scope_selector_label(HistoryScope::Host), "Scope: Host");
+    assert_eq!(
+        scope_selector_label(HistoryScope::Directory),
+        "Scope: Directory"
+    );
+}
+
+#[test]
+fn cycling_scope_visits_every_scope_in_menu_order() {
+    let mut scope = HistoryScope::Global;
+    let mut visited = vec![scope];
+    for _ in 1..HistoryScope::ALL.len() {
+        scope = scope.next();
+        visited.push(scope);
+    }
+    assert_eq!(visited, HistoryScope::ALL.to_vec());
+    assert_eq!(scope.next(), HistoryScope::Global);
 }

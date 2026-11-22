@@ -9,6 +9,7 @@
 use chrono::{DateTime, Local};
 use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
+use warpui::keymap::Keystroke;
 use warpui::{AppContext, Entity, EntityId, ModelHandle, SingletonEntity};
 
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
@@ -19,11 +20,14 @@ use crate::search::SyncDataSource;
 use crate::search::data_source::{Query, QueryFilter, QueryResult};
 use crate::search::mixer::DataSourceRunErrorWrapper;
 use crate::settings::InputSettings;
-use crate::terminal::history::{History, LinkedWorkflowData, UpArrowHistoryConfig};
-use crate::terminal::input::inline_history::search_item::InlineHistoryItem;
+use crate::terminal::history::{History, HistoryScope, LinkedWorkflowData, UpArrowHistoryConfig};
+use crate::terminal::input::inline_history::HISTORY_SCOPE_CYCLE_KEYSTROKE;
+use crate::terminal::input::inline_history::search_item::{CommandRun, InlineHistoryItem};
 use crate::terminal::input::inline_menu::{
-    InlineMenuAction, InlineMenuClickBehavior, InlineMenuType,
+    InlineMenuAction, InlineMenuClickBehavior, InlineMenuMessageArgs, InlineMenuType,
+    default_navigation_message_items,
 };
+use crate::terminal::input::message_bar::{Message, MessageItem};
 use crate::terminal::model::session::SessionId;
 use crate::terminal::model::session::active_session::ActiveSession;
 
@@ -55,6 +59,24 @@ impl AcceptHistoryItem {
 impl InlineMenuAction for AcceptHistoryItem {
     const MENU_TYPE: InlineMenuType = InlineMenuType::InlineHistoryMenu;
 
+    fn produce_inline_menu_message<T>(args: InlineMenuMessageArgs<'_, Self, T>) -> Option<Message> {
+        let mut items = default_navigation_message_items(&args);
+        // When the tabs are the scopes, the tab hint already covers changing scope.
+        let tabs_select_item_type = args
+            .inline_menu_model
+            .tab_configs()
+            .iter()
+            .any(|tab| !tab.filters.is_empty());
+        if tabs_select_item_type {
+            let dismiss_index = items.len().saturating_sub(1);
+            items.splice(
+                dismiss_index..dismiss_index,
+                scope_hint_items(*InputSettings::as_ref(args.app).history_scope),
+            );
+        }
+        Some(Message::new(items))
+    }
+
     fn click_behavior(&self) -> InlineMenuClickBehavior {
         match self {
             AcceptHistoryItem::Conversation { .. } => InlineMenuClickBehavior::AcceptOnClick,
@@ -63,6 +85,13 @@ impl InlineMenuAction for AcceptHistoryItem {
             }
         }
     }
+}
+
+pub(super) fn scope_hint_items(scope: HistoryScope) -> Vec<MessageItem> {
+    vec![
+        MessageItem::keystroke(Keystroke::parse(HISTORY_SCOPE_CYCLE_KEYSTROKE).unwrap_or_default()),
+        MessageItem::text(format!(" to cycle scope ({})", scope.label())),
+    ]
 }
 
 /// Data source that provides both live conversations for a terminal view and command history.
@@ -136,6 +165,7 @@ impl InlineHistoryMenuDataSource {
                             entry.linked_workflow_data(),
                             timestamp,
                         )
+                        .with_run(CommandRun::from_entry(entry))
                         .with_prefix_match_len(prefix_match_len),
                         OrderedFloat(results.len() as f64),
                     )
@@ -222,6 +252,7 @@ enum MenuItem {
         linked_workflow_data: Option<LinkedWorkflowData>,
         display_timestamp: DateTime<Local>,
         prefix_match_len: usize,
+        run: Option<CommandRun>,
     },
 }
 
@@ -312,6 +343,7 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
                             linked_workflow_data: entry.linked_workflow_data(),
                             display_timestamp,
                             prefix_match_len,
+                            run: CommandRun::from_entry(entry),
                         },
                     })
                 })
@@ -349,7 +381,9 @@ impl SyncDataSource for InlineHistoryMenuDataSource {
                     linked_workflow_data,
                     display_timestamp,
                     prefix_match_len,
+                    run,
                 } => InlineHistoryItem::command(command, linked_workflow_data, display_timestamp)
+                    .with_run(run)
                     .with_prefix_match_len(prefix_match_len),
             };
 

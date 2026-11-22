@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Duration, Local};
 use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
 use warp_core::ui::Icon;
@@ -15,7 +15,7 @@ use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::conversation_status_ui::{STATUS_ELEMENT_PADDING, render_status_element};
 use crate::appearance::Appearance;
 use crate::search::{ItemHighlightState, SearchItem};
-use crate::terminal::history::LinkedWorkflowData;
+use crate::terminal::history::{HistoryEntry, LinkedWorkflowData};
 use crate::terminal::input::inline_history::data_source::AcceptHistoryItem;
 use crate::terminal::input::inline_menu::styles as inline_styles;
 use crate::util::time_format::format_approx_duration_from_now_utc;
@@ -27,6 +27,42 @@ pub struct InlineHistoryItem {
     prefix_match_len: usize,
     score: OrderedFloat<f64>,
     timestamp: DateTime<Local>,
+    run: Option<CommandRun>,
+}
+
+/// How a finished history command ran. Entries without full block metadata (e.g. ones read from
+/// the shell's history file) have none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandRun {
+    pub duration: Duration,
+    pub succeeded: bool,
+}
+
+impl CommandRun {
+    pub fn from_entry(entry: &HistoryEntry) -> Option<Self> {
+        let duration = entry.completed_ts? - entry.start_ts?;
+        Some(Self {
+            duration: duration.max(Duration::zero()),
+            succeeded: entry.exit_code?.value() == 0,
+        })
+    }
+}
+
+/// Compact duration such as `120ms`, `4s`, `2m 3s`, or `1h 5m`.
+pub fn format_command_duration(duration: Duration) -> String {
+    let millis = duration.num_milliseconds().max(0);
+    if millis < 1000 {
+        return format!("{millis}ms");
+    }
+    let secs = millis / 1000;
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let (mins, secs) = (secs / 60, secs % 60);
+    if mins < 60 {
+        return format!("{mins}m {secs}s");
+    }
+    format!("{}h {}m", mins / 60, mins % 60)
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +98,7 @@ impl InlineHistoryItem {
             prefix_match_len: 0,
             score: OrderedFloat(f64::MIN),
             timestamp,
+            run: None,
         }
     }
 
@@ -79,6 +116,7 @@ impl InlineHistoryItem {
             prefix_match_len: 0,
             score: OrderedFloat(f64::MIN),
             timestamp,
+            run: None,
         }
     }
 
@@ -89,7 +127,13 @@ impl InlineHistoryItem {
             prefix_match_len: 0,
             score: OrderedFloat(f64::MIN),
             timestamp,
+            run: None,
         }
+    }
+
+    pub fn with_run(mut self, run: Option<CommandRun>) -> Self {
+        self.run = run;
+        self
     }
 
     pub fn with_name_match_result(mut self, result: Option<FuzzyMatchResult>) -> Self {
@@ -213,8 +257,36 @@ impl SearchItem for InlineHistoryItem {
         let mut primary_row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(Shrinkable::new(1., text.finish()).finish());
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+
+        if matches!(self.item_type, HistoryItemType::Command { .. }) {
+            let theme = appearance.theme();
+            let (label, color) = match self.run {
+                Some(run) => (
+                    format_command_duration(run.duration),
+                    if run.succeeded {
+                        theme.ansi_fg_green()
+                    } else {
+                        theme.ansi_fg_red()
+                    },
+                ),
+                None => (String::new(), secondary_text_color.into_solid()),
+            };
+            let duration_width = app
+                .font_cache()
+                .em_width(appearance.monospace_font_family(), font_size)
+                * 8.;
+            let duration = Text::new_inline(label, appearance.monospace_font_family(), font_size)
+                .with_color(color)
+                .finish();
+            primary_row.add_child(
+                ConstrainedBox::new(duration)
+                    .with_width(duration_width)
+                    .finish(),
+            );
+        }
+
+        primary_row.add_child(Shrinkable::new(1., text.finish()).finish());
 
         let timestamp = Text::new_inline(
             format_approx_duration_from_now_utc(self.timestamp.to_utc()),
@@ -284,3 +356,7 @@ impl SearchItem for InlineHistoryItem {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "search_item_tests.rs"]
+mod tests;

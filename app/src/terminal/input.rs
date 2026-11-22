@@ -294,7 +294,7 @@ use crate::terminal::input::cloud_mode_v2_history_menu::CloudModeV2HistoryMenuVi
 use crate::terminal::input::conversations::{
     InlineConversationMenuEvent, InlineConversationMenuView,
 };
-use crate::terminal::input::inline_history::InlineHistoryMenuView;
+use crate::terminal::input::inline_history::{HISTORY_SCOPE_CYCLE_KEYSTROKE, InlineHistoryMenuView};
 use crate::terminal::input::inline_menu::InlineMenuPositioner;
 use crate::terminal::input::models::{
     InlineModelSelectorEvent, InlineModelSelectorTab, InlineModelSelectorView,
@@ -1188,6 +1188,7 @@ pub enum InputAction {
     SelectPreviousInlineHistoryItem,
     /// Deferred so Down does not update InlineHistoryMenuView while it is already checked out.
     SelectNextInlineHistoryItem,
+    CycleHistoryScope,
     PageUp,
     PageDown,
     ClearScreen,
@@ -2118,6 +2119,8 @@ async fn upload_pending_attachments_to_task(
         .collect())
 }
 
+const INLINE_HISTORY_MENU_OPEN_CONTEXT: &str = "InlineHistoryMenuOpen";
+
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
@@ -2136,6 +2139,11 @@ pub fn init(app: &mut AppContext) {
 
     app.register_fixed_bindings(vec![
         FixedBinding::new("ctrl-d", InputAction::CtrlD, id!("Input")),
+        FixedBinding::new(
+            HISTORY_SCOPE_CYCLE_KEYSTROKE,
+            InputAction::CycleHistoryScope,
+            id!("Input") & id!(INLINE_HISTORY_MENU_OPEN_CONTEXT),
+        ),
         FixedBinding::custom(
             CustomAction::History,
             InputAction::Up,
@@ -16850,6 +16858,16 @@ impl TypedActionView for Input {
                 self.select_previous_inline_history_item(ctx)
             }
             InputAction::SelectNextInlineHistoryItem => self.select_next_inline_history_item(ctx),
+            InputAction::CycleHistoryScope => {
+                if self
+                    .suggestions_mode_model
+                    .as_ref(ctx)
+                    .is_inline_history_menu()
+                {
+                    self.inline_history_menu_view
+                        .update(ctx, |view, ctx| view.cycle_scope(ctx));
+                }
+            }
             InputAction::PageUp => self.editor_page_up(ctx),
             InputAction::PageDown => self.editor_page_down(ctx),
             InputAction::CtrlD => self.ctrl_d(ctx),
@@ -17086,6 +17104,10 @@ impl View for Input {
 
         if self.is_voltron_open {
             ctx.set.insert("VoltronActive");
+        }
+
+        if self.suggestions_mode_model.as_ref(app).is_inline_history_menu() {
+            ctx.set.insert(INLINE_HISTORY_MENU_OPEN_CONTEXT);
         }
 
         if self.ai_input_model.as_ref(app).is_ai_input_enabled() {
