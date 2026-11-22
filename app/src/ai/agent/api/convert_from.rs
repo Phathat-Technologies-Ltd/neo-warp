@@ -613,7 +613,7 @@ impl From<api::message::AgentOutput> for AIAgentText {
     fn from(value: api::message::AgentOutput) -> Self {
         let (spoken, display) = split_spoken_block(&value.text);
         AIAgentText {
-            sections: parse_markdown_into_text_and_code_sections(display),
+            sections: parse_markdown_into_text_and_code_sections(&display),
             spoken,
         }
     }

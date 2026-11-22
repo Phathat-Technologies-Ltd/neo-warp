@@ -2,6 +2,8 @@
 //! is asked to open each reply with, or, when a reply has none, a short plain-English readout
 //! filtered from its prose.
 
+use std::borrow::Cow;
+
 const OPEN: &str = "<spoken>";
 const CLOSE: &str = "</spoken>";
 
@@ -13,27 +15,36 @@ const FALLBACK_MAX_WORDS: usize = 40;
 const MAX_SPOKEN_DIGITS: usize = 3;
 
 /// Splits a (possibly still streaming) reply into its `<spoken>` summary and the text to show on
-/// screen. While the summary streams, it is returned as far as it got and nothing is shown; a
-/// reply that is only a prefix of the opening tag counts as an empty summary so the tag never
-/// flashes on screen.
-pub fn split_spoken_block(text: &str) -> (Option<String>, &str) {
-    let trimmed = text.trim_start();
-    if let Some(after) = trimmed.strip_prefix(OPEN) {
-        return match after.find(CLOSE) {
-            Some(end) => (
-                Some(after[..end].trim().to_owned()),
-                after[end + CLOSE.len()..].trim_start(),
-            ),
-            None => (
-                Some(strip_partial_suffix(after, CLOSE).trim().to_owned()),
-                "",
-            ),
-        };
+/// screen. The summary may sit anywhere in the reply; models often put it at the end. While the
+/// summary streams, it is returned as far as it got and nothing after its opening tag is shown,
+/// and a trailing prefix of the opening tag is held back so the tag never flashes on screen.
+pub fn split_spoken_block(text: &str) -> (Option<String>, Cow<'_, str>) {
+    let Some(open) = text.find(OPEN) else {
+        let held = strip_partial_suffix(text, OPEN);
+        if held.len() == text.len() {
+            return (None, Cow::Borrowed(text));
+        }
+        let spoken = held.trim().is_empty().then(String::new);
+        return (spoken, Cow::Borrowed(held.trim_end()));
+    };
+    let before = text[..open].trim_end();
+    let after = &text[open + OPEN.len()..];
+    match after.find(CLOSE) {
+        Some(end) => {
+            let spoken = after[..end].trim().to_owned();
+            let rest = after[end + CLOSE.len()..].trim_start();
+            let display = match (before.is_empty(), rest.is_empty()) {
+                (true, _) => Cow::Borrowed(rest),
+                (false, true) => Cow::Borrowed(before),
+                (false, false) => Cow::Owned(format!("{before}\n\n{rest}")),
+            };
+            (Some(spoken), display)
+        }
+        None => (
+            Some(strip_partial_suffix(after, CLOSE).trim().to_owned()),
+            Cow::Borrowed(before),
+        ),
     }
-    if !trimmed.is_empty() && OPEN.starts_with(trimmed) {
-        return (Some(String::new()), "");
-    }
-    (None, text)
 }
 
 /// Drops a trailing prefix of `tag`, such as `</spo` while `</spoken>` streams in.

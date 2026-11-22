@@ -14,16 +14,16 @@ fn splits_the_spoken_block_from_the_display_text() {
 
 #[test]
 fn spoken_block_streams_without_flashing_the_tag() {
-    assert_eq!(split_spoken_block("<spo"), (Some(String::new()), ""));
+    assert_eq!(split_spoken_block("<spo"), (Some(String::new()), "".into()));
     assert_eq!(
         split_spoken_block("<spoken>I fixed the test.</spo"),
-        (Some("I fixed the test.".to_owned()), "")
+        (Some("I fixed the test.".to_owned()), "".into())
     );
     assert_eq!(
         split_spoken_block("<spoken>I fixed the test.</spoken>\nDet"),
-        (Some("I fixed the test.".to_owned()), "Det")
+        (Some("I fixed the test.".to_owned()), "Det".into())
     );
-    assert_eq!(split_spoken_block("<div>"), (None, "<div>"));
+    assert_eq!(split_spoken_block("<div>"), (None, "<div>".into()));
 }
 
 #[test]
@@ -103,4 +103,22 @@ fn plain_speech_drops_shell_math_and_long_numbers() {
         "Ran a find command: 14 folders."
     );
     assert_eq!(plain_speech("See https://x.io/a now."), "See now.");
+}
+
+#[test]
+fn finds_a_spoken_block_at_the_end_of_the_reply() {
+    let (spoken, display) = split_spoken_block(
+        "Ran `git status`.\n\n<spoken>You have two uncommitted changes.</spoken>",
+    );
+    assert_eq!(spoken.as_deref(), Some("You have two uncommitted changes."));
+    assert_eq!(display, "Ran `git status`.");
+
+    assert_eq!(split_spoken_block("Done.\n<spo"), (None, "Done.".into()));
+    assert_eq!(
+        split_spoken_block("Done.\n<spoken>All good"),
+        (Some("All good".to_owned()), "Done.".into())
+    );
+    let (spoken, display) = split_spoken_block("Before.\n<spoken>Said.</spoken>\nAfter.");
+    assert_eq!(spoken.as_deref(), Some("Said."));
+    assert_eq!(display, "Before.\n\nAfter.");
 }
