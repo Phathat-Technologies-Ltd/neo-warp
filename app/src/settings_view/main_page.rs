@@ -83,7 +83,7 @@ fn maybe_add_settings_sync_toggle_binding<T: Action + Clone>(
     let mut lock = SETTINGS_SYNC_BINDINGS_ADDED
         .lock()
         .expect("settings sync bindings lock poisoned");
-    if !*lock {
+    if !*lock && FeatureFlag::SettingsSync.is_enabled() {
         *lock = true;
         toggle_binding_pairs.push(
             ToggleSettingActionPair::new(
@@ -719,9 +719,10 @@ impl SettingsWidget for SettingsSyncWidget {
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
-        !AuthStateProvider::as_ref(app)
-            .get()
-            .is_anonymous_or_logged_out()
+        FeatureFlag::SettingsSync.is_enabled()
+            && !AuthStateProvider::as_ref(app)
+                .get()
+                .is_anonymous_or_logged_out()
     }
 
     fn render(
@@ -808,9 +809,10 @@ impl SettingsWidget for EarnRewardsWidget {
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
-        !AuthStateProvider::as_ref(app)
-            .get()
-            .is_anonymous_or_logged_out()
+        FeatureFlag::BillingAndReferrals.is_enabled()
+            && !AuthStateProvider::as_ref(app)
+                .get()
+                .is_anonymous_or_logged_out()
     }
 
     fn render(

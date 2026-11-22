@@ -49,6 +49,7 @@ fuzzy_match = { path = "crates/fuzzy_match" }
 handlebars = { path = "crates/handlebars" }
 http_client = { path = "crates/http_client" }
 oauth_loopback = { path = "crates/oauth_loopback" }
+org_flags = { path = "crates/org_flags" }
 org_sign_in = { path = "crates/org_sign_in" }
 selfhost_server = { path = "crates/selfhost_server" }
 http_server = { path = "crates/http_server" }

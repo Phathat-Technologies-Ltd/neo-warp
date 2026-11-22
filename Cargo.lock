@@ -10200,6 +10200,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb1ea499d242299d564879c8b375c11285f5a26d62d8010768909d6d099c4c5a"
 
 [[package]]
+name = "org_flags"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "org_sign_in"
 version = "0.1.0"
 dependencies = [
@@ -15923,6 +15934,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "ordered-float 3.9.2",
+ "org_flags",
  "org_sign_in",
  "os_info",
  "palette 0.6.1",

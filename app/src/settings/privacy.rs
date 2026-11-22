@@ -575,7 +575,7 @@ impl PrivacySettings {
                 .set_value(new_value, ctx);
         });
 
-        if self.auth_state.is_logged_in() {
+        if FeatureFlag::ConversationCloudSync.is_enabled() && self.auth_state.is_logged_in() {
             let auth_client = self.auth_client.clone();
             let _ = ctx.spawn(
                 async move {
@@ -682,7 +682,7 @@ impl PrivacySettings {
 
     /// Sends request(s) to update server-side user settings with current local values.
     fn update_server_with_local_settings(&self, ctx: &mut ModelContext<Self>) {
-        if self.auth_state.is_logged_in() {
+        if FeatureFlag::SettingsSync.is_enabled() && self.auth_state.is_logged_in() {
             let auth_client = self.auth_client.clone();
             let snapshot = self.get_snapshot(ctx);
             let _ = ctx.spawn(

@@ -1025,10 +1025,46 @@ pub enum FeatureFlag {
     /// Refreshes the short-lived proxy credentials of managed MCP servers during an agent run,
     /// before they expire and on first use after they have expired.
     ManagedMcpCredentialRefresh,
+
+    // Product areas an organization turns on or off in its flagd flag file; see
+    // `PRODUCT_AREA_FLAGS`.
+    /// Warp Drive and its objects: workflows, notebooks, env var collections, Drive-backed rules.
+    WarpDrive,
+    /// Cloud settings sync.
+    SettingsSync,
+    /// Cloud (Oz, ambient, scheduled) agents, runners, environments, agent API keys, and handoff.
+    CloudAgents,
+    /// Warp-hosted MCP servers and the MCP gallery.
+    WarpHostedMcp,
+    /// Block, object, and session sharing, guests, teams, and invites.
+    SharingAndTeams,
+    /// Billing, credits, referrals, upgrade prompts, and the onboarding survey.
+    BillingAndReferrals,
+    /// AI-generated block titles.
+    BlockTitles,
+    /// Cloud conversation history and sharing.
+    ConversationCloudSync,
+    /// Voice input.
+    VoiceInput,
+    /// Codebase indexing.
+    CodebaseIndexing,
+    /// AI prompt suggestions.
+    AiPromptSuggestions,
+    /// AI command search.
+    AiCommandSearch,
 }
 
-static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
-    [const { AtomicBool::new(false) }; { cardinality::<FeatureFlag>() }];
+static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] = initial_flag_states();
+
+const fn initial_flag_states() -> [AtomicBool; cardinality::<FeatureFlag>()] {
+    let mut states = [const { AtomicBool::new(false) }; { cardinality::<FeatureFlag>() }];
+    let mut i = 0;
+    while i < PRODUCT_AREA_FLAGS.len() {
+        states[PRODUCT_AREA_FLAGS[i] as usize] = AtomicBool::new(true);
+        i += 1;
+    }
+    states
+}
 
 /// This map is populated by UserPreferences, which take precedence
 /// over the global feature flag state.
@@ -1133,6 +1169,23 @@ pub const RELEASE_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::SshRemoteServer,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     FeatureFlag::DragTabsToWindows,
+];
+
+/// Product-area flags. They start on in every build, including tests; organization builds then set
+/// them from their flagd flag file at startup.
+pub const PRODUCT_AREA_FLAGS: &[FeatureFlag] = &[
+    FeatureFlag::WarpDrive,
+    FeatureFlag::SettingsSync,
+    FeatureFlag::CloudAgents,
+    FeatureFlag::WarpHostedMcp,
+    FeatureFlag::SharingAndTeams,
+    FeatureFlag::BillingAndReferrals,
+    FeatureFlag::BlockTitles,
+    FeatureFlag::ConversationCloudSync,
+    FeatureFlag::VoiceInput,
+    FeatureFlag::CodebaseIndexing,
+    FeatureFlag::AiPromptSuggestions,
+    FeatureFlag::AiCommandSearch,
 ];
 
 /// Flags that we want to allow to switch at runtime (assuming RuntimeFeatureFlags is set)

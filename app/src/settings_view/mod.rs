@@ -365,17 +365,14 @@ impl Display for SettingsSection {
 }
 
 impl SettingsSection {
-    /// Whether the section only works with Warp's own service, which organization builds don't
-    /// use.
-    fn needs_warp_service(self) -> bool {
+    /// The product-area flag that must be on for the section to show.
+    fn feature_flag(self) -> Option<FeatureFlag> {
         match self {
-            Self::BillingAndUsage
-            | Self::Referrals
-            | Self::SharedBlocks
-            | Self::Teams
-            | Self::WarpDrive
-            | Self::CloudEnvironments
-            | Self::WarpCloudAgentAPIKeys => true,
+            Self::BillingAndUsage | Self::Referrals => Some(FeatureFlag::BillingAndReferrals),
+            Self::SharedBlocks | Self::Teams => Some(FeatureFlag::SharingAndTeams),
+            Self::WarpDrive => Some(FeatureFlag::WarpDrive),
+            Self::CloudEnvironments | Self::WarpCloudAgentAPIKeys => Some(FeatureFlag::CloudAgents),
+            Self::CodeIndexing => Some(FeatureFlag::CodebaseIndexing),
             Self::About
             | Self::Account
             | Self::Appearance
@@ -389,9 +386,12 @@ impl SettingsSection {
             | Self::AgentMCPServers
             | Self::Knowledge
             | Self::ThirdPartyCLIAgents
-            | Self::CodeIndexing
-            | Self::EditorAndCodeReview => false,
+            | Self::EditorAndCodeReview => None,
         }
+    }
+
+    fn is_available(self) -> bool {
+        self.feature_flag().is_none_or(|flag| flag.is_enabled())
     }
 
     /// Stable identifier for this section, used everywhere the section leaves
@@ -1487,34 +1487,28 @@ impl SettingsView {
             );
         }
 
-        if crate::auth::is_organization_sign_in() {
-            nav_items = nav_items
-                .into_iter()
-                .filter_map(|item| match item {
-                    SettingsNavItem::Page(section) => {
-                        (!section.needs_warp_service()).then_some(item)
-                    }
-                    SettingsNavItem::Umbrella(umbrella) => {
-                        let subpages = umbrella
-                            .subpages
-                            .into_iter()
-                            .filter(|section| !section.needs_warp_service())
-                            .collect::<Vec<_>>();
-                        (!subpages.is_empty()).then(|| {
-                            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                                umbrella.label,
-                                subpages,
-                            ))
-                        })
-                    }
-                })
-                .collect();
-        }
+        nav_items = nav_items
+            .into_iter()
+            .filter_map(|item| match item {
+                SettingsNavItem::Page(section) => section.is_available().then_some(item),
+                SettingsNavItem::Umbrella(umbrella) => {
+                    let subpages = umbrella
+                        .subpages
+                        .into_iter()
+                        .filter(|section| section.is_available())
+                        .collect::<Vec<_>>();
+                    (!subpages.is_empty()).then(|| {
+                        SettingsNavItem::Umbrella(SettingsUmbrella::new(umbrella.label, subpages))
+                    })
+                }
+            })
+            .collect();
 
         let initial_page = match page {
             Some(SettingsSection::Scripting) if !FeatureFlag::WarpControlCli.is_enabled() => {
                 SettingsSection::Account
             }
+            Some(section) if !section.is_available() => SettingsSection::Account,
             other => other.unwrap_or_default(),
         };
 
@@ -2098,7 +2092,7 @@ impl SettingsView {
         ctx: &mut ViewContext<Self>,
     ) {
         // Every nav target owns its backing page. Check it exists.
-        if self.settings_page(section).is_none() {
+        if self.settings_page(section).is_none() || !section.is_available() {
             return;
         }
         let previous_section = self.current_settings_page;

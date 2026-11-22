@@ -3698,6 +3698,10 @@ impl SettingsWidget for ToolsPanelWarpDriveWidget {
         "tools panel tabs warp drive left panel visibility"
     }
 
+    fn should_render(&self, app: &AppContext) -> bool {
+        WarpDriveSettings::is_warp_drive_available(app)
+    }
+
     fn render(
         &self,
         _view: &Self::View,
