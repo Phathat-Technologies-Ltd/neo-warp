@@ -100,10 +100,10 @@ off.
 
 `speech::summary` builds every tool readout from `program_name` (first non-wrapper word, only when
 it is a short plain name) and `command_description` (a plain effect for destructive programs such
-as `rm`, `git push --force`, `kubectl apply`). `command_result_readout` counts output lines and
-error lines and never reads output. `approval_prompt` speaks a subject phrase verbatim, built by
-`spoken_action_prompt`. `spoken_reply_text` drops action summaries when any text message has a
-`<spoken>` block, and `ConversationSession::action_finished` skips results for such replies.
+as `rm`, `git push --force`, `kubectl apply`). `approval_prompt` speaks a subject phrase verbatim,
+built by `spoken_action_prompt`. Tool calls and results are never spoken: `spoken_reply_text`
+leaves actions out, and `conversation_text::action_announcement` returns a line only for
+`AskUserQuestion` and `TransferShellCommandControlToUser`.
 `spoken::plain_speech` runs in `ConversationController::enqueue` on every sentence before
 synthesis. `ConversationSession` follows `HandsFreeSession::target_surface()`.
 
@@ -202,10 +202,8 @@ synthesis. `ConversationSession` follows `HandsFreeSession::target_surface()`.
     server VAD config is fixed per socket).
   - Real AEC is the `voice_input::voice_processing` backend described under "Echo cancellation
     (macOS voice-processing unit)" below; the conversation calls `set_echo_cancelled` from it.
-- **Spoken readout of results**: when a command action finishes (not cancelled), its result is
-  spoken after the reply so far (`conversation_text::spoken_action_result`). Successful output of
-  at most 2 lines and 120 characters is read ("Ran pwd: /tmp."); anything longer, or a failure,
-  is only summarized (`summary::command_result_readout`, e.g. "Ran cargo check: 2 errors.").
+- **No tool progress or results**: tool calls and command results are not spoken; the reply's
+  `<spoken>` summary (or the server narration fallback) covers them.
   Follow-up replies of the same turn (after a tool call) are spoken too (`reply_started`).
 - **Not done in v1**:
   - A Settings toggle and Command Palette entry for echo cancellation (TOML only for now), and
@@ -229,8 +227,7 @@ synthesis. `ConversationSession` follows `HandsFreeSession::target_surface()`.
   - `spoken_reply_text` speaks only `spoken` when present. Otherwise `fallback_readout` drops code
     blocks, inline code, paths, URLs, hashes, flags, long numbers, tables, lists, and markdown, and
     keeps the first two sentences (40 words at most); a trailing partial word is held back while
-    streaming. Code-block summaries are no longer spoken; command-result readouts and approval
-    prompts are unchanged.
+    streaming. Code-block summaries and command-result readouts are not spoken; approval prompts are.
 - **Stop and mute**:
   - Esc in the input stops the readout when a reply is being read (otherwise Esc behaves as
     before). A "Stop speaking" palette entry (bound to Esc at the workspace level, active only

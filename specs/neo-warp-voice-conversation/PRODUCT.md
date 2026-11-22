@@ -56,10 +56,11 @@ agent's replies aloud, so a user can drive a terminal task entirely by voice.
   are layered:
   1. The server prompt asks the agent for a `<spoken>` summary of one or two plain sentences, like
      a colleague talking, with errors described as what happened and what to do next.
-  2. When a turn has a `<spoken>` summary, tool calls and their results are not spoken at all.
-     Otherwise each gets a short generic phrase from the tool kind and outcome: at most the program
-     name or a plain description ("Running a find command.", "Ran a find command: 14 folders.",
-     "The cargo command failed with 2 errors.").
+  2. Tool calls and their results are never spoken, with or without a `<spoken>` summary: no
+     progress lines ("Running a command.") and no result notes ("Ran a find command: 14
+     folders."). The reply's summary, or the server's narration when it has none, covers them.
+     Only what needs the user is said as it happens: "I have a question for you on screen." and
+     "The command needs your input."
   3. Approval prompts describe the action, never its text: "I want to run a command that deletes
      files. Approve on screen."
   4. A final filter before synthesis drops any token that looks like code, shell syntax, math, a

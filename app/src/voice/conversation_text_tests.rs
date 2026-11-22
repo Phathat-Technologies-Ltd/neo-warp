@@ -91,42 +91,6 @@ fn unclassified_commands_need_the_screen() {
     );
 }
 
-fn completed(command: &str, exit_code: i32, output: &str) -> AIAgentActionResultType {
-    AIAgentActionResultType::RequestCommandOutput(RequestCommandOutputResult::Completed {
-        block_id: crate::terminal::model::block::BlockId::new(),
-        command: command.to_owned(),
-        output: output.to_owned(),
-        exit_code: exit_code.into(),
-        start_ts: None,
-        completed_ts: None,
-    })
-}
-
-#[test]
-fn command_results_never_read_the_command_or_output() {
-    assert_eq!(
-        spoken_action_result(&completed("pwd", 0, "/tmp\n")),
-        Some("Ran a pwd command: it succeeded.".to_owned())
-    );
-    let find = "find . -type d -not -path '*/.git*' -not -path '*/node_modules*'";
-    let folders = "./a\n".repeat(14);
-    assert_eq!(
-        spoken_action_result(&completed(find, 0, &folders)),
-        Some("Ran a find command: 14 folders.".to_owned())
-    );
-    let long = "warning: x\n".repeat(40) + "error: y\n";
-    assert_eq!(
-        spoken_action_result(&completed("cargo check -p app", 101, &long)),
-        Some("The cargo command failed with 1 error and 40 warnings.".to_owned())
-    );
-    assert_eq!(
-        spoken_action_result(&AIAgentActionResultType::RequestCommandOutput(
-            RequestCommandOutputResult::CancelledBeforeExecution
-        )),
-        None
-    );
-}
-
 fn reply(markdown: &str) -> AIAgentOutput {
     let text = AIAgentText::from(warp_multi_agent_api::message::AgentOutput {
         text: markdown.to_owned(),
@@ -180,88 +144,64 @@ fn replies_without_a_spoken_block_use_the_filtered_readout() {
     );
 }
 
-#[test]
-fn tool_calls_are_not_in_the_reply_text() {
-    let mut output = reply("");
-    output.messages.push(AIAgentOutputMessage {
-        id: MessageId::new("a".to_owned()),
+fn action_message(id: &str, action: AIAgentActionType) -> AIAgentOutputMessage {
+    AIAgentOutputMessage {
+        id: MessageId::new(id.to_owned()),
         message: AIAgentOutputMessageType::Action(crate::ai::agent::AIAgentAction {
-            id: crate::ai::agent::AIAgentActionId::from("action".to_owned()),
-            action: command("find . -type d", Some(false)),
+            id: crate::ai::agent::AIAgentActionId::from(id.to_owned()),
+            action,
             task_id: crate::ai::agent::task::TaskId::new("t".to_owned()),
             requires_result: true,
         }),
         citations: Vec::new(),
-    });
+    }
+}
+
+#[test]
+fn turns_with_tool_calls_speak_only_the_summary() {
+    let mut output = reply("<spoken>There are 14 folders.</spoken>\n\nListed them.");
+    output.messages.insert(
+        0,
+        action_message("run", command("find . -type d", Some(false))),
+    );
+    output.messages.insert(
+        1,
+        action_message(
+            "grep",
+            AIAgentActionType::Grep {
+                queries: vec!["fn main".to_owned()],
+                path: ".".to_owned(),
+            },
+        ),
+    );
+    assert_eq!(spoken_reply_text(&output, false), "There are 14 folders.");
+    assert_eq!(spoken_reply_text(&output, true), "There are 14 folders.");
+    assert_eq!(
+        reply_actions(&output)
+            .filter_map(action_announcement)
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn tool_calls_are_not_in_the_reply_text() {
+    let mut output = reply("");
+    output.messages.push(action_message(
+        "action",
+        command("find . -type d", Some(false)),
+    ));
+    output.messages.push(action_message(
+        "transfer",
+        AIAgentActionType::TransferShellCommandControlToUser {
+            reason: String::new(),
+        },
+    ));
     assert_eq!(spoken_reply_text(&output, false), "");
     assert_eq!(
         reply_actions(&output)
             .map(action_announcement)
             .collect::<Vec<_>>(),
-        vec![ActionAnnouncement::Progress(ProgressKind::Command, 1)]
+        vec![None, Some("The command needs your input.".to_owned())]
     );
-}
-
-#[test]
-fn quick_reads_are_announced_once() {
-    let start = Instant::now();
-    let mut progress = ProgressAnnouncer::default();
-    for offset in [0, 300, 600] {
-        progress.action_started(ProgressKind::Read, 1, start + Duration::from_millis(offset));
-    }
-    assert_eq!(progress.take_due(start + Duration::from_millis(1500)), None);
-    assert_eq!(
-        progress
-            .take_due(start + Duration::from_millis(2100))
-            .as_deref(),
-        Some("Looking at three files.")
-    );
-    assert_eq!(progress.take_due(start + Duration::from_secs(5)), None);
-}
-
-#[test]
-fn batches_wait_a_bounded_time() {
-    let start = Instant::now();
-    let mut progress = ProgressAnnouncer::default();
-    let mut due = start;
-    for offset in (0..10).map(|step| step * 1000) {
-        due = progress.action_started(
-            ProgressKind::Search,
-            1,
-            start + Duration::from_millis(offset),
-        );
-    }
-    assert_eq!(due, start + Duration::from_secs(4));
-}
-
-#[test]
-fn quick_turns_with_a_summary_have_no_tool_line() {
-    let start = Instant::now();
-    let mut progress = ProgressAnnouncer::default();
-    progress.action_started(ProgressKind::Read, 1, start);
-    progress.cancel();
-    assert_eq!(progress.due_at(), None);
-    assert_eq!(progress.take_due(start + Duration::from_secs(2)), None);
-}
-
-#[test]
-fn long_turns_are_rate_limited() {
-    let start = Instant::now();
-    let at = |secs: u64| start + Duration::from_secs(secs);
-    let mut progress = ProgressAnnouncer::default();
-    progress.action_started(ProgressKind::Read, 1, at(0));
-    assert_eq!(
-        progress.take_due(at(2)).as_deref(),
-        Some("Looking at a file.")
-    );
-    let due = progress.action_started(ProgressKind::Command, 1, at(3));
-    assert_eq!(due, at(10));
-    assert_eq!(progress.take_due(at(5)), None);
-    assert_eq!(
-        progress.take_due(at(10)).as_deref(),
-        Some("Running a command.")
-    );
-    // An identical line right after the previous one is not repeated.
-    progress.action_started(ProgressKind::Command, 1, at(20));
-    assert_eq!(progress.take_due(at(22)), None);
 }

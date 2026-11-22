@@ -1,35 +1,5 @@
 use super::*;
 
-#[test]
-fn progress_lines_group_by_kind_and_count() {
-    use ProgressKind::*;
-    assert_eq!(progress_line(&[]), None);
-    assert_eq!(
-        progress_line(&[(Read, 1), (Read, 2)]).as_deref(),
-        Some("Looking at three files.")
-    );
-    assert_eq!(
-        progress_line(&[(Read, 1)]).as_deref(),
-        Some("Looking at a file.")
-    );
-    assert_eq!(
-        progress_line(&[(Search, 1), (Search, 1)]).as_deref(),
-        Some("Searching the project.")
-    );
-    assert_eq!(
-        progress_line(&[(Command, 1), (Command, 1)]).as_deref(),
-        Some("Running two commands.")
-    );
-    assert_eq!(
-        progress_line(&[(Edit, 12)]).as_deref(),
-        Some("Editing several files.")
-    );
-    assert_eq!(
-        progress_line(&[(Read, 1), (Command, 1)]).as_deref(),
-        Some("Checking a few things.")
-    );
-}
-
 const FIND: &str = "find . -type d -not -path '*/.git*' -not -path '*/node_modules*' -maxdepth 3";
 const RISKY: [&str; 4] = [
     FIND,
@@ -89,46 +59,6 @@ fn describes_commands_without_arguments() {
         assert_no_raw_command(&command_description(command));
         assert_no_raw_command(&command_approval_subject(command));
     }
-}
-
-#[test]
-fn result_readouts_count_instead_of_reading() {
-    let output = (0..14)
-        .map(|n| format!("./dir{n}/sub"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_eq!(
-        command_result_readout(FIND, Some(0), &output),
-        "Ran a find command: 14 folders."
-    );
-    assert_eq!(
-        command_result_readout("cargo check", Some(101), "error: bad\nerror: worse"),
-        "The cargo command failed with 2 errors."
-    );
-    assert_eq!(
-        command_result_readout("false", Some(1), ""),
-        "The false command failed with exit code 1."
-    );
-    assert_eq!(
-        command_result_readout("pwd", Some(0), "/Users/me/app\n"),
-        "Ran a pwd command: it succeeded."
-    );
-    assert_eq!(
-        command_result_readout("rm -rf target", Some(0), ""),
-        "Ran a command that deletes files: it succeeded."
-    );
-    for command in RISKY {
-        assert_no_raw_command(&command_result_readout(command, Some(0), "/a/b\n"));
-        assert_no_raw_command(&command_result_readout(command, Some(1), "error: /a/b"));
-    }
-}
-
-#[test]
-fn denylisted_readout_does_not_read_the_command() {
-    assert_eq!(
-        command_denied_readout("rm -rf /"),
-        "A command that deletes files is on the deny list, so it didn't run."
-    );
 }
 
 #[test]

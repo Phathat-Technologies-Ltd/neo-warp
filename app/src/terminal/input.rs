@@ -2770,25 +2770,9 @@ impl Input {
                     conversation.approval_resolved(action_id, ctx)
                 });
             }
-            BlocklistAIActionEvent::FinishedAction {
-                action_id,
-                cancellation_reason,
-                ..
-            } => {
-                let result = if cancellation_reason.is_none() {
-                    action_model
-                        .as_ref(ctx)
-                        .get_action_result(action_id)
-                        .cloned()
-                } else {
-                    None
-                };
-                let surface = self.terminal_view_id;
+            BlocklistAIActionEvent::FinishedAction { action_id, .. } => {
                 conversation.update(ctx, |conversation, ctx| {
-                    conversation.approval_resolved(action_id, ctx);
-                    if let Some(result) = result {
-                        conversation.action_finished(surface, &result.result, ctx);
-                    }
+                    conversation.approval_resolved(action_id, ctx)
                 });
             }
             BlocklistAIActionEvent::QueuedAction(_)

@@ -20,8 +20,8 @@ use warpui::r#async::Timer;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity, WindowId};
 
 use super::conversation_text::{
-    ActionAnnouncement, ProgressAnnouncer, action_announcement, reply_actions,
-    reply_has_spoken_summary, spoken_action_prompt, spoken_action_result, spoken_reply_text,
+    action_announcement, reply_actions, reply_has_spoken_summary, spoken_action_prompt,
+    spoken_reply_text,
 };
 use super::hands_free::{HandsFreeEvent, HandsFreeSession, toggle_hands_free};
 use super::local_model::{
@@ -30,7 +30,7 @@ use super::local_model::{
 };
 use crate::ai::agent::api::VOICE_CONVERSATION_ACTIVE;
 use crate::ai::agent::conversation::AIConversationId;
-use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType, CancellationReason};
+use crate::ai::agent::{AIAgentActionId, CancellationReason};
 use crate::ai::blocklist::{
     BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
 };
@@ -57,11 +57,10 @@ struct ApprovalTarget {
 struct SpokenReply {
     exchange_id: crate::ai::agent::AIAgentExchangeId,
     fed: String,
-    /// Whether the reply has a `<spoken>` summary, which covers its tool calls and results.
+    /// Whether the reply has a `<spoken>` summary, which covers its tool calls.
     has_spoken: bool,
     /// How many of the reply's tool calls were already seen.
     announced_actions: usize,
-    progress: ProgressAnnouncer,
 }
 
 pub struct ConversationSession {
@@ -77,8 +76,6 @@ pub struct ConversationSession {
     approval: Option<ApprovalTarget>,
     /// The end of the spoken answer window a timer is already waiting for.
     approval_timeout_at: Option<Instant>,
-    /// When the progress line timer already waiting will fire.
-    progress_timer_at: Option<Instant>,
     /// When the approval announcement timer already waiting will fire.
     approval_due_timer_at: Option<Instant>,
     finished_tx: mpsc::UnboundedSender<(u64, u64)>,
@@ -133,7 +130,6 @@ impl ConversationSession {
             reply: None,
             approval: None,
             approval_timeout_at: None,
-            progress_timer_at: None,
             approval_due_timer_at: None,
             finished_tx,
         }
@@ -341,7 +337,6 @@ impl ConversationSession {
                     fed: String::new(),
                     has_spoken: false,
                     announced_actions: 0,
-                    progress: ProgressAnnouncer::default(),
                 })
             }
         };
@@ -349,23 +344,13 @@ impl ConversationSession {
         let common = common_prefix_len(&reply.fed, &text);
         let delta = text[common..].to_owned();
         reply.fed = text;
-        let now = Instant::now();
         let mut immediate = Vec::new();
         for announcement in announcements.into_iter().skip(reply.announced_actions) {
             reply.announced_actions += 1;
             if reply.has_spoken || finished {
                 continue;
             }
-            match announcement {
-                ActionAnnouncement::Progress(kind, count) => {
-                    reply.progress.action_started(kind, count, now);
-                }
-                ActionAnnouncement::Immediate(line) => immediate.push(line),
-                ActionAnnouncement::Silent => {}
-            }
-        }
-        if reply.has_spoken || finished {
-            reply.progress.cancel();
+            immediate.extend(announcement);
         }
         let mut actions = self.controller.reply_text(&delta);
         for line in immediate {
@@ -375,37 +360,6 @@ impl ConversationSession {
             actions.extend(self.controller.reply_finished());
         }
         self.apply(actions, ctx);
-        self.schedule_progress(ctx);
-    }
-
-    /// Starts a timer for when the reply's pending progress line is due.
-    fn schedule_progress(&mut self, ctx: &mut ModelContext<Self>) {
-        let Some(due) = self
-            .reply
-            .as_ref()
-            .and_then(|reply| reply.progress.due_at())
-        else {
-            return;
-        };
-        if self.progress_timer_at.is_some_and(|at| at <= due) {
-            return;
-        }
-        self.progress_timer_at = Some(due);
-        ctx.spawn(
-            Timer::after(due.saturating_duration_since(Instant::now())),
-            |me, _, ctx| {
-                me.progress_timer_at = None;
-                let line = me
-                    .reply
-                    .as_mut()
-                    .and_then(|reply| reply.progress.take_due(Instant::now()));
-                if let Some(line) = line {
-                    let actions = me.controller.speak(line);
-                    me.apply(actions, ctx);
-                }
-                me.schedule_progress(ctx);
-            },
-        );
     }
 
     /// The agent waits on the user to approve an action in `surface`.
@@ -427,9 +381,6 @@ impl ConversationSession {
         else {
             return;
         };
-        if let Some(reply) = &mut self.reply {
-            reply.progress.cancel();
-        }
         self.approval = Some(ApprovalTarget {
             action_model,
             conversation_id,
@@ -457,27 +408,6 @@ impl ConversationSession {
                 me.schedule_approval_due(ctx);
             },
         );
-    }
-
-    /// An agent action of `surface` finished; a command's outcome gets a one-line note unless the
-    /// reply's `<spoken>` summary covers the turn.
-    pub fn action_finished(
-        &mut self,
-        surface: EntityId,
-        result: &AIAgentActionResultType,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        if !self.is_active() || self.surface != Some(surface) {
-            return;
-        }
-        if self.reply.as_ref().is_some_and(|reply| reply.has_spoken) {
-            return;
-        }
-        let Some(text) = spoken_action_result(result) else {
-            return;
-        };
-        let actions = self.controller.speak(text);
-        self.apply(actions, ctx);
     }
 
     /// The action stopped waiting for approval (answered on screen, run, or cancelled).
