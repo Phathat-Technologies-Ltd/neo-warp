@@ -19,6 +19,7 @@ use oi_kit_provider_types::conversation::token_usage::ProviderUsage;
 use oi_kit_provider_types::model::ModelConfig;
 use oi_kit_providers::anthropic::AnthropicProviderBuilder;
 use oi_kit_providers::api_client::{ApiClient, AuthMethod};
+use oi_kit_providers::openai_compatible::OpenAiCompatibleProvider;
 use prost_types::FieldMask;
 use rmcp::model::{CallToolResult, ContentBlock, Role, Tool};
 use tokio::sync::mpsc;
@@ -31,7 +32,9 @@ use warp_multi_agent_api::client_action::{
 use warp_multi_agent_api::message::{
     AgentOutput, Message as Kind, ToolCall, ToolCallResult, UserQuery,
 };
+use warp_multi_agent_api::request::settings::custom_model_providers::CustomEndpointSchema;
 
+use super::responses::{self, ResponsesProvider};
 use super::{prompt, tools};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com";
@@ -41,18 +44,64 @@ const CANCELLED_TOOL_RESULT: &str = "The user cancelled this tool call before it
 
 /// Why a turn ended without an answer, as the client's `StreamFinished` reasons.
 enum TurnError {
-    InvalidApiKey { model: String },
+    InvalidApiKey {
+        provider: api::LlmProvider,
+        model: String,
+    },
     Unavailable,
     Internal(String),
 }
 
-/// Builds the model provider for a user's credential.
-pub type ProviderFactory = Arc<dyn Fn(&str) -> Result<Arc<dyn Provider>> + Send + Sync>;
+/// Where the selected model runs, with the user's credential for it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ModelEndpoint {
+    Anthropic {
+        credential: String,
+    },
+    /// A user-configured endpoint that speaks OpenAI Chat Completions.
+    OpenAiChatCompletions {
+        base_url: String,
+        api_key: String,
+    },
+    /// An endpoint that speaks the OpenAI Responses API, such as ChatGPT's Codex backend.
+    OpenAiResponses {
+        base_url: String,
+        api_key: String,
+    },
+}
 
-/// Runs one turn against Anthropic and sends its events to `out`. Always ends with
-/// `StreamFinished`.
+impl ModelEndpoint {
+    /// The provider's name in errors shown to the user.
+    fn display_name(&self) -> String {
+        match self {
+            Self::Anthropic { .. } => "Anthropic".to_owned(),
+            Self::OpenAiResponses { base_url, .. } if responses::is_codex_backend(base_url) => {
+                "ChatGPT".to_owned()
+            }
+            Self::OpenAiChatCompletions { base_url, .. }
+            | Self::OpenAiResponses { base_url, .. } => url::Url::parse(base_url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_else(|| base_url.clone()),
+        }
+    }
+
+    fn llm_provider(&self) -> api::LlmProvider {
+        match self {
+            Self::Anthropic { .. } => api::LlmProvider::Anthropic,
+            Self::OpenAiChatCompletions { .. } | Self::OpenAiResponses { .. } => {
+                api::LlmProvider::Unknown
+            }
+        }
+    }
+}
+
+/// Builds the model provider for an endpoint.
+pub type ProviderFactory = Arc<dyn Fn(&ModelEndpoint) -> Result<Arc<dyn Provider>> + Send + Sync>;
+
+/// Runs one turn and sends its events to `out`. Always ends with `StreamFinished`.
 pub async fn run(request: api::Request, out: mpsc::UnboundedSender<api::ResponseEvent>) {
-    run_with_provider(request, out, Arc::new(anthropic_provider)).await;
+    run_with_provider(request, out, Arc::new(provider_for)).await;
 }
 
 pub(crate) async fn run_with_provider(
@@ -63,11 +112,11 @@ pub(crate) async fn run_with_provider(
     let mut stream = Stream::new(&request, out);
     let reason = match stream.run_turn(request, &make_provider).await {
         Ok(()) => api::response_event::stream_finished::Reason::Done(Default::default()),
-        Err(TurnError::InvalidApiKey { model }) => {
-            log::warn!("Agent turn refused: no usable Anthropic credential for {model}");
+        Err(TurnError::InvalidApiKey { provider, model }) => {
+            log::warn!("Agent turn refused: no usable credential for {model}");
             api::response_event::stream_finished::Reason::InvalidApiKey(
                 api::response_event::stream_finished::InvalidApiKey {
-                    provider: api::LlmProvider::Anthropic as i32,
+                    provider: provider as i32,
                     model_name: model,
                 },
             )
@@ -243,26 +292,7 @@ impl Stream {
         self.actions(vec![self.add_messages(echoes)]);
 
         let settings = request.settings.as_ref();
-        let model = settings
-            .and_then(|settings| settings.model_config.as_ref())
-            .map(|config| config.base.clone())
-            .filter(|model| !model.is_empty())
-            .ok_or_else(|| internal("the request names no model"))?;
-        if !model.starts_with("claude-") {
-            return Err(internal(format!(
-                "this server runs Claude models only, and {model} is not one"
-            )));
-        }
-        let credential = settings
-            .and_then(|settings| settings.api_keys.as_ref())
-            .map(|keys| keys.anthropic.trim().to_owned())
-            .filter(|key| !key.is_empty())
-            .ok_or_else(|| {
-                log::warn!("The request carries no Anthropic credential");
-                TurnError::InvalidApiKey {
-                    model: model.clone(),
-                }
-            })?;
+        let (endpoint, model) = resolve_model(settings)?;
         let tools = tools::definitions(
             settings
                 .map(|settings| settings.supported_tools.as_slice())
@@ -270,10 +300,9 @@ impl Stream {
         );
         let system_prompt = prompt::system_prompt(input.context.as_ref());
 
-        let provider =
-            make_provider(&credential).map_err(|error| internal(format!("{error:#}")))?;
+        let provider = make_provider(&endpoint).map_err(|error| internal(format!("{error:#}")))?;
         let messages = self
-            .run_agent(messages, &model, provider, tools, system_prompt)
+            .run_agent(messages, &model, &endpoint, provider, tools, system_prompt)
             .await?;
         let server_data = serde_json::to_string(&messages)
             .map_err(|error| internal(format!("couldn't save the conversation: {error}")))?;
@@ -355,6 +384,7 @@ impl Stream {
         &mut self,
         messages: Vec<Message>,
         model: &str,
+        endpoint: &ModelEndpoint,
         provider: Arc<dyn Provider>,
         tools: Vec<Tool>,
         system_prompt: String,
@@ -400,7 +430,7 @@ impl Stream {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(error) = trailing_error(&messages) {
             log::warn!("The model call failed: {error}");
-            return Err(classify_message_error(&error, model));
+            return Err(classify_message_error(&error, model, endpoint));
         }
         Ok(messages)
     }
@@ -577,6 +607,97 @@ fn input_type_name(input: Option<&api::request::input::Type>) -> String {
     }
 }
 
+/// Finds where the request's selected model runs: a custom provider that lists it, or else
+/// Anthropic.
+fn resolve_model(
+    settings: Option<&api::request::Settings>,
+) -> Result<(ModelEndpoint, String), TurnError> {
+    let selected = settings
+        .and_then(|settings| settings.model_config.as_ref())
+        .map(|config| config.base.clone())
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| internal("the request names no model"))?;
+
+    let custom = settings
+        .and_then(|settings| settings.custom_model_providers.as_ref())
+        .into_iter()
+        .flat_map(|registry| &registry.providers)
+        .find_map(|provider| {
+            provider
+                .models
+                .iter()
+                .find(|model| model.config_key == selected)
+                .map(|model| (provider, model))
+        });
+    if let Some((provider, model)) = custom {
+        let schema = CustomEndpointSchema::try_from(provider.schema)
+            .unwrap_or(CustomEndpointSchema::OpenaiChatCompletions);
+        let api_key = provider.api_key.trim();
+        if api_key.is_empty() {
+            return Err(TurnError::InvalidApiKey {
+                provider: api::LlmProvider::Unknown,
+                model: model.slug.clone(),
+            });
+        }
+        let base_url = provider.base_url.trim().to_owned();
+        let api_key = api_key.to_owned();
+        let endpoint = match schema {
+            CustomEndpointSchema::OpenaiChatCompletions => {
+                ModelEndpoint::OpenAiChatCompletions { base_url, api_key }
+            }
+            CustomEndpointSchema::OpenaiResponses => {
+                ModelEndpoint::OpenAiResponses { base_url, api_key }
+            }
+            CustomEndpointSchema::AnthropicMessages => {
+                return Err(internal(format!(
+                    "this server can't call {} endpoints yet",
+                    schema.as_str_name()
+                )));
+            }
+        };
+        return Ok((endpoint, model.slug.clone()));
+    }
+
+    if !selected.starts_with("claude-") {
+        return Err(internal(format!(
+            "{selected} is neither a Claude model nor one of your custom models"
+        )));
+    }
+    let credential = settings
+        .and_then(|settings| settings.api_keys.as_ref())
+        .map(|keys| keys.anthropic.trim().to_owned())
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| {
+            log::warn!("The request carries no Anthropic credential");
+            TurnError::InvalidApiKey {
+                provider: api::LlmProvider::Anthropic,
+                model: selected.clone(),
+            }
+        })?;
+    Ok((ModelEndpoint::Anthropic { credential }, selected))
+}
+
+fn provider_for(endpoint: &ModelEndpoint) -> Result<Arc<dyn Provider>> {
+    match endpoint {
+        ModelEndpoint::Anthropic { credential } => anthropic_provider(credential),
+        ModelEndpoint::OpenAiChatCompletions { base_url, api_key } => {
+            let api_client = ApiClient::new_with_tls(
+                base_url.clone(),
+                AuthMethod::BearerToken(api_key.clone()),
+                None,
+            )?;
+            Ok(Arc::new(OpenAiCompatibleProvider::new(
+                endpoint.display_name(),
+                api_client,
+                String::new(),
+            )))
+        }
+        ModelEndpoint::OpenAiResponses { base_url, api_key } => Ok(Arc::new(
+            ResponsesProvider::new(endpoint.display_name(), base_url, api_key)?,
+        )),
+    }
+}
+
 fn anthropic_provider(credential: &str) -> Result<Arc<dyn Provider>> {
     let api_client = if credential.starts_with(OAUTH_TOKEN_PREFIX) {
         ApiClient::new_with_tls(
@@ -608,17 +729,19 @@ fn trailing_error(messages: &[Message]) -> Option<String> {
     })
 }
 
-fn classify_message_error(error: &str, model: &str) -> TurnError {
+fn classify_message_error(error: &str, model: &str, endpoint: &ModelEndpoint) -> TurnError {
     let lowered = error.to_lowercase();
     if lowered.contains("status: 401") || lowered.contains("invalid x-api-key") {
         TurnError::InvalidApiKey {
+            provider: endpoint.llm_provider(),
             model: model.to_owned(),
         }
     } else if lowered.contains("status: 529") || lowered.contains("overloaded") {
         TurnError::Unavailable
     } else {
         TurnError::Internal(format!(
-            "Anthropic refused the request: {}",
+            "{} refused the request: {}",
+            endpoint.display_name(),
             provider_reason(error)
         ))
     }

@@ -12769,6 +12769,7 @@ dependencies = [
  "tokio-util",
  "toml 0.8.23",
  "tower",
+ "url",
  "uuid",
  "warp_graphql",
  "warp_multi_agent_api",

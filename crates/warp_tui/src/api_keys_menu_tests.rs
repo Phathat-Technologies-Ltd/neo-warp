@@ -111,6 +111,7 @@ fn custom_endpoint_rows_use_user_names_and_support_key_editing_and_clearing() {
                         "X premium or SuperGrok subscription",
                         Some("(Not connected)")
                     ),
+                    ("Cerebras API key", Some("(Not connected)")),
                     ("OpenRouter custom endpoint", Some("(Not connected)")),
                     ("Zulu custom endpoint", Some("(Not connected)")),
                     ("Warp credit fallback", Some("(off)")),
@@ -119,7 +120,7 @@ fn custom_endpoint_rows_use_user_names_and_support_key_editing_and_clearing() {
         });
 
         menu.update(&mut app, |menu, ctx| {
-            assert!(menu.select_at_snapshot_index(4, ctx));
+            assert!(menu.select_at_snapshot_index(5, ctx));
             menu.accept_selected(ctx);
         });
         app.read(|ctx| {
@@ -145,13 +146,13 @@ fn custom_endpoint_rows_use_user_names_and_support_key_editing_and_clearing() {
             );
             let snapshot = menu.as_ref(ctx).snapshot(ctx).unwrap();
             assert_eq!(
-                snapshot.rows[4].state_suffix.as_deref(),
+                snapshot.rows[5].state_suffix.as_deref(),
                 Some("(Connected)")
             );
         });
 
         menu.update(&mut app, |menu, ctx| {
-            assert!(menu.select_at_snapshot_index(4, ctx));
+            assert!(menu.select_at_snapshot_index(5, ctx));
             assert!(menu.can_clear_selected(ctx));
             menu.clear_selected(ctx);
         });
@@ -161,7 +162,7 @@ fn custom_endpoint_rows_use_user_names_and_support_key_editing_and_clearing() {
                 None
             );
             assert_eq!(
-                menu.as_ref(ctx).snapshot(ctx).unwrap().rows[4]
+                menu.as_ref(ctx).snapshot(ctx).unwrap().rows[5]
                     .state_suffix
                     .as_deref(),
                 Some("(Not connected)")
@@ -217,6 +218,7 @@ fn unconfigured_custom_endpoints_are_hidden_and_fallback_stays_last() {
                     "Google API key",
                     "OpenAI API key",
                     "X premium or SuperGrok subscription",
+                    "Cerebras API key",
                     "Warp credit fallback",
                 ]
             );

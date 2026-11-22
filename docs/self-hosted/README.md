@@ -8,8 +8,10 @@ without Warp's service:
   Entra ID is tested). There are no Warp accounts.
 - **The agent** runs inside the app. It is goose's agent loop (`oi-kit-agent`), driving Warp's
   terminal tools: shell commands, reading, editing, and searching files.
-- **Models** are Claude, called directly at Anthropic with each user's own credential: a Claude
-  Console login, a Claude Code subscription login, or an Anthropic API key.
+- **Models** are called directly at the provider with each user's own credential: Claude at
+  Anthropic (a Claude Console login, a Claude Code subscription login, or an Anthropic API key),
+  ChatGPT models with a ChatGPT plan login (terminal app for now), and Cerebras with a Cerebras
+  API key.
 
 ## How it connects
 
@@ -17,7 +19,7 @@ without Warp's service:
 neo-warp (on the user's machine)
  ├─ sign-in ──────────────► your identity provider (e.g. login.microsoftonline.com)
  ├─ embedded server (127.0.0.1, in-process): sessions, model list, agent loop
- │    └─ model calls ─────► api.anthropic.com
+ │    └─ model calls ─────► api.anthropic.com, chatgpt.com, api.cerebras.ai
  └─ Claude login (once) ──► Anthropic sign-in pages, through the bundled `ant` CLI
 ```
 
@@ -67,9 +69,18 @@ Their current sign-in ends within 12 hours at most, and they can't sign in again
    - **Connect with Claude: Claude Code** for a Claude Pro, Max, or Team subscription (not yet
      verified end to end in 0.1.0; prefer Console or an API key).
    - **Pasted API Key** for an `sk-ant-...` key your organization gave you.
+
+   For Cerebras, paste a `csk-...` key in the **Cerebras** field (desktop) or the
+   **Cerebras API key** row (terminal).
+
+   For ChatGPT (terminal app), choose **ChatGPT plan (Codex sign-in)**: neo-warp opens
+   `auth.openai.com/codex/device` and shows a code to enter there.
 3. Press Esc and ask the agent something. It asks before running commands that change things.
 
-The model picker lists Claude Opus 5.5 (default), Sonnet 5.5, Haiku 5.5, and Fable 5.2.
+The model picker lists Claude Opus 5.5 (default), Sonnet 5.5, Haiku 5.5, and Fable 5.2. With a
+Cerebras key, it also lists every model Cerebras says that key may use, fetched from
+`api.cerebras.ai/v1/models` at launch and whenever the key changes. With a ChatGPT login, it
+lists the models that ChatGPT account offers.
 
 ## Security model
 
@@ -78,7 +89,8 @@ The model picker lists Claude Opus 5.5 (default), Sonnet 5.5, Haiku 5.5, and Fab
   tokens with a per-installation secret stored in the app's data directory (mode 0600). Sessions
   last at most 12 hours before the identity provider is asked again.
 - Claude credentials stay on the user's machine (the OS keychain, and for Console logins, the
-  bundled `ant` CLI's private config directory) and go only to Anthropic.
+  bundled `ant` CLI's private config directory) and go only to Anthropic. Cerebras keys stay in
+  the OS keychain and go only to Cerebras.
 - Because the agent server runs on the user's own machine, the identity-provider check is
   enforced by the app, not by a server you control. A user who rebuilds the app could skip it,
   but would gain nothing beyond their own Claude credentials. For centrally enforced access, run
@@ -89,7 +101,12 @@ The model picker lists Claude Opus 5.5 (default), Sonnet 5.5, Haiku 5.5, and Fab
 - The desktop app is macOS only so far; the terminal app runs on macOS and Linux.
 - In the desktop app, Claude logins use Console accounts; the Claude Code subscription login is
   terminal-only.
-- Claude models only.
+- The ChatGPT login is an unsupported stopgap: it uses the Codex CLI's OAuth client and ChatGPT's
+  Codex backend (`chatgpt.com/backend-api/codex`), which OpenAI doesn't document for other apps,
+  and could stop working without notice. OpenAI's supported route, [Sign in with ChatGPT plan
+  usage](https://developers.openai.com/siwc/token-sharing-open-source), currently refuses
+  Business workspaces that haven't allowed third-party apps
+  (`3p_delegated_access_policy_denied`). neo-warp will move to it once OpenAI enables it.
 - No cloud agents, Warp Drive, shared sessions, or other features that need Warp's service.
 - Agent tools: shell commands, read/edit/write files, grep, and find files. MCP tools, plans,
   and subagents aren't wired to the agent yet.

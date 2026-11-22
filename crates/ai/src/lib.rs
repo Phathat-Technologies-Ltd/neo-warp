@@ -3,6 +3,8 @@ pub mod agent;
 pub mod anthropic_subscription;
 pub mod api_keys;
 pub mod aws_credentials;
+pub mod cerebras;
+pub mod codex_login;
 pub mod geap_credentials;
 #[cfg(not(target_family = "wasm"))]
 pub mod grok_subscription;

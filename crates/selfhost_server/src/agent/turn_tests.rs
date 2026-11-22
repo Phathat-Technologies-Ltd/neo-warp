@@ -420,22 +420,166 @@ async fn many_sessions_run_concurrently() {
     );
 }
 
+fn anthropic() -> ModelEndpoint {
+    ModelEndpoint::Anthropic {
+        credential: "sk-ant-api-test".to_owned(),
+    }
+}
+
+fn cerebras() -> ModelEndpoint {
+    ModelEndpoint::OpenAiChatCompletions {
+        base_url: "https://api.cerebras.ai/v1".to_owned(),
+        api_key: "csk-test".to_owned(),
+    }
+}
+
 #[test]
 fn provider_errors_map_to_reasons_the_user_can_act_on() {
     let forbidden = "Ran into this error: Authentication error: Authentication failed for https://api.anthropic.com/v1/messages. Status: 403 Forbidden. Response: OAuth token does not meet scope requirement any_of(user:inference) (provider request id: req_1).";
     assert!(matches!(
-        classify_message_error(forbidden, "claude-opus-5-5"),
+        classify_message_error(forbidden, "claude-opus-5-5", &anthropic()),
         TurnError::Internal(message)
             if message == "Anthropic refused the request: OAuth token does not meet scope requirement any_of(user:inference)"
     ));
     let unauthorized =
         "Authentication failed. Status: 401 Unauthorized. Response: invalid x-api-key";
     assert!(matches!(
-        classify_message_error(unauthorized, "claude-opus-5-5"),
-        TurnError::InvalidApiKey { .. }
+        classify_message_error(unauthorized, "claude-opus-5-5", &anthropic()),
+        TurnError::InvalidApiKey {
+            provider: api::LlmProvider::Anthropic,
+            ..
+        }
     ));
     assert!(matches!(
-        classify_message_error("Status: 529 Overloaded. Response: overloaded_error", "m"),
+        classify_message_error(
+            "Status: 529 Overloaded. Response: overloaded_error",
+            "m",
+            &anthropic()
+        ),
         TurnError::Unavailable
     ));
+}
+
+#[test]
+fn custom_provider_errors_name_the_provider_host() {
+    assert!(matches!(
+        classify_message_error("Status: 400 Bad Request. Response: model not found", "llama-4", &cerebras()),
+        TurnError::Internal(message) if message == "api.cerebras.ai refused the request: model not found"
+    ));
+    assert!(matches!(
+        classify_message_error(
+            "Status: 401 Unauthorized. Response: bad key",
+            "llama-4",
+            &cerebras()
+        ),
+        TurnError::InvalidApiKey {
+            provider: api::LlmProvider::Unknown,
+            ..
+        }
+    ));
+}
+
+/// Settings that select `selected` and register one Chat Completions provider serving
+/// `qwen-3-coder` under the config key `cerebras:qwen-3-coder`.
+fn settings_with_custom_provider(selected: &str, api_key: &str) -> api::request::Settings {
+    use api::request::settings::custom_model_providers::{
+        CustomEndpointSchema, CustomModel, CustomModelProvider,
+    };
+    api::request::Settings {
+        model_config: Some(api::request::settings::ModelConfig {
+            base: selected.to_owned(),
+            ..Default::default()
+        }),
+        api_keys: Some(api::request::settings::ApiKeys {
+            anthropic: "sk-ant-api-test".to_owned(),
+            ..Default::default()
+        }),
+        custom_model_providers: Some(api::request::settings::CustomModelProviders {
+            providers: vec![CustomModelProvider {
+                base_url: "https://api.cerebras.ai/v1".to_owned(),
+                api_key: api_key.to_owned(),
+                models: vec![CustomModel {
+                    slug: "qwen-3-coder".to_owned(),
+                    config_key: "cerebras:qwen-3-coder".to_owned(),
+                    ..Default::default()
+                }],
+                schema: CustomEndpointSchema::OpenaiChatCompletions as i32,
+            }],
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_custom_model_runs_on_its_provider_under_its_slug() {
+    let settings = settings_with_custom_provider("cerebras:qwen-3-coder", "csk-test");
+    let Ok((endpoint, model)) = resolve_model(Some(&settings)) else {
+        panic!("the custom model should resolve");
+    };
+    assert_eq!(endpoint, cerebras());
+    assert_eq!(model, "qwen-3-coder");
+}
+
+#[test]
+fn claude_models_still_run_on_anthropic_alongside_custom_providers() {
+    let settings = settings_with_custom_provider("claude-opus-5-5", "csk-test");
+    let Ok((endpoint, model)) = resolve_model(Some(&settings)) else {
+        panic!("the Claude model should resolve");
+    };
+    assert_eq!(endpoint, anthropic());
+    assert_eq!(model, "claude-opus-5-5");
+}
+
+#[test]
+fn a_custom_model_without_a_key_asks_for_one() {
+    let settings = settings_with_custom_provider("cerebras:qwen-3-coder", " ");
+    assert!(matches!(
+        resolve_model(Some(&settings)),
+        Err(TurnError::InvalidApiKey {
+            provider: api::LlmProvider::Unknown,
+            model,
+        }) if model == "qwen-3-coder"
+    ));
+}
+
+#[test]
+fn an_unknown_model_is_refused() {
+    let settings = settings_with_custom_provider("gpt-9", "csk-test");
+    assert!(matches!(
+        resolve_model(Some(&settings)),
+        Err(TurnError::Internal(_))
+    ));
+}
+
+#[test]
+fn custom_schemas_the_server_cannot_call_are_refused() {
+    use api::request::settings::custom_model_providers::CustomEndpointSchema;
+    let mut settings = settings_with_custom_provider("cerebras:qwen-3-coder", "csk-test");
+    settings.custom_model_providers.as_mut().unwrap().providers[0].schema =
+        CustomEndpointSchema::AnthropicMessages as i32;
+    assert!(matches!(
+        resolve_model(Some(&settings)),
+        Err(TurnError::Internal(message)) if message.contains("ANTHROPIC_MESSAGES")
+    ));
+}
+
+#[test]
+fn responses_providers_run_on_the_responses_api() {
+    use api::request::settings::custom_model_providers::CustomEndpointSchema;
+    let mut settings = settings_with_custom_provider("cerebras:qwen-3-coder", "token");
+    let provider = &mut settings.custom_model_providers.as_mut().unwrap().providers[0];
+    provider.schema = CustomEndpointSchema::OpenaiResponses as i32;
+    provider.base_url = "https://chatgpt.com/backend-api/codex".to_owned();
+    let Ok((endpoint, model)) = resolve_model(Some(&settings)) else {
+        panic!("the Responses model should resolve");
+    };
+    assert_eq!(
+        endpoint,
+        ModelEndpoint::OpenAiResponses {
+            base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
+            api_key: "token".to_owned(),
+        }
+    );
+    assert_eq!(model, "qwen-3-coder");
+    assert_eq!(endpoint.display_name(), "ChatGPT");
 }

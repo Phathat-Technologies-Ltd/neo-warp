@@ -16,6 +16,7 @@ use warpui_core::elements::tui::{TuiElement, TuiText};
 use warpui_core::{AppContext, Entity, ModelContext, ModelHandle};
 
 use crate::anthropic_oauth::{TuiAnthropicOAuthController, TuiAnthropicOAuthControllerEvent};
+use crate::codex_login::{TuiCodexLoginController, TuiCodexLoginControllerEvent};
 use crate::grok_oauth::{TuiGrokOAuthController, TuiGrokOAuthControllerEvent};
 use crate::inline_menu::{
     MAX_INLINE_MENU_ROWS, TuiInlineMenuHeader, TuiInlineMenuInputOwnership, TuiInlineMenuListState,
@@ -33,6 +34,7 @@ credits. Warp will prioritize using your API keys over Warp credits.";
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TuiApiKeysRowKind {
     Provider(LLMProvider),
+    ChatGptLogin,
     CustomEndpoint(CustomEndpointId),
     CustomEndpointConfigurationError,
     WarpCreditFallbackSetting,
@@ -69,6 +71,9 @@ enum TuiApiKeysMenuState {
     },
     ConnectingAnthropic {
         controller: ModelHandle<TuiAnthropicOAuthController>,
+    },
+    ConnectingChatGpt {
+        controller: ModelHandle<TuiCodexLoginController>,
     },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +117,7 @@ pub(crate) enum TuiApiKeysFooter {
     ConnectingGrok,
     AnthropicSelector,
     ConnectingAnthropic,
+    ConnectingChatGpt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -161,7 +167,7 @@ impl TuiApiKeysMenuModel {
                         controller.clear_manual_error(ctx);
                     });
                 }
-                TuiApiKeysMenuState::Closed => {}
+                TuiApiKeysMenuState::ConnectingChatGpt { .. } | TuiApiKeysMenuState::Closed => {}
             }
         });
         ctx.subscribe_to_model(
@@ -225,6 +231,35 @@ impl TuiApiKeysMenuModel {
         self.state = TuiApiKeysMenuState::ConnectingAnthropic { controller };
         ctx.emit(TuiApiKeysMenuEvent);
     }
+    fn start_chatgpt_login(&mut self, ctx: &mut ModelContext<Self>) {
+        if ApiKeyManager::as_ref(ctx).has_codex_login() {
+            self.set_browsing_error(
+                "ChatGPT is already connected. Press Ctrl-X to disconnect.".to_owned(),
+                ctx,
+            );
+            return;
+        }
+        let policy_error = if !UserWorkspaces::as_ref(ctx).is_byo_api_key_enabled(ctx) {
+            Some("ChatGPT logins require BYOK access for this workspace.")
+        } else if !self.member_byo_keys_allowed(ctx) {
+            Some("Your organization doesn't allow member-provided credentials.")
+        } else {
+            None
+        };
+        if let Some(error) = policy_error {
+            self.set_browsing_error(error.to_owned(), ctx);
+            return;
+        }
+        self.clear_input(ctx);
+        let controller = ctx.add_model(TuiCodexLoginController::new);
+        ctx.subscribe_to_model(&controller, |menu, _, event, ctx| match event {
+            TuiCodexLoginControllerEvent::Connected => menu.transition_to_browsing(ctx),
+            TuiCodexLoginControllerEvent::Updated => ctx.emit(TuiApiKeysMenuEvent),
+        });
+        self.state = TuiApiKeysMenuState::ConnectingChatGpt { controller };
+        ctx.emit(TuiApiKeysMenuEvent);
+    }
+
     fn start_grok_oauth(&mut self, ctx: &mut ModelContext<Self>) {
         let policy_error = if !FeatureFlag::SuperGrok.is_enabled() {
             Some("Grok subscriptions aren't available in this build.")
@@ -292,7 +327,8 @@ impl TuiApiKeysMenuModel {
             | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
             | TuiApiKeysMenuState::ConnectingGrok { .. }
             | TuiApiKeysMenuState::AnthropicSelector { .. }
-            | TuiApiKeysMenuState::ConnectingAnthropic { .. } => self.transition_to_browsing(ctx),
+            | TuiApiKeysMenuState::ConnectingAnthropic { .. }
+            | TuiApiKeysMenuState::ConnectingChatGpt { .. } => self.transition_to_browsing(ctx),
         }
     }
 
@@ -309,7 +345,8 @@ impl TuiApiKeysMenuModel {
             TuiApiKeysMenuState::Browsing { .. }
             | TuiApiKeysMenuState::ConnectingGrok { .. }
             | TuiApiKeysMenuState::AnthropicSelector { .. }
-            | TuiApiKeysMenuState::ConnectingAnthropic { .. } => {
+            | TuiApiKeysMenuState::ConnectingAnthropic { .. }
+            | TuiApiKeysMenuState::ConnectingChatGpt { .. } => {
                 TuiInlineMenuInputOwnership::InlineMenuPlainText
             }
             TuiApiKeysMenuState::Closed => TuiInlineMenuInputOwnership::Composer,
@@ -324,6 +361,7 @@ impl TuiApiKeysMenuModel {
                     | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
                     | TuiApiKeysMenuState::ConnectingGrok { .. }
                     | TuiApiKeysMenuState::ConnectingAnthropic { .. }
+                    | TuiApiKeysMenuState::ConnectingChatGpt { .. }
             )
     }
 
@@ -340,6 +378,9 @@ impl TuiApiKeysMenuModel {
                     }
                     Some(TuiApiKeysRowKind::Provider(provider)) => TuiApiKeysFooter::ProviderList {
                         can_clear: provider_connected(provider, ctx),
+                    },
+                    Some(TuiApiKeysRowKind::ChatGptLogin) => TuiApiKeysFooter::ProviderList {
+                        can_clear: ApiKeyManager::as_ref(ctx).has_codex_login(),
                     },
                     Some(TuiApiKeysRowKind::CustomEndpoint(id)) => TuiApiKeysFooter::ProviderList {
                         can_clear: custom_endpoint_connected(&id, ctx),
@@ -363,6 +404,9 @@ impl TuiApiKeysMenuModel {
             TuiApiKeysMenuState::ConnectingAnthropic { .. } => {
                 Some(TuiApiKeysFooter::ConnectingAnthropic)
             }
+            TuiApiKeysMenuState::ConnectingChatGpt { .. } => {
+                Some(TuiApiKeysFooter::ConnectingChatGpt)
+            }
         }
     }
 
@@ -372,6 +416,9 @@ impl TuiApiKeysMenuModel {
                 match list.selected_row().map(|row| row.kind.clone()) {
                     Some(TuiApiKeysRowKind::Provider(provider)) => {
                         provider_connected(provider, ctx)
+                    }
+                    Some(TuiApiKeysRowKind::ChatGptLogin) => {
+                        ApiKeyManager::as_ref(ctx).has_codex_login()
                     }
                     Some(TuiApiKeysRowKind::CustomEndpoint(id)) => {
                         custom_endpoint_connected(&id, ctx)
@@ -385,7 +432,8 @@ impl TuiApiKeysMenuModel {
             | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
             | TuiApiKeysMenuState::ConnectingGrok { .. }
             | TuiApiKeysMenuState::AnthropicSelector { .. }
-            | TuiApiKeysMenuState::ConnectingAnthropic { .. } => false,
+            | TuiApiKeysMenuState::ConnectingAnthropic { .. }
+            | TuiApiKeysMenuState::ConnectingChatGpt { .. } => false,
         }
     }
 
@@ -394,6 +442,7 @@ impl TuiApiKeysMenuModel {
             TuiApiKeysMenuState::Browsing { list, .. } => {
                 match list.selected_row().map(|row| row.kind.clone()) {
                     Some(kind @ TuiApiKeysRowKind::Provider(_))
+                    | Some(kind @ TuiApiKeysRowKind::ChatGptLogin)
                     | Some(kind @ TuiApiKeysRowKind::CustomEndpoint(_)) => kind,
                     Some(
                         TuiApiKeysRowKind::CustomEndpointConfigurationError
@@ -407,9 +456,16 @@ impl TuiApiKeysMenuModel {
             | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
             | TuiApiKeysMenuState::ConnectingGrok { .. }
             | TuiApiKeysMenuState::AnthropicSelector { .. }
-            | TuiApiKeysMenuState::ConnectingAnthropic { .. } => return,
+            | TuiApiKeysMenuState::ConnectingAnthropic { .. }
+            | TuiApiKeysMenuState::ConnectingChatGpt { .. } => return,
         };
         let result = match kind {
+            TuiApiKeysRowKind::ChatGptLogin => {
+                ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.disconnect_codex_login(ctx);
+                });
+                Ok(())
+            }
             TuiApiKeysRowKind::Provider(LLMProvider::Xai) => {
                 ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
                     manager.set_grok_tokens(None, ctx);
@@ -458,7 +514,8 @@ impl TuiApiKeysMenuModel {
             | TuiApiKeysMenuState::EditingProvider { .. }
             | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
             | TuiApiKeysMenuState::ConnectingGrok { .. }
-            | TuiApiKeysMenuState::ConnectingAnthropic { .. } => {}
+            | TuiApiKeysMenuState::ConnectingAnthropic { .. }
+            | TuiApiKeysMenuState::ConnectingChatGpt { .. } => {}
         }
     }
 
@@ -476,7 +533,8 @@ impl TuiApiKeysMenuModel {
             | TuiApiKeysMenuState::EditingProvider { .. }
             | TuiApiKeysMenuState::EditingCustomEndpoint { .. }
             | TuiApiKeysMenuState::ConnectingGrok { .. }
-            | TuiApiKeysMenuState::ConnectingAnthropic { .. } => {}
+            | TuiApiKeysMenuState::ConnectingAnthropic { .. }
+            | TuiApiKeysMenuState::ConnectingChatGpt { .. } => {}
         }
     }
 
@@ -510,6 +568,7 @@ impl TuiApiKeysMenuModel {
                 };
                 match kind {
                     TuiApiKeysRowKind::Provider(provider) => self.edit_provider(provider, ctx),
+                    TuiApiKeysRowKind::ChatGptLogin => self.start_chatgpt_login(ctx),
                     TuiApiKeysRowKind::CustomEndpoint(id) => self.edit_custom_endpoint(id, ctx),
                     TuiApiKeysRowKind::CustomEndpointConfigurationError => {}
                     TuiApiKeysRowKind::WarpCreditFallbackSetting => self.toggle_fallback(ctx),
@@ -566,6 +625,7 @@ impl TuiApiKeysMenuModel {
                     controller.submit_manual_code(code, ctx);
                 });
             }
+            TuiApiKeysMenuState::ConnectingChatGpt { .. } => {}
         }
     }
 
@@ -646,10 +706,11 @@ impl TuiApiKeysMenuModel {
             TuiApiKeysMenuState::ConnectingGrok { controller } => {
                 let error = controller.as_ref(ctx).error().map(ToOwned::to_owned);
                 let rows = all_rows(ctx);
-                let selected_index = provider_row_index(&rows, LLMProvider::Xai);
+                let connecting = TuiApiKeysRowKind::Provider(LLMProvider::Xai);
+                let selected_index = row_index(&rows, &connecting);
                 let rows = rows
                     .iter()
-                    .map(|row| self.snapshot_row(row, ctx, Some(LLMProvider::Xai)))
+                    .map(|row| self.snapshot_row(row, ctx, Some(&connecting)))
                     .collect();
                 Some(TuiInlineMenuSnapshot {
                     header: Some(TuiInlineMenuHeader {
@@ -667,16 +728,38 @@ impl TuiApiKeysMenuModel {
             TuiApiKeysMenuState::ConnectingAnthropic { controller } => {
                 let error = controller.as_ref(ctx).error().map(ToOwned::to_owned);
                 let rows = all_rows(ctx);
-                let selected_index = provider_row_index(&rows, LLMProvider::Anthropic);
+                let connecting = TuiApiKeysRowKind::Provider(LLMProvider::Anthropic);
+                let selected_index = row_index(&rows, &connecting);
                 let rows = rows
                     .iter()
-                    .map(|row| self.snapshot_row(row, ctx, Some(LLMProvider::Anthropic)))
+                    .map(|row| self.snapshot_row(row, ctx, Some(&connecting)))
                     .collect();
                 Some(TuiInlineMenuSnapshot {
                     header: Some(TuiInlineMenuHeader {
                         title: Some(
                             error.unwrap_or_else(|| controller.as_ref(ctx).prompt().to_owned()),
                         ),
+                        tabs: Vec::new(),
+                    }),
+                    rows,
+                    selected_index,
+                    scroll_offset: 0,
+                    scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
+                    max_visible_rows: MAX_VISIBLE_ROWS,
+                    status: None,
+                })
+            }
+            TuiApiKeysMenuState::ConnectingChatGpt { controller } => {
+                let rows = all_rows(ctx);
+                let connecting = TuiApiKeysRowKind::ChatGptLogin;
+                let selected_index = row_index(&rows, &connecting);
+                let rows = rows
+                    .iter()
+                    .map(|row| self.snapshot_row(row, ctx, Some(&connecting)))
+                    .collect();
+                Some(TuiInlineMenuSnapshot {
+                    header: Some(TuiInlineMenuHeader {
+                        title: Some(controller.as_ref(ctx).prompt()),
                         tabs: Vec::new(),
                     }),
                     rows,
@@ -694,13 +777,23 @@ impl TuiApiKeysMenuModel {
         &self,
         row: &TuiApiKeysRow,
         ctx: &AppContext,
-        connecting: Option<LLMProvider>,
+        connecting: Option<&TuiApiKeysRowKind>,
     ) -> TuiInlineMenuRow {
         let is_connecting = connecting.is_some();
         let (description, state_suffix, is_selectable) = match &row.kind {
+            TuiApiKeysRowKind::ChatGptLogin => {
+                let suffix = if connecting == Some(&row.kind) {
+                    "(Connecting...)"
+                } else if ApiKeyManager::as_ref(ctx).has_codex_login() {
+                    "(Connected)"
+                } else {
+                    "(Not connected)"
+                };
+                (Some(String::new()), Some(suffix.to_owned()), !is_connecting)
+            }
             TuiApiKeysRowKind::Provider(provider) => {
                 let connected = provider_connected(*provider, ctx);
-                let suffix = if connecting == Some(*provider) {
+                let suffix = if connecting == Some(&row.kind) {
                     "(Connecting...)".to_owned()
                 } else if *provider == LLMProvider::Anthropic && connected {
                     format!("({})", anthropic_connected_suffix(ctx))
@@ -874,6 +967,11 @@ impl TuiApiKeysMenuModel {
         {
             controller.update(ctx, |controller, ctx| controller.cancel(ctx));
         }
+        if let TuiApiKeysMenuState::ConnectingChatGpt { controller } = &self.state
+            && controller.as_ref(ctx).is_active()
+        {
+            controller.update(ctx, |controller, ctx| controller.cancel(ctx));
+        }
         self.clear_input(ctx);
         self.state = TuiApiKeysMenuState::Browsing {
             list: TuiInlineMenuListState::default(),
@@ -902,6 +1000,11 @@ impl TuiApiKeysMenuModel {
                 }
             }
             TuiApiKeysMenuState::ConnectingAnthropic { controller } => {
+                if controller.as_ref(ctx).is_active() {
+                    controller.update(ctx, |controller, ctx| controller.cancel(ctx));
+                }
+            }
+            TuiApiKeysMenuState::ConnectingChatGpt { controller } => {
                 if controller.as_ref(ctx).is_active() {
                     controller.update(ctx, |controller, ctx| controller.cancel(ctx));
                 }
@@ -967,13 +1070,22 @@ fn custom_endpoint_connected(id: &CustomEndpointId, ctx: &AppContext) -> bool {
 }
 
 fn all_rows(ctx: &AppContext) -> Vec<TuiApiKeysRow> {
-    // Organization builds' agent only calls Anthropic and has no Warp credits to fall back on.
+    // Organization builds' agent calls Anthropic and Cerebras only and has no Warp credits to
+    // fall back on.
     if TuiLoginModel::is_organization_sign_in() {
-        return vec![TuiApiKeysRow {
-            kind: TuiApiKeysRowKind::Provider(LLMProvider::Anthropic),
-            title: "Anthropic API key".to_owned(),
-            is_selectable: true,
-        }];
+        return vec![
+            TuiApiKeysRow {
+                kind: TuiApiKeysRowKind::Provider(LLMProvider::Anthropic),
+                title: "Anthropic API key".to_owned(),
+                is_selectable: true,
+            },
+            TuiApiKeysRow {
+                kind: TuiApiKeysRowKind::ChatGptLogin,
+                title: "ChatGPT plan (Codex sign-in)".to_owned(),
+                is_selectable: true,
+            },
+            cerebras_row(),
+        ];
     }
     let mut rows = vec![
         TuiApiKeysRow {
@@ -996,6 +1108,7 @@ fn all_rows(ctx: &AppContext) -> Vec<TuiApiKeysRow> {
             title: "X premium or SuperGrok subscription".to_owned(),
             is_selectable: true,
         },
+        cerebras_row(),
     ];
     let manager = ApiKeyManager::as_ref(ctx);
     if !manager.custom_endpoint_settings_valid() {
@@ -1025,9 +1138,16 @@ fn all_rows(ctx: &AppContext) -> Vec<TuiApiKeysRow> {
     });
     rows
 }
-fn provider_row_index(rows: &[TuiApiKeysRow], provider: LLMProvider) -> Option<usize> {
-    rows.iter()
-        .position(|row| row.kind == TuiApiKeysRowKind::Provider(provider))
+fn cerebras_row() -> TuiApiKeysRow {
+    TuiApiKeysRow {
+        kind: TuiApiKeysRowKind::Provider(LLMProvider::Cerebras),
+        title: "Cerebras API key".to_owned(),
+        is_selectable: true,
+    }
+}
+
+fn row_index(rows: &[TuiApiKeysRow], kind: &TuiApiKeysRowKind) -> Option<usize> {
+    rows.iter().position(|row| row.kind == *kind)
 }
 
 /// Returns whether the provider has a configured API key or connected subscription.
@@ -1161,6 +1281,12 @@ pub(crate) fn render_api_keys_footer(
             (" | ".to_owned(), muted),
             ("enter".to_owned(), key),
             (" to confirm | ".to_owned(), muted),
+            ("esc".to_owned(), key),
+            (" to cancel".to_owned(), muted),
+        ],
+        TuiApiKeysFooter::ConnectingChatGpt => vec![
+            ("Connect ChatGPT".to_owned(), accent),
+            (" | approve the code in your browser | ".to_owned(), muted),
             ("esc".to_owned(), key),
             (" to cancel".to_owned(), muted),
         ],
