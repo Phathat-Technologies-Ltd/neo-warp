@@ -437,6 +437,13 @@ fn make_new_view_menu(ctx: &AppContext) -> Menu {
         )),
     ];
 
+    if FeatureFlag::SessionRecording.is_enabled() {
+        items.extend([
+            MenuItem::Separator,
+            updateable_custom_item_without_checkmark(CustomAction::OpenRecordings, ctx),
+        ]);
+    }
+
     let is_compact_mode = matches!(
         TerminalSettings::handle(ctx)
             .as_ref(ctx)

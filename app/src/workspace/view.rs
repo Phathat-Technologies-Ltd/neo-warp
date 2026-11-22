@@ -304,7 +304,7 @@ use crate::pane_group::{
     self, AIFactPane, AnyPaneContent, ChildAgentOrigin, CodeDiffPane, CodePane, CodeReviewPanelArg,
     CustomRouterEditorPane, Direction as PaneGroupDirection, Direction, EnvironmentManagementPane,
     ExecutionProfileEditorPane, NetworkLogPane, NewTerminalOptions, PaneGroup, PaneId, PanesLayout,
-    TabBarHoverIndex, TerminalPaneId,
+    RecordingsPane, TabBarHoverIndex, TerminalPaneId,
 };
 use crate::persistence::ModelEvent;
 use crate::projects::ProjectManagementModel;
@@ -414,6 +414,7 @@ use crate::terminal::resizable_data::{
     DEFAULT_LEFT_PANEL_WIDTH, DEFAULT_RIGHT_PANEL_WIDTH, ModalSizes, ModalType, ResizableData,
 };
 use crate::terminal::safe_mode_settings::SafeModeSettings;
+use crate::terminal::session_recording::recordings_view::RecordingsPaneManager;
 use crate::terminal::session_settings::{
     NewSessionSource, NotificationsMode, NotificationsSettings, SessionSettings,
     SessionSettingsChangedEvent, WorkingDirectoryMode,
@@ -15619,6 +15620,42 @@ impl Workspace {
         });
     }
 
+    pub(crate) fn open_recordings_pane(&mut self, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::SessionRecording.is_enabled() {
+            return;
+        }
+        let manager = RecordingsPaneManager::handle(ctx);
+        if let Some(locator) = manager.as_ref(ctx).find_pane(ctx.window_id()) {
+            if let Some(tab) = self
+                .tabs
+                .iter()
+                .find(|tab| tab.pane_group.id() == locator.pane_group_id)
+            {
+                let pane_group = tab.pane_group.clone();
+                let recordings_view = pane_group.read(ctx, |pane_group, ctx| {
+                    pane_group
+                        .downcast_pane_by_id::<RecordingsPane>(locator.pane_id)
+                        .map(|pane| pane.recordings_view(ctx))
+                });
+                if let Some(recordings_view) = recordings_view {
+                    recordings_view.update(ctx, |view, ctx| view.refresh(ctx));
+                }
+            }
+            self.focus_pane(locator, ctx);
+            return;
+        }
+
+        let pane = RecordingsPane::new(ctx);
+        self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+            pane_group.add_pane_with_direction(
+                Direction::Right,
+                pane,
+                true, /* focus_new_pane */
+                ctx,
+            );
+        });
+    }
+
     fn show_handoff_environment_creation_modal(&mut self, ctx: &mut ViewContext<Self>) {
         // Capture the initiating source view now, before async creation begins.
         // If we waited until the Created callback, the user may have switched panes.
@@ -24653,6 +24690,9 @@ impl TypedActionView for Workspace {
             }
             OpenNetworkLogPane => {
                 self.open_network_log_pane(ctx);
+            }
+            OpenRecordingsPane => {
+                self.open_recordings_pane(ctx);
             }
             FixSettingsWithOz { error_description } => {
                 use crate::ai::skills::SkillManager;

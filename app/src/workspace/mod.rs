@@ -97,6 +97,7 @@ pub fn init(app: &mut AppContext) {
     view::chatgpt_plan_modal::init(app);
     view::cloud_agent_capacity_modal::init(app);
     view::codex_modal::init(app);
+    crate::terminal::session_recording::recordings_view::init(app);
     view::free_ai_removal_modal::init(app);
     view::global_search::view::GlobalSearchView::init(app);
     view::right_panel::RightPanelView::init(app);
@@ -1604,6 +1605,16 @@ fn add_open_setting_pages_as_editable_binding(app: &mut AppContext) {
         .with_group(bindings::BindingGroup::Settings.as_str())
         .with_context_predicate(id!("Workspace"))
         .with_custom_action(CustomAction::ShowAboutWarp),
+        EditableBinding::new(
+            "workspace:open_recordings",
+            BindingDescription::new("Open Recordings")
+                .with_custom_description(bindings::MAC_MENUS_CONTEXT, "Recordings"),
+            WorkspaceAction::OpenRecordingsPane,
+        )
+        .with_group(bindings::BindingGroup::Settings.as_str())
+        .with_enabled(|| FeatureFlag::SessionRecording.is_enabled())
+        .with_custom_action(CustomAction::OpenRecordings)
+        .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
             "workspace:show_settings_recordings_page",
             BindingDescription::new("Open Settings: Recordings"),

@@ -123,6 +123,7 @@ pub enum CustomAction {
     AttachSelectionAsAgentModeContext,
     OpenAIFactCollection,
     OpenMCPServerCollection,
+    OpenRecordings,
     ToggleProjectExplorer,
     NewPersonalAIPrompt,
     NewTeamAIPrompt,
@@ -464,6 +465,7 @@ pub fn custom_tag_to_keystroke(custom: CustomTag) -> Option<Keystroke> {
         | CustomAction::ShareCurrentSession
         | CustomAction::SharePaneContents
         | CustomAction::OpenAIFactCollection
+        | CustomAction::OpenRecordings
         | CustomAction::OpenMCPServerCollection
         | CustomAction::NewPersonalAIPrompt
         | CustomAction::NewTeamAIPrompt

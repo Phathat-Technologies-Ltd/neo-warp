@@ -20,6 +20,9 @@ pub struct Header {
     pub timestamp: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    /// Players cap pauses between events at this many seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_time_limit: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -130,6 +133,10 @@ impl<W: Write> CastWriter<W> {
             return Ok(());
         }
         self.write_event(time, "i", text)
+    }
+
+    pub fn write_marker(&mut self, time: f64, label: &str) -> io::Result<()> {
+        self.write_event(time, "m", label)
     }
 
     pub fn write_resize(&mut self, time: f64, cols: u16, rows: u16) -> io::Result<()> {
