@@ -224,6 +224,19 @@ pub fn progress_line(batch: &[(ProgressKind, usize)]) -> Option<String> {
     Some(line)
 }
 
+/// The one prompt for several approvals that came in together, such as "Two commands need your
+/// approval. Approve on screen."
+pub fn grouped_approval_prompt(count: usize) -> String {
+    let subject = counted(count, "command");
+    let mut chars = subject.chars();
+    let subject = match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+        None => subject,
+    };
+    let verb = if count > 1 { "need" } else { "needs" };
+    format!("{subject} {verb} your approval. Approve on screen.")
+}
+
 /// "a file", "three files", "several files".
 fn counted(count: usize, noun: &str) -> String {
     const WORDS: [&str; 9] = [

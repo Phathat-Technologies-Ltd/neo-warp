@@ -2766,8 +2766,8 @@ impl Input {
                 });
             }
             BlocklistAIActionEvent::ExecutingAction(action_id) => {
-                conversation.update(ctx, |conversation, _| {
-                    conversation.approval_resolved(action_id)
+                conversation.update(ctx, |conversation, ctx| {
+                    conversation.approval_resolved(action_id, ctx)
                 });
             }
             BlocklistAIActionEvent::FinishedAction {
@@ -2785,7 +2785,7 @@ impl Input {
                 };
                 let surface = self.terminal_view_id;
                 conversation.update(ctx, |conversation, ctx| {
-                    conversation.approval_resolved(action_id);
+                    conversation.approval_resolved(action_id, ctx);
                     if let Some(result) = result {
                         conversation.action_finished(surface, &result.result, ctx);
                     }

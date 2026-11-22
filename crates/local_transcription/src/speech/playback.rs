@@ -9,6 +9,7 @@ use instant::Instant;
 
 use super::approval::{ApprovalFlow, ApprovalReply, ApprovalVerdict, ECHO_TAIL, is_stop_phrase};
 use super::chunker::{ChunkerOptions, SentenceChunker};
+use super::summary::grouped_approval_prompt;
 
 /// What the conversation indicator shows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -51,6 +52,13 @@ const RECENT_SENTENCES: usize = 8;
 /// The share of a transcript's words that must appear in the assistant's recent speech for it to
 /// be treated as echo.
 const ECHO_WORD_OVERLAP: f32 = 0.8;
+
+/// How long an approval request waits before it is announced, so one approved on screen right
+/// away is never spoken and requests that come in together share one prompt.
+pub const APPROVAL_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// The least time between two approval prompts of a turn while the earlier one is unresolved.
+pub const APPROVAL_PROMPT_GAP: Duration = Duration::from_secs(8);
 
 /// How often the owner re-checks barge-in while the user keeps talking.
 pub const BARGE_IN_POLL: Duration = Duration::from_millis(40);
@@ -111,6 +119,14 @@ struct Utterance {
     barged_in: bool,
 }
 
+/// An approval request that has not been announced yet.
+#[derive(Debug, Clone)]
+struct WaitingApproval<Id> {
+    id: Id,
+    subject: String,
+    needs_screen: bool,
+}
+
 #[derive(Debug)]
 pub struct ConversationController<A, Id> {
     state: ConversationState,
@@ -138,6 +154,16 @@ pub struct ConversationController<A, Id> {
     /// The sentence that is the pending approval's prompt.
     approval_prompt_seq: Option<u64>,
     approvals: ApprovalFlow<Id>,
+    /// Approval requests not announced yet, oldest first.
+    waiting_approvals: Vec<WaitingApproval<Id>>,
+    /// When the waiting approvals may be announced, counted from the first of them.
+    approval_debounce_until: Option<Instant>,
+    /// Approvals of this turn that were announced or resolved; they are never announced again.
+    handled_approvals: Vec<Id>,
+    /// The unresolved approvals the latest approval prompt covers.
+    prompt_approvals: Vec<Id>,
+    /// When the latest approval prompt was issued, while any approval it covers is unresolved.
+    last_approval_prompt_at: Option<Instant>,
     /// Conversation mode stays on but nothing is read aloud.
     muted: bool,
     /// The microphone signal has the assistant's voice removed by acoustic echo cancellation.
@@ -167,6 +193,11 @@ impl<A, Id> Default for ConversationController<A, Id> {
             headphones: false,
             approval_prompt_seq: None,
             approvals: ApprovalFlow::default(),
+            waiting_approvals: Vec::new(),
+            approval_debounce_until: None,
+            handled_approvals: Vec::new(),
+            prompt_approvals: Vec::new(),
+            last_approval_prompt_at: None,
             muted: false,
             echo_cancelled: false,
             recent_speech: VecDeque::new(),
@@ -376,6 +407,11 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         }
         let actions = self.silence(None);
         self.approvals.clear();
+        self.waiting_approvals.clear();
+        self.approval_debounce_until = None;
+        self.handled_approvals.clear();
+        self.prompt_approvals.clear();
+        self.last_approval_prompt_at = None;
         self.reply_done = false;
         self.interrupted = false;
         self.state = ConversationState::Thinking;
@@ -429,19 +465,67 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.pump()
     }
 
-    /// The agent waits on approval `id` to do `subject` (see
-    /// [`super::approval::approval_prompt`]); the prompt is spoken after the reply so
-    /// far. Spoken answers count only once the prompt has played.
-    pub fn approval_requested(
-        &mut self,
-        id: Id,
-        subject: &str,
-        needs_screen: bool,
-    ) -> Vec<PlaybackAction<A>> {
-        if !self.is_on() {
+    /// The agent waits at `now` on approval `id` to do `subject` (see
+    /// [`super::approval::approval_prompt`]). The prompt is spoken after [`APPROVAL_DEBOUNCE`] (see
+    /// [`Self::approval_due_at`]), after the reply so far, and never for an approval of this turn
+    /// that was already announced or resolved.
+    pub fn approval_requested(&mut self, id: Id, subject: &str, needs_screen: bool, now: Instant) {
+        if !self.is_on()
+            || self.handled_approvals.contains(&id)
+            || self
+                .waiting_approvals
+                .iter()
+                .any(|waiting| waiting.id == id)
+        {
+            return;
+        }
+        self.waiting_approvals.push(WaitingApproval {
+            id,
+            subject: subject.to_owned(),
+            needs_screen,
+        });
+        self.approval_debounce_until
+            .get_or_insert(now + APPROVAL_DEBOUNCE);
+    }
+
+    /// When the waiting approval requests are due to be announced with
+    /// [`Self::check_approval_due`].
+    pub fn approval_due_at(&self) -> Option<Instant> {
+        if self.waiting_approvals.is_empty() {
+            return None;
+        }
+        let gap_until = self
+            .last_approval_prompt_at
+            .map(|at| at + APPROVAL_PROMPT_GAP);
+        self.approval_debounce_until.max(gap_until)
+    }
+
+    /// Announces the waiting approval requests once they are due at `now`: one prompt for all of
+    /// them. Spoken answers count only for a single request, once its prompt has played.
+    pub fn check_approval_due(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
+        if !self.is_on() || !self.approval_due_at().is_some_and(|due| now >= due) {
             return Vec::new();
         }
-        let prompt = self.approvals.request(id, subject, needs_screen);
+        self.approval_debounce_until = None;
+        let waiting = std::mem::take(&mut self.waiting_approvals);
+        let count = waiting.len();
+        let ids = waiting
+            .iter()
+            .map(|waiting| waiting.id.clone())
+            .collect::<Vec<_>>();
+        self.handled_approvals.extend(ids.iter().cloned());
+        self.prompt_approvals = ids;
+        self.last_approval_prompt_at = Some(now);
+        let Some(first) = waiting.into_iter().next() else {
+            return Vec::new();
+        };
+        let prompt = if count == 1 {
+            self.approvals
+                .request(first.id, &first.subject, first.needs_screen)
+        } else {
+            self.approvals.request(first.id, &first.subject, true);
+            grouped_approval_prompt(count)
+        };
         if self.muted {
             return Vec::new();
         }
@@ -459,9 +543,63 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         actions
     }
 
-    /// The approval was answered on screen or went away.
-    pub fn approval_resolved(&mut self, id: &Id) {
+    /// The approval was answered on screen or by voice, ran, or went away at `now`. Its prompt is
+    /// dropped if queued and stopped if playing, and its spoken answer window closes.
+    pub fn approval_resolved(&mut self, id: &Id, now: Instant) -> Vec<PlaybackAction<A>> {
         self.approvals.resolved(id);
+        self.waiting_approvals.retain(|waiting| &waiting.id != id);
+        if self.waiting_approvals.is_empty() {
+            self.approval_debounce_until = None;
+        }
+        if !self.handled_approvals.contains(id) {
+            self.handled_approvals.push(id.clone());
+        }
+        if !self.prompt_approvals.contains(id) {
+            return Vec::new();
+        }
+        self.prompt_approvals.retain(|prompted| prompted != id);
+        if self.prompt_approvals.is_empty() {
+            self.last_approval_prompt_at = None;
+        }
+        match self.approval_prompt_seq.take() {
+            Some(seq) => self.drop_sentence(seq, now),
+            None => Vec::new(),
+        }
+    }
+
+    /// Drops sentence `seq` at `now` wherever it is in the pipeline, stopping it if it plays and
+    /// moving on to the next one.
+    fn drop_sentence(&mut self, seq: u64, now: Instant) -> Vec<PlaybackAction<A>> {
+        self.queued.retain(|(queued, _)| *queued != seq);
+        self.ready.retain(|(ready, _)| *ready != seq);
+        if self.synthesizing == Some(seq) {
+            self.synthesizing = None;
+        }
+        let mut actions = Vec::new();
+        if self.playing == Some(seq) {
+            self.playing = None;
+            actions.push(PlaybackAction::StopPlayback);
+            if let Some((next, audio)) = self.ready.pop_front() {
+                self.playing = Some(next);
+                actions.push(PlaybackAction::Play {
+                    reply: self.reply,
+                    seq: next,
+                    audio,
+                });
+            } else {
+                self.playing_since = None;
+                self.played_until = Some(now);
+            }
+        }
+        actions.extend(self.pump());
+        if self.is_on() && !self.is_speaking() {
+            self.state = if self.reply_done {
+                ConversationState::Listening
+            } else {
+                ConversationState::Thinking
+            };
+        }
+        actions
     }
 
     /// Closes the spoken answer window once it has passed, returning the speech that says the
