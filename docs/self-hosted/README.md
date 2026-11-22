@@ -82,6 +82,15 @@ Cerebras key, it also lists every model Cerebras says that key may use, fetched 
 `api.cerebras.ai/v1/models` at launch and whenever the key changes. With a ChatGPT login, it
 lists the models that ChatGPT account offers.
 
+### Voice input
+
+Voice input is transcribed on the user's computer by NVIDIA Parakeet TDT 0.6B v3; no audio leaves
+the machine. The model (671 MB) isn't bundled. The first time someone records, neo-warp asks before
+downloading it from Hugging Face (`huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx`); it can also
+be downloaded or removed in Settings > AI > Voice. It's stored under the app's data directory in
+`models/`, and each file is checked against a pinned SHA-256. Allow `huggingface.co` and its
+download CDN (currently `*.cdn.hf.co`) through your proxy if you want people to use voice input.
+
 ## Security model
 
 - Sign-in tokens are validated against your identity provider's signing keys (issuer, audience,
