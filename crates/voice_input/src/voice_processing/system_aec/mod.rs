@@ -170,7 +170,9 @@ pub fn set_system_echo_cancellation(wanted: bool, noise_suppression: bool) {
             "System echo cancellation {}",
             if wanted { "wanted" } else { "off" }
         );
-        if !wanted {
+        if wanted {
+            NOTICE_SENT.store(false, Ordering::Relaxed);
+        } else {
             imp::shutdown();
         }
     }

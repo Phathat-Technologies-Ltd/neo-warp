@@ -3295,6 +3295,9 @@ impl TypedActionView for WarpAgentPageView {
             WarpAgentPageAction::ToggleSystemEchoCancellation => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.system_echo_cancellation.toggle_and_save_value(ctx));
+                    if *settings.system_echo_cancellation {
+                        report_if_error!(settings.system_audio_notice_shown.set_value(false, ctx));
+                    }
                 });
                 crate::voice::apply_system_echo_cancellation_setting(ctx);
                 ctx.notify();

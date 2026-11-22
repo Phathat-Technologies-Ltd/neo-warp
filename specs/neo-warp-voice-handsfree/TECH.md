@@ -49,7 +49,7 @@ the embedded server's `/ai/transcribe` route (`crates/selfhost_server/src/transc
   Core Audio process tap of everything the Mac plays, cancelled from the microphone with WebRTC
   AEC3, so music, videos and spoken replies aren't transcribed. Setting
   `agents.voice.system_echo_cancellation` (default on); falls back to the voice-processing unit or
-  plain `cpal` when unavailable or when system audio recording isn't allowed (one-time toast). See
+  plain `cpal` when unavailable or when system audio recording isn't allowed (a toast shown once ever, re-armed by turning the setting back on). See
   "System-wide echo cancellation" in `specs/neo-warp-voice-conversation/TECH.md`.
 
 ## Streaming endpoint

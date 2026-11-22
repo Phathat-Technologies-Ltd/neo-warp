@@ -319,9 +319,10 @@ synthesis. `ConversationSession` follows `HandsFreeSession::target_surface()`.
     tap delivers zeros. `TapHealthDetector` (every 500 ms after audio starts) marks the tap healthy
     once it carries sound, and blocked after 3 s of cumulative silence while some process reports
     `kAudioProcessPropertyIsRunningOutput`. Blocked → fall back (microphones reopen), log at info,
-    and send one notice per run; `HandsFreeSession` shows a persistent toast "Allow neo-warp to
+    and send a notice; `HandsFreeSession` shows, once ever (private setting
+    `system_audio_notice_shown`, cleared when the setting is turned back on), a persistent toast "Allow neo-warp to
     record system audio in System Settings › Privacy & Security to cancel sound from other apps."
-    with a link to the Privacy_AudioCapture pane. Toggling the setting off and on retries.
+    with a link to the Privacy_AudioCapture pane. Toggling the setting off and on retries and re-arms the notice.
   - Tests: health detector and selector with fakes (`system_aec/mod_tests.rs`), output-backend
     choice. The Core Audio code is exercised by `cargo run -p voice_input --example
     system_aec_probe` (offline AEC3 on recorded tap + microphone: 30–50 dB cancellation, ~0.6% of a

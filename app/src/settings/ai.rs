@@ -1545,6 +1545,16 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.system_echo_cancellation",
         description: "On macOS 14.2 and later, remove sound played by any app (including spoken replies) from the microphone in hands-free and conversation mode. Needs permission to record system audio; falls back to the previous behavior without it.",
     },
+    // Not user-visible: whether the "allow system audio recording" notice was shown. Cleared when
+    // the user turns system echo cancellation back on, so the notice can show again.
+    system_audio_notice_shown: SystemAudioNoticeShown {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::MAC,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: true,
+    },
     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
     // explicitly interacted with voice input. We use this to determine whether we should show a toast
     // to inform the user about voice input and auto-set the keybinding.

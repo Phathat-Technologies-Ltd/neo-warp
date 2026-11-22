@@ -96,3 +96,17 @@ fn speech_plays_through_cpal_while_system_aec_runs() {
         AudioBackend::VoiceProcessing
     );
 }
+
+#[test]
+fn blocked_notice_is_sent_once_until_the_setting_is_turned_back_on() {
+    let notices = blocked_notices();
+    set_system_echo_cancellation(true, false);
+    on_blocked();
+    assert!(notices.try_recv().is_ok());
+    on_blocked();
+    assert!(notices.try_recv().is_err());
+    set_system_echo_cancellation(false, false);
+    set_system_echo_cancellation(true, false);
+    on_blocked();
+    assert!(notices.try_recv().is_ok());
+}

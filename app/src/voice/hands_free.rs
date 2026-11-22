@@ -12,6 +12,7 @@ use instant::Instant;
 use local_transcription::denoise::DenoiseStage;
 use local_transcription::speaker::Sensitivity;
 use local_transcription::stream::{ClientMessage, ServerMessage, VadOptions};
+use settings::Setting as _;
 use voice_input::{LiveCapture, LiveChunk};
 use warpui::r#async::Timer;
 use warpui::platform::MicrophoneAccessState;
@@ -170,6 +171,14 @@ impl HandsFreeSession {
         let Some(window_id) = self.window_id else {
             return;
         };
+        if *AISettings::as_ref(ctx).system_audio_notice_shown {
+            return;
+        }
+        AISettings::handle(ctx).update(ctx, |settings, ctx| {
+            if let Err(error) = settings.system_audio_notice_shown.set_value(true, ctx) {
+                log::warn!("Couldn't save that the system audio notice was shown: {error:#}");
+            }
+        });
         let toast = DismissibleToast::default(
             "Allow neo-warp to record system audio in System Settings \u{203a} Privacy & Security \
              to cancel sound from other apps."
