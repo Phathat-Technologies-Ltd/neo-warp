@@ -10,8 +10,7 @@ without Warp's service:
   terminal tools: shell commands, reading, editing, and searching files.
 - **Models** are called directly at the provider with each user's own credential: Claude at
   Anthropic (a Claude Console login, a Claude Code subscription login, or an Anthropic API key),
-  ChatGPT models with a ChatGPT plan login (terminal app for now), and Cerebras with a Cerebras
-  API key.
+  ChatGPT models with a ChatGPT plan login, and Cerebras with a Cerebras API key.
 
 ## How it connects
 
@@ -73,7 +72,8 @@ Their current sign-in ends within 12 hours at most, and they can't sign in again
    For Cerebras, paste a `csk-...` key in the **Cerebras** field (desktop) or the
    **Cerebras API key** row (terminal).
 
-   For ChatGPT (terminal app), choose **ChatGPT plan (Codex sign-in)**: neo-warp opens
+   For ChatGPT, choose **Continue with ChatGPT** under **Use your ChatGPT plan** (desktop) or the
+   **ChatGPT plan (Codex sign-in)** row (terminal). neo-warp opens
    `auth.openai.com/codex/device` and shows a code to enter there.
 3. Press Esc and ask the agent something. It asks before running commands that change things.
 

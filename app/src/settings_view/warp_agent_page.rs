@@ -10,13 +10,19 @@ use std::collections::HashMap;
 use std::ops::Not;
 #[cfg(feature = "local_fs")]
 use std::path::PathBuf;
+#[cfg(not(target_family = "wasm"))]
+use std::sync::Arc;
 use std::sync::LazyLock;
+#[cfg(not(target_family = "wasm"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ::ai::anthropic_subscription::ant_cli;
 use ::ai::api_keys::{
     ApiKeyManager, ApiKeyManagerEvent, ApiKeys, ChatGPTConnectFailure, CustomEndpointParams,
 };
+#[cfg(not(target_family = "wasm"))]
+use ::ai::codex_login::oauth as codex_oauth;
 #[cfg(not(target_family = "wasm"))]
 use ::ai::grok_subscription::oauth::{
     self, ManualCodeExchange, OauthCancellationHandle, TokenResponse,
@@ -702,6 +708,9 @@ pub struct WarpAgentPageView {
     grok_oauth_attempt: Option<GrokOauthAttempt>,
     /// Whether a Claude sign-in through the bundled `ant` CLI is waiting on the browser.
     claude_sign_in_pending: bool,
+    /// The ChatGPT plan login this page started, while it waits on OpenAI or the user.
+    #[cfg(not(target_family = "wasm"))]
+    chatgpt_plan_login: Option<ChatGptPlanLogin>,
     #[cfg(not(target_family = "wasm"))]
     grok_code_editor: ViewHandle<EditorView>,
 
@@ -1256,6 +1265,8 @@ impl WarpAgentPageView {
             #[cfg(not(target_family = "wasm"))]
             grok_oauth_attempt: None,
             claude_sign_in_pending: false,
+            #[cfg(not(target_family = "wasm"))]
+            chatgpt_plan_login: None,
             #[cfg(not(target_family = "wasm"))]
             grok_code_editor,
             chatgpt_oauth_attempt: None,
@@ -1870,6 +1881,90 @@ impl WarpAgentPageView {
                 ctx.notify();
             },
         );
+    }
+
+    /// Signs in with a ChatGPT plan: asks OpenAI for a device code, opens the page where the user
+    /// enters it, and stores the tokens once they approve.
+    #[cfg(not(target_family = "wasm"))]
+    fn start_chatgpt_plan_login(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.chatgpt_plan_login.is_some() {
+            return;
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.chatgpt_plan_login = Some(ChatGptPlanLogin {
+            user_code: None,
+            cancelled: cancelled.clone(),
+        });
+        ctx.notify();
+        ctx.spawn(
+            codex_oauth::request_device_code(),
+            move |me, result, ctx| {
+                if cancelled.load(Ordering::Relaxed) {
+                    return;
+                }
+                let code = match result {
+                    Ok(code) => code,
+                    Err(error) => {
+                        log::warn!("Couldn't start the ChatGPT login: {error:#}");
+                        me.finish_chatgpt_plan_login(false, ctx);
+                        return;
+                    }
+                };
+                if let Some(login) = me.chatgpt_plan_login.as_mut() {
+                    login.user_code = Some(code.user_code.clone());
+                }
+                ctx.open_url(codex_oauth::VERIFICATION_URL);
+                ctx.notify();
+                let approval_cancelled = cancelled.clone();
+                ctx.spawn(
+                    codex_oauth::wait_for_approval(code, cancelled.clone()),
+                    move |me, result, ctx| {
+                        if approval_cancelled.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        match result {
+                            Ok(tokens) => {
+                                ApiKeyManager::handle(ctx).update(ctx, move |manager, ctx| {
+                                    manager.store_codex_tokens(tokens, ctx);
+                                });
+                                me.finish_chatgpt_plan_login(true, ctx);
+                            }
+                            Err(error) => {
+                                log::warn!("The ChatGPT login failed: {error:#}");
+                                me.finish_chatgpt_plan_login(false, ctx);
+                            }
+                        }
+                    },
+                );
+            },
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn finish_chatgpt_plan_login(&mut self, connected: bool, ctx: &mut ViewContext<Self>) {
+        self.chatgpt_plan_login = None;
+        let toast = if connected {
+            crate::view_components::DismissibleToast::success(
+                "Connected your ChatGPT plan.".to_string(),
+            )
+        } else {
+            crate::view_components::DismissibleToast::error(
+                "Couldn't connect your ChatGPT plan. Please try again.".to_string(),
+            )
+        };
+        let window_id = ctx.window_id();
+        crate::ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        });
+        ctx.notify();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn cancel_chatgpt_plan_login(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(login) = self.chatgpt_plan_login.take() {
+            login.cancelled.store(true, Ordering::Relaxed);
+            ctx.notify();
+        }
     }
 
     /// Kicks off the xAI (Grok) subscription OAuth flow: opens the consent
@@ -2647,6 +2742,9 @@ pub enum WarpAgentPageAction {
     OpenEditCustomEndpointModal(usize),
     ConnectClaude,
     DisconnectClaude,
+    ConnectChatGptPlan,
+    CancelChatGptPlanLogin,
+    DisconnectChatGptPlan,
     ConnectGrokSubscription,
     CancelGrokSubscriptionConnect,
     DisconnectGrokSubscription,
@@ -3223,6 +3321,22 @@ impl TypedActionView for WarpAgentPageView {
             WarpAgentPageAction::DisconnectClaude => {
                 ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
                     manager.disconnect_anthropic_subscription(ctx);
+                });
+                ctx.notify();
+            }
+            WarpAgentPageAction::ConnectChatGptPlan => {
+                #[cfg(not(target_family = "wasm"))]
+                self.start_chatgpt_plan_login(ctx);
+            }
+            WarpAgentPageAction::CancelChatGptPlanLogin => {
+                #[cfg(not(target_family = "wasm"))]
+                self.cancel_chatgpt_plan_login(ctx);
+            }
+            WarpAgentPageAction::DisconnectChatGptPlan => {
+                #[cfg(not(target_family = "wasm"))]
+                self.cancel_chatgpt_plan_login(ctx);
+                ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.disconnect_codex_login(ctx);
                 });
                 ctx.notify();
             }
@@ -5142,6 +5256,14 @@ struct ProviderApiKeyEditor {
     team_key_info_tooltip: MouseStateHandle,
 }
 
+/// A ChatGPT plan login in progress.
+#[cfg(not(target_family = "wasm"))]
+struct ChatGptPlanLogin {
+    /// The code the user enters at OpenAI, once OpenAI has issued it.
+    user_code: Option<String>,
+    cancelled: Arc<AtomicBool>,
+}
+
 struct ApiKeysWidget {
     view_handle: WeakViewHandle<WarpAgentPageView>,
     provider_api_key_editors: Vec<ProviderApiKeyEditor>,
@@ -5150,6 +5272,9 @@ struct ApiKeysWidget {
     claude_connect_button: ViewHandle<ActionButton>,
     claude_pending_button: ViewHandle<ActionButton>,
     claude_disconnect_button: ViewHandle<ActionButton>,
+    chatgpt_plan_connect_button: ViewHandle<ActionButton>,
+    chatgpt_plan_cancel_button: ViewHandle<ActionButton>,
+    chatgpt_plan_disconnect_button: ViewHandle<ActionButton>,
     grok_connect_button: ViewHandle<ActionButton>,
     grok_cancel_button: ViewHandle<ActionButton>,
     grok_cancelling_button: ViewHandle<ActionButton>,
@@ -5321,6 +5446,27 @@ impl ApiKeysWidget {
                     ctx.dispatch_typed_action(WarpAgentPageAction::DisconnectClaude);
                 })
         });
+        let chatgpt_plan_connect_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Continue with ChatGPT", SecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WarpAgentPageAction::ConnectChatGptPlan);
+                })
+        });
+        let chatgpt_plan_cancel_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Cancel", SecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WarpAgentPageAction::CancelChatGptPlanLogin);
+                })
+        });
+        let chatgpt_plan_disconnect_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new("Disconnect", DangerSecondaryTheme)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WarpAgentPageAction::DisconnectChatGptPlan);
+                })
+        });
         let grok_connect_button = ctx.add_typed_action_view(|_| {
             ActionButton::new("Continue with Grok", SecondaryTheme)
                 .with_size(ButtonSize::Small)
@@ -5443,6 +5589,10 @@ impl ApiKeysWidget {
             claude_connect_button,
             claude_pending_button,
             claude_disconnect_button,
+
+            chatgpt_plan_connect_button,
+            chatgpt_plan_cancel_button,
+            chatgpt_plan_disconnect_button,
 
             grok_connect_button,
             grok_cancel_button,
@@ -5833,6 +5983,108 @@ impl ApiKeysWidget {
 
     /// The "Connect ChatGPT subscription" row. Unlike SuperGrok, the connection
     /// lives on warp-server, so the row renders the last server-reported status.
+    /// The "Use your ChatGPT plan" row. `login` is `None` with no login in progress, and holds the
+    /// device code once OpenAI has issued it.
+    fn render_chatgpt_plan_row(
+        &self,
+        appearance: &Appearance,
+        is_enabled: bool,
+        login: Option<Option<&str>>,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let connected = ApiKeyManager::as_ref(app).has_codex_login();
+        let label = Text::new_inline(
+            "Use your ChatGPT plan",
+            appearance.ui_font_family(),
+            CONTENT_FONT_SIZE,
+        )
+        .with_color(styles::header_font_color(is_enabled, app).into())
+        .finish();
+        let button = if connected {
+            &self.chatgpt_plan_disconnect_button
+        } else if login.is_some() {
+            &self.chatgpt_plan_cancel_button
+        } else {
+            &self.chatgpt_plan_connect_button
+        };
+        let header_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Shrinkable::new(1., label).finish())
+            .with_child(button.as_ref(app).render(app))
+            .finish();
+
+        let description_text = match login {
+            Some(Some(_)) => "Enter this code on the OpenAI page that opened in your browser \
+                (auth.openai.com/codex/device), then approve:"
+                .to_owned(),
+            Some(None) => "Getting a sign-in code from OpenAI...".to_owned(),
+            None => "Sign in with your ChatGPT plan in the browser to run ChatGPT models. This \
+                uses the Codex CLI's sign-in, which OpenAI doesn't support for other apps."
+                .to_owned(),
+        };
+        let description = Container::new(
+            Text::new(
+                description_text,
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(styles::description_font_color(is_enabled, app).into())
+            .soft_wrap(true)
+            .finish(),
+        )
+        .with_margin_right(styles::TOGGLE_WIDTH_MARGIN)
+        .finish();
+
+        let mut column = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Start)
+            .with_child(header_row)
+            .with_child(description);
+
+        if let Some(Some(user_code)) = login {
+            column.add_child(
+                Container::new(
+                    Text::new_inline(
+                        user_code.to_owned(),
+                        appearance.monospace_font_family(),
+                        CONTENT_FONT_SIZE + 6.,
+                    )
+                    .with_color(styles::header_font_color(is_enabled, app).into())
+                    .finish(),
+                )
+                .with_margin_top(6.)
+                .finish(),
+            );
+        } else if connected {
+            let check = ConstrainedBox::new(
+                Icon::Check
+                    .to_warpui_icon(appearance.theme().ansi_fg_green().into())
+                    .finish(),
+            )
+            .with_width(12.)
+            .with_height(12.)
+            .finish();
+            let status_text = Text::new_inline(
+                "Connected.".to_owned(),
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(styles::description_font_color(is_enabled, app).into())
+            .finish();
+            column.add_child(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_spacing(4.)
+                    .with_child(check)
+                    .with_child(status_text)
+                    .finish(),
+            );
+        }
+
+        column.finish()
+    }
+
     /// The "Use your Claude account" row: sign-in through the bundled `ant` CLI, and a
     /// "Connected on ..." status line while a Claude login is stored.
     fn render_claude_row(
@@ -6257,6 +6509,25 @@ impl SettingsWidget for ApiKeysWidget {
                     appearance,
                     provider_keys_enabled,
                     view.claude_sign_in_pending,
+                    app,
+                ))
+                .with_margin_top(16.)
+                .finish(),
+            );
+        }
+        if is_organization && show_provider_keys {
+            #[cfg(not(target_family = "wasm"))]
+            let chatgpt_plan_login = view
+                .chatgpt_plan_login
+                .as_ref()
+                .map(|login| login.user_code.as_deref());
+            #[cfg(target_family = "wasm")]
+            let chatgpt_plan_login: Option<Option<&str>> = None;
+            column.add_child(
+                Container::new(self.render_chatgpt_plan_row(
+                    appearance,
+                    provider_keys_enabled,
+                    chatgpt_plan_login,
                     app,
                 ))
                 .with_margin_top(16.)
