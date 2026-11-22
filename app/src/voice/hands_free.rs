@@ -275,10 +275,19 @@ async fn run_socket(
         None
     };
     let writer = async move {
+        let mut was_paused = false;
         while let Some(chunk) = audio_rx.next().await {
-            if audio_paused.load(Ordering::Relaxed) {
+            let paused = audio_paused.load(Ordering::Relaxed);
+            if paused {
+                // Closing the open utterance stops the server decoding it; the final it sends is
+                // dropped because transcripts are paused.
+                if !was_paused && let Err(error) = sink.send(text(&ClientMessage::Flush)).await {
+                    return Some(error.to_string());
+                }
+                was_paused = true;
                 continue;
             }
+            was_paused = false;
             if let Err(error) = sink.send(websocket::Message::new_binary(chunk.pcm)).await {
                 return Some(error.to_string());
             }

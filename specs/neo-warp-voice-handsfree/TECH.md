@@ -106,6 +106,8 @@ Add `FeatureFlag::VoiceHandsFree` to `crates/warp_features`, add it to the org d
   has focus. It also shows the conversation-mode state.
 - Typing pauses hands-free: transcripts are dropped and the client stops sending audio to the
   server (the microphone stays open so resuming is instant) until the input is cleared or sent.
+  On the first paused chunk the client sends `flush`, so the server closes the open utterance
+  and stops decoding at once; that utterance's `final` is dropped because transcripts are paused.
 - Server errors (`error` messages, a failed socket, VAD load failures) show an error toast in the
   session's window. The socket task ends as soon as either direction ends or fails.
 - `LiveCapture` accepts f32, i16, u16, and i32 input devices.
@@ -116,9 +118,15 @@ Add `FeatureFlag::VoiceHandsFree` to `crates/warp_features`, add it to the org d
   Linux and Windows), shown only when the flags and the local server are on. The listening state
   and a "Mic on" label are shown in the input's placeholder, and the footer's voice indicator turns
   on.
-- Not done in v1: the footer mic button, the level meter, the TUI status-line privacy dot, the Settings > Voice rows (the settings `agents.voice.hands_free_auto_send_ms` and
+- Not done in v1: the footer mic button, the level meter, the TUI status-line privacy dot, the
+  Settings > Voice rows (the settings `agents.voice.hands_free_auto_send_ms` and
   `agents.voice.hands_free_voice_commands` exist in the settings file), TUI wiring, and the macOS
-  VoiceProcessingIO capture path (only needed with conversation mode).
+  VoiceProcessingIO capture path (only needed with conversation mode; see the conversation spec
+  for the echo gate used instead).
+- Known gaps: the window-header "Mic on" label lives in the tab bar, so it is not visible when
+  the tab bar is hidden; transcript edits are dropped (not queued) while no input in the session's
+  window has focus; the "Mic on" placeholder only refreshes on hands-free state changes, not on
+  conversation-state changes.
 
 ## Testing
 - VAD segmentation on recorded audio fixtures.

@@ -81,8 +81,9 @@ becomes the primary model.
 When a blocklist action enters the approval-required state, the session speaks a short prompt. It
 then listens for an approval phrase in the next final utterance: yes, approve, or run it; or no,
 skip, or cancel. A match triggers the same action as the matching on-screen button. Other speech
-does not affect the approval. Commands the existing risk classification marks as destructive still
-need on-screen approval.
+does not affect the approval. Commands the existing risk classification marks as destructive, or
+does not classify, still need on-screen approval. See "Approval safety" below for the timing rules
+of the answer window.
 
 ## Models and consent
 `ModelSpec::kokoro_82m_v1_int8()` and `ModelSpec::tiny_voca()` are stored through `ModelStore`. Each
@@ -144,12 +145,44 @@ off.
   shown only when `VoiceConversation` is on.
 - **Toggle**: Command Palette entries and `cmd-alt-shift-V` (`ctrl-alt-shift-V` on Linux and
   Windows). Turning it on asks for the speech output model if needed and turns on hands-free.
+- **Approval safety** (`approval::ApprovalFlow`, `ConversationController`):
+  - Only a `RequestCommandOutput` whose `is_risky` is `Some(false)` can be approved by voice.
+    Risky (`Some(true)`) and unclassified (`None`) commands, and every other action, are announced
+    with "Please approve it on screen" and no spoken phrase answers them.
+  - Accepted phrases are whole utterances: yes, approve(d), run it, yes run it, go ahead; or no,
+    nope, skip (it), cancel, reject, don't, do not. "Yeah" and "yep" are not accepted.
+  - The answer window opens when the prompt sentence finishes playing (or its synthesis fails)
+    plus `ECHO_TAIL` (400 ms), and only an utterance whose VAD `speech_start` is inside the window
+    counts. A prompt that never finished playing (stopped, barged in, replaced) never opens it.
+  - After `APPROVAL_LISTEN_FOR` (20 s) the window closes, the assistant says "I'll wait for you to
+    approve it on screen", and only the buttons answer.
+  - An approval phrase that can't answer (too early, too late, on-screen only) is dropped rather
+    than sent to the agent as a prompt (`FinalOutcome::Ignored`).
+- **Echo gate (instead of VoiceProcessingIO in this pass)**: output still uses cpal, with no echo
+  cancellation, so the controller decides what to trust:
+  - Output kind: `SpeechOutput` reports cpal's device type (Headphones, Headset, Earpiece,
+    HearingAid) and name; `is_headphone_device_name` also matches names such as "AirPods",
+    "Headphones", "Buds". When neither says headphones, the output is treated as loudspeakers.
+  - Barge-in needs `BARGE_IN_AFTER` (120 ms) of overlap on headphones and
+    `BARGE_IN_AFTER_ON_SPEAKERS` (600 ms) on loudspeakers. Overlap is measured from the later of
+    the user's speech start and the start of playback; every speech start is recorded, and the
+    session re-checks every `BARGE_IN_POLL` (40 ms) while the user keeps talking.
+  - On loudspeakers, a final whose speech started while audio played (or within `ECHO_TAIL` after
+    it) and never barged in is dropped as echo (`FinalOutcome::Echo`). On headphones it is used.
+  - "Stop" (stop, stop talking, stop it, quiet, be quiet, shush) is a command only while the
+    assistant is Speaking or Thinking, when it barged in, or when it overlapped the speech; while
+    Listening it is an ordinary prompt. After a stop or barge-in, later replies and readouts of
+    the same turn stay silent until the next prompt.
+  - Not done: a playback-correlated energy gate and a raised VAD threshold during playback (the
+    server VAD config is fixed per socket). Real AEC (VoiceProcessingIO on macOS, WebRTC AEC3
+    elsewhere) remains future work; loudspeaker barge-in is therefore deliberately slow.
+- **Spoken readout of results**: when a command action finishes (not cancelled), its result is
+  spoken after the reply so far (`conversation_text::spoken_action_result`). Successful output of
+  at most 2 lines and 120 characters is read ("Ran pwd: /tmp."); anything longer, or a failure,
+  is only summarized (`summary::command_result_readout`, e.g. "Ran cargo check: 2 errors.").
+  Follow-up replies of the same turn (after a tool call) are spoken too (`reply_started`).
 - **Not done in v1**:
-  - macOS VoiceProcessingIO echo cancellation. Output uses cpal on every platform, so barge-in
-    works reliably only with headphones; the higher VAD threshold during playback is not done.
-  - Command-output summaries ("Ran cargo check: 2 errors") are implemented
-    (`summary::command_result_summary`) but not yet wired to action results; tool calls are
-    announced when they start ("Running cargo check.").
+  - macOS VoiceProcessingIO echo cancellation (see the echo gate above).
   - Marking an interrupted reply in its block (it is logged), the footer Listening/Thinking/Speaking
     indicator (shown in the window header instead), the footer toggle button, and the TUI.
   - Commands without a risk classification other than `RequestCommandOutput` are announced and left

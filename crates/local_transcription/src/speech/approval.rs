@@ -1,6 +1,18 @@
 //! Spoken approval of commands the agent wants to run.
 
+use std::time::Duration;
+
+use instant::Instant;
+
 use super::tts_text;
+
+/// How long after the assistant's audio stops its echo may still reach the microphone, so speech
+/// that starts within it is not trusted as the user's.
+pub const ECHO_TAIL: Duration = Duration::from_millis(400);
+
+/// How long a spoken answer is accepted once the prompt has played; after that only the on-screen
+/// buttons answer.
+pub const APPROVAL_LISTEN_FOR: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalReply {
@@ -10,8 +22,6 @@ pub enum ApprovalReply {
 
 const APPROVE: &[&[&str]] = &[
     &["yes"],
-    &["yeah"],
-    &["yep"],
     &["approve"],
     &["approved"],
     &["run", "it"],
@@ -91,7 +101,7 @@ pub fn approval_prompt(command: &str, needs_screen: bool) -> String {
     if needs_screen {
         format!("I want to run {short}. Please approve it on screen.")
     } else {
-        format!("I want to run {short}. Say yes or no.")
+        format!("I want to run {short}. Say run it, or no.")
     }
 }
 
@@ -99,9 +109,25 @@ pub fn approval_prompt(command: &str, needs_screen: bool) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingApproval<Id> {
     pub id: Id,
-    /// Set for commands the risk classification marks as destructive, which only the on-screen
-    /// buttons approve.
+    /// Set for commands that only the on-screen buttons approve: ones the risk classification
+    /// marks as destructive or leaves unclassified, and ones whose spoken answer window passed.
     pub needs_screen: bool,
+    /// Spoken answers count only for speech that starts at or after this, once the prompt has
+    /// played and its echo has died down. `None` until the prompt has played.
+    pub listening_from: Option<Instant>,
+    pub listening_until: Option<Instant>,
+}
+
+/// What a final utterance meant to the pending approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalVerdict<Id> {
+    /// Not an approval phrase, or no approval is pending; the utterance is a normal prompt.
+    NotAnAnswer,
+    /// An approval phrase that can't answer this approval (said before the prompt finished, after
+    /// the answer window, or for a command that needs the screen). It is dropped so it never
+    /// reaches the agent as a prompt.
+    Ignored,
+    Answered(Id, ApprovalReply),
 }
 
 /// Tracks the approval the agent is waiting on and turns final utterances into answers.
@@ -119,12 +145,39 @@ impl<Id> Default for ApprovalFlow<Id> {
 impl<Id: Clone + PartialEq> ApprovalFlow<Id> {
     /// Records that the agent waits on `id`, returning the prompt to speak.
     pub fn request(&mut self, id: Id, command: &str, needs_screen: bool) -> String {
-        self.pending = Some(PendingApproval { id, needs_screen });
+        self.pending = Some(PendingApproval {
+            id,
+            needs_screen,
+            listening_from: None,
+            listening_until: None,
+        });
         approval_prompt(command, needs_screen)
     }
 
     pub fn pending(&self) -> Option<&PendingApproval<Id>> {
         self.pending.as_ref()
+    }
+
+    /// The prompt finished playing (or could not be played) at `now`.
+    pub fn prompt_played(&mut self, now: Instant) {
+        if let Some(pending) = &mut self.pending {
+            let from = now + ECHO_TAIL;
+            pending.listening_from = Some(from);
+            pending.listening_until = Some(from + APPROVAL_LISTEN_FOR);
+        }
+    }
+
+    /// Stops accepting spoken answers once the answer window has passed. Returns whether it just
+    /// closed.
+    pub fn check_timeout(&mut self, now: Instant) -> bool {
+        let Some(pending) = &mut self.pending else {
+            return false;
+        };
+        if pending.needs_screen || !pending.listening_until.is_some_and(|until| now >= until) {
+            return false;
+        }
+        pending.needs_screen = true;
+        true
     }
 
     /// The approval was answered elsewhere (on screen) or went away.
@@ -142,16 +195,32 @@ impl<Id: Clone + PartialEq> ApprovalFlow<Id> {
         self.pending = None;
     }
 
-    /// Answers the pending approval from a final utterance. Returns `None`, keeping the approval
-    /// pending, when the utterance isn't an answer or the command needs on-screen approval.
-    pub fn on_utterance(&mut self, text: &str) -> Option<(Id, ApprovalReply)> {
-        let pending = self.pending.as_ref()?;
-        if pending.needs_screen {
-            return None;
+    /// Answers the pending approval from a final utterance whose speech started at `started_at`.
+    /// Only a whole approval phrase whose speech started after the prompt played, within the
+    /// answer window, answers it.
+    pub fn on_utterance(
+        &mut self,
+        text: &str,
+        started_at: Option<Instant>,
+        now: Instant,
+    ) -> ApprovalVerdict<Id> {
+        let Some(pending) = self.pending.as_ref() else {
+            return ApprovalVerdict::NotAnAnswer;
+        };
+        let Some(reply) = match_approval(text) else {
+            return ApprovalVerdict::NotAnAnswer;
+        };
+        let in_window = match (pending.listening_from, pending.listening_until, started_at) {
+            (Some(from), Some(until), Some(started)) => started >= from && now < until,
+            _ => false,
+        };
+        if pending.needs_screen || !in_window {
+            return ApprovalVerdict::Ignored;
         }
-        let reply = match_approval(text)?;
-        let pending = self.pending.take()?;
-        Some((pending.id, reply))
+        match self.pending.take() {
+            Some(pending) => ApprovalVerdict::Answered(pending.id, reply),
+            None => ApprovalVerdict::NotAnAnswer,
+        }
     }
 }
 

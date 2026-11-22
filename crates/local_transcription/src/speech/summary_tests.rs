@@ -23,3 +23,26 @@ fn summarizes_command_output_without_reading_it() {
         "Ran false: it failed with exit code 1."
     );
 }
+
+#[test]
+fn reads_short_output_and_summarizes_long_output() {
+    let readout = command_result_readout("git branch --show-current", Some(0), "main\n");
+    assert!(readout.starts_with("Ran git branch: "), "{readout}");
+    assert!(readout.contains("main"), "{readout}");
+    let long = (0..50)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        command_result_readout("cargo check", Some(0), &long),
+        "Ran cargo check: it succeeded."
+    );
+    assert_eq!(
+        command_result_readout("cargo check", Some(101), "error: bad\nerror: worse"),
+        "Ran cargo check: 2 errors."
+    );
+    assert_eq!(
+        command_result_readout("true", Some(0), ""),
+        "Ran true: it succeeded."
+    );
+}

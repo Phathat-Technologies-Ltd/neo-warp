@@ -10,21 +10,22 @@ use local_transcription::Audio;
 use local_transcription::speech::approval::ApprovalReply;
 use local_transcription::speech::chunker::ChunkerOptions;
 use local_transcription::speech::playback::{
-    BARGE_IN_AFTER, ConversationController, ConversationState, FinalOutcome, PlaybackAction,
+    BARGE_IN_POLL, ConversationController, ConversationState, FinalOutcome, PlaybackAction,
+    is_headphone_device_name,
 };
 use local_transcription::speech::{KokoroSpeaker, Speaker, TinyVocaSpeaker, VoiceId};
 use voice_input::SpeechOutput;
 use warpui::r#async::Timer;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity, WindowId};
 
-use super::conversation_text::{spoken_action_prompt, spoken_reply_text};
+use super::conversation_text::{spoken_action_prompt, spoken_action_result, spoken_reply_text};
 use super::hands_free::{HandsFreeEvent, HandsFreeSession, toggle_hands_free};
 use super::local_model::{
     SpeechOutputEngine, SpeechOutputModel, ensure_speech_output_ready, is_conversation_enabled,
     speech_output_store,
 };
 use crate::ai::agent::conversation::AIConversationId;
-use crate::ai::agent::{AIAgentActionId, CancellationReason};
+use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType, CancellationReason};
 use crate::ai::blocklist::{
     BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
 };
@@ -59,6 +60,8 @@ pub struct ConversationSession {
     surface: Option<EntityId>,
     reply: Option<SpokenReply>,
     approval: Option<ApprovalTarget>,
+    /// The end of the spoken answer window a timer is already waiting for.
+    approval_timeout_at: Option<Instant>,
     finished_tx: mpsc::UnboundedSender<(u64, u64)>,
 }
 
@@ -68,7 +71,7 @@ impl ConversationSession {
         ctx.spawn_stream_local(
             finished_rx,
             |me, (reply, seq), ctx| {
-                let actions = me.controller.playback_finished(reply, seq);
+                let actions = me.controller.playback_finished(reply, seq, Instant::now());
                 me.apply(actions, ctx);
             },
             |_, _| {},
@@ -103,6 +106,7 @@ impl ConversationSession {
             surface: None,
             reply: None,
             approval: None,
+            approval_timeout_at: None,
             finished_tx,
         }
     }
@@ -140,10 +144,11 @@ impl ConversationSession {
         let options = ChunkerOptions {
             read_code_summaries: *settings.conversation_read_code_summaries,
         };
-        self.output = Some(
-            SpeechOutput::open()
-                .map_err(|error| format!("Couldn't open the speaker: {error:#}"))?,
-        );
+        let output = SpeechOutput::open()
+            .map_err(|error| format!("Couldn't open the speaker: {error:#}"))?;
+        let headphones =
+            output.reports_headphones() || is_headphone_device_name(output.device_name());
+        self.output = Some(output);
         // Loading the model takes seconds, so do it now rather than on the first sentence.
         let warm = speaker.clone();
         let voice = self.voice.clone();
@@ -155,6 +160,7 @@ impl ConversationSession {
         self.speaker = Some(speaker);
         self.window_id = Some(window_id);
         self.controller.start(options);
+        self.controller.set_headphones(headphones);
         ctx.emit(ConversationEvent::StateChanged);
         ctx.notify();
         Ok(())
@@ -171,6 +177,7 @@ impl ConversationSession {
         self.surface = None;
         self.reply = None;
         self.approval = None;
+        self.approval_timeout_at = None;
         ctx.emit(ConversationEvent::StateChanged);
         ctx.notify();
     }
@@ -231,10 +238,13 @@ impl ConversationSession {
             .unwrap_or_default();
         let reply = match &mut self.reply {
             Some(reply) if reply.exchange_id == exchange_id => reply,
-            _ => self.reply.insert(SpokenReply {
-                exchange_id,
-                fed: String::new(),
-            }),
+            _ => {
+                self.controller.reply_started();
+                self.reply.insert(SpokenReply {
+                    exchange_id,
+                    fed: String::new(),
+                })
+            }
         };
         let common = common_prefix_len(&reply.fed, &text);
         let delta = text[common..].to_owned();
@@ -275,6 +285,24 @@ impl ConversationSession {
         self.apply(actions, ctx);
     }
 
+    /// An agent action of `surface` finished; a command's result is read out when short and
+    /// summarized otherwise.
+    pub fn action_finished(
+        &mut self,
+        surface: EntityId,
+        result: &AIAgentActionResultType,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.is_active() || self.surface != Some(surface) {
+            return;
+        }
+        let Some(text) = spoken_action_result(result) else {
+            return;
+        };
+        let actions = self.controller.speak(text);
+        self.apply(actions, ctx);
+    }
+
     /// The action stopped waiting for approval (answered on screen, run, or cancelled).
     pub fn approval_resolved(&mut self, action_id: &AIAgentActionId) {
         self.controller.approval_resolved(action_id);
@@ -283,11 +311,11 @@ impl ConversationSession {
     /// Lets conversation mode handle a final utterance before hands-free applies it. Returns
     /// whether it was consumed ("stop", or an approval answer) and must not reach the input.
     pub fn intercept_final(&mut self, text: &str, ctx: &mut ModelContext<Self>) -> bool {
-        let (outcome, actions) = self.controller.on_final(text);
+        let (outcome, actions) = self.controller.on_final(text, Instant::now());
         self.apply(actions, ctx);
         match outcome {
             FinalOutcome::NotConsumed => false,
-            FinalOutcome::Stopped => true,
+            FinalOutcome::Stopped | FinalOutcome::Ignored | FinalOutcome::Echo => true,
             FinalOutcome::Answered(action_id, reply) => {
                 if let Some(target) = self.approval.take() {
                     let conversation_id = target.conversation_id;
@@ -314,10 +342,46 @@ impl ConversationSession {
             return;
         }
         self.controller.speech_started(Instant::now());
-        ctx.spawn(Timer::after(BARGE_IN_AFTER), |me, _, ctx| {
+        self.poll_barge_in(ctx);
+    }
+
+    /// Re-checks barge-in until the user stops talking or the speech stops.
+    fn poll_barge_in(&mut self, ctx: &mut ModelContext<Self>) {
+        ctx.spawn(Timer::after(BARGE_IN_POLL), |me, _, ctx| {
+            if !me.is_active() || !me.controller.is_user_talking() {
+                return;
+            }
             let actions = me.controller.check_barge_in(Instant::now());
+            let interrupted = !actions.is_empty();
             me.apply(actions, ctx);
+            if !interrupted {
+                me.poll_barge_in(ctx);
+            }
         });
+    }
+
+    /// Starts a timer for the end of the spoken answer window once the approval prompt played.
+    fn schedule_approval_timeout(&mut self, ctx: &mut ModelContext<Self>) {
+        let until = self
+            .controller
+            .approvals()
+            .pending()
+            .filter(|pending| !pending.needs_screen)
+            .and_then(|pending| pending.listening_until);
+        let Some(until) = until else {
+            return;
+        };
+        if self.approval_timeout_at == Some(until) {
+            return;
+        }
+        self.approval_timeout_at = Some(until);
+        ctx.spawn(
+            Timer::after(until.saturating_duration_since(Instant::now())),
+            |me, _, ctx| {
+                let actions = me.controller.check_approval_timeout(Instant::now());
+                me.apply(actions, ctx);
+            },
+        );
     }
 
     pub fn speech_ended(&mut self) {
@@ -347,7 +411,7 @@ impl ConversationSession {
                             }
                             Err(_) => None,
                         };
-                        let actions = me.controller.synthesized(reply, seq, audio);
+                        let actions = me.controller.synthesized(reply, seq, audio, Instant::now());
                         me.apply(actions, ctx);
                     });
                 }
@@ -369,6 +433,7 @@ impl ConversationSession {
                 }
             }
         }
+        self.schedule_approval_timeout(ctx);
         if self.controller.state() != before {
             ctx.emit(ConversationEvent::StateChanged);
             ctx.notify();

@@ -39,6 +39,27 @@ pub fn command_result_summary(command: &str, exit_code: Option<i32>, output: &st
     format!("Ran {name}: {detail}.")
 }
 
+/// Output at most this long (in lines and characters) is read aloud rather than summarized.
+const MAX_READ_OUTPUT_LINES: usize = 2;
+const MAX_READ_OUTPUT_CHARS: usize = 120;
+
+/// What to say when a command finishes: short successful output is read out ("Ran pwd:
+/// /Users/me/app."); anything longer, or a failure, only gets [`command_result_summary`].
+pub fn command_result_readout(command: &str, exit_code: Option<i32>, output: &str) -> String {
+    let trimmed = output.trim();
+    let lines = trimmed.lines().count();
+    let short = !trimmed.is_empty()
+        && lines <= MAX_READ_OUTPUT_LINES
+        && trimmed.chars().count() <= MAX_READ_OUTPUT_CHARS;
+    let summary = command_result_summary(command, exit_code, output);
+    if short && matches!(exit_code, Some(0) | None) && summary.ends_with(": it succeeded.") {
+        let spoken = tts_text::normalize(&trimmed.lines().collect::<Vec<_>>().join(". "));
+        format!("Ran {}: {spoken}.", command_name(command))
+    } else {
+        summary
+    }
+}
+
 fn count_lines(output: &str, needles: &[&str]) -> usize {
     output
         .lines()

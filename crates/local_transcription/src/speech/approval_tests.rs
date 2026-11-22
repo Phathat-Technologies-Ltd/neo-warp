@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use instant::Instant;
+
 use super::*;
 
 #[test]
@@ -36,7 +40,7 @@ fn recognizes_stop() {
 fn prompt_reads_a_short_command() {
     assert_eq!(
         approval_prompt("cargo test --workspace", false),
-        "I want to run cargo test dash dash workspace. Say yes or no."
+        "I want to run cargo test dash dash workspace. Say run it, or no."
     );
     assert_eq!(
         approval_prompt("rm -rf target", true),
@@ -44,27 +48,80 @@ fn prompt_reads_a_short_command() {
     );
     assert_eq!(
         approval_prompt("a b c d e f g h", false),
-        "I want to run a b c d e f and so on. Say yes or no."
+        "I want to run a b c d e f and so on. Say run it, or no."
     );
 }
 
 #[test]
-fn flow_answers_only_matching_utterances() {
+fn vague_affirmatives_are_not_answers() {
+    for text in ["yeah", "yep", "sure", "ok"] {
+        assert_eq!(match_approval(text), None, "{text}");
+    }
+}
+
+#[test]
+fn flow_answers_only_matching_utterances_after_the_prompt() {
+    let start = Instant::now();
     let mut flow = ApprovalFlow::default();
-    assert_eq!(flow.on_utterance("yes"), None);
+    assert_eq!(
+        flow.on_utterance("yes", Some(start), start),
+        ApprovalVerdict::NotAnAnswer
+    );
     flow.request(7, "ls", false);
-    assert_eq!(flow.on_utterance("hmm, let me think"), None);
+    // The prompt has not played yet.
+    assert_eq!(
+        flow.on_utterance("yes", Some(start), start),
+        ApprovalVerdict::Ignored
+    );
+    flow.prompt_played(start);
+    let listening = start + ECHO_TAIL;
+    assert_eq!(
+        flow.on_utterance("yes", Some(listening - Duration::from_millis(1)), listening),
+        ApprovalVerdict::Ignored
+    );
+    assert_eq!(
+        flow.on_utterance("hmm, let me think", Some(listening), listening),
+        ApprovalVerdict::NotAnAnswer
+    );
     assert!(flow.pending().is_some());
-    assert_eq!(flow.on_utterance("Yes."), Some((7, ApprovalReply::Approve)));
+    assert_eq!(
+        flow.on_utterance("Yes.", Some(listening), listening),
+        ApprovalVerdict::Answered(7, ApprovalReply::Approve)
+    );
     assert!(flow.pending().is_none());
-    assert_eq!(flow.on_utterance("yes"), None);
+    assert_eq!(
+        flow.on_utterance("yes", Some(listening), listening),
+        ApprovalVerdict::NotAnAnswer
+    );
+}
+
+#[test]
+fn spoken_answers_time_out() {
+    let start = Instant::now();
+    let mut flow = ApprovalFlow::default();
+    flow.request(7, "ls", false);
+    flow.prompt_played(start);
+    let late = start + ECHO_TAIL + APPROVAL_LISTEN_FOR;
+    assert!(!flow.check_timeout(late - Duration::from_millis(1)));
+    assert!(flow.check_timeout(late));
+    assert!(!flow.check_timeout(late), "reported once");
+    assert_eq!(
+        flow.on_utterance("yes", Some(late), late),
+        ApprovalVerdict::Ignored
+    );
 }
 
 #[test]
 fn destructive_commands_need_the_screen() {
+    let start = Instant::now();
     let mut flow = ApprovalFlow::default();
     flow.request(1, "rm -rf /", true);
-    assert_eq!(flow.on_utterance("yes"), None);
+    flow.prompt_played(start);
+    let listening = start + ECHO_TAIL;
+    assert_eq!(
+        flow.on_utterance("yes", Some(listening), listening),
+        ApprovalVerdict::Ignored
+    );
     assert!(flow.pending().is_some());
     flow.resolved(&1);
     assert!(flow.pending().is_none());
@@ -72,10 +129,14 @@ fn destructive_commands_need_the_screen() {
 
 #[test]
 fn on_screen_answers_clear_the_pending_approval() {
+    let start = Instant::now();
     let mut flow = ApprovalFlow::default();
     flow.request(1, "ls", false);
     flow.resolved(&2);
     assert!(flow.pending().is_some());
     flow.resolved(&1);
-    assert_eq!(flow.on_utterance("no"), None);
+    assert_eq!(
+        flow.on_utterance("no", Some(start), start),
+        ApprovalVerdict::NotAnAnswer
+    );
 }

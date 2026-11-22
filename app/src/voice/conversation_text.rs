@@ -1,10 +1,13 @@
 //! What conversation mode says for an agent reply: its prose as markdown for the sentence chunker,
 //! with tool calls replaced by short summaries.
 
-use local_transcription::speech::summary::{SpokenSummary, command_name, plural};
+use local_transcription::speech::summary::{
+    SpokenSummary, command_name, command_result_readout, plural,
+};
 
 use crate::ai::agent::{
-    AIAgentActionType, AIAgentOutput, AIAgentOutputMessageType, AIAgentTextSection,
+    AIAgentActionResultType, AIAgentActionType, AIAgentOutput, AIAgentOutputMessageType,
+    AIAgentTextSection, RequestCommandOutputResult,
 };
 
 /// A tool call, as spoken.
@@ -63,12 +66,13 @@ impl SpokenSummary for SpokenAction<'_> {
 }
 
 /// The command (or summary) to name in a spoken approval prompt, and whether only the on-screen
-/// buttons may approve it because it is marked risky.
+/// buttons may approve it. Only commands the risk classification explicitly marks as safe may be
+/// approved by voice; risky and unclassified ones need the screen.
 pub fn spoken_action_prompt(action: &AIAgentActionType) -> (String, bool) {
     match action {
         AIAgentActionType::RequestCommandOutput {
             command, is_risky, ..
-        } => (command.clone(), is_risky.unwrap_or(false)),
+        } => (command.clone(), *is_risky != Some(false)),
         action => {
             let summary = SpokenAction(action)
                 .spoken_summary()
@@ -79,6 +83,36 @@ pub fn spoken_action_prompt(action: &AIAgentActionType) -> (String, bool) {
                 true,
             )
         }
+    }
+}
+
+/// What to say when an action finishes, if anything: a command's short output is read out, and
+/// longer output is only summarized.
+pub fn spoken_action_result(result: &AIAgentActionResultType) -> Option<String> {
+    let AIAgentActionResultType::RequestCommandOutput(result) = result else {
+        return None;
+    };
+    match result {
+        RequestCommandOutputResult::Completed {
+            command,
+            output,
+            exit_code,
+            ..
+        } => Some(command_result_readout(
+            command,
+            Some(exit_code.value()),
+            output,
+        )),
+        RequestCommandOutputResult::ShellRecovered {
+            command, output, ..
+        } => Some(command_result_readout(command, Some(1), output)),
+        RequestCommandOutputResult::Denylisted { command } => Some(format!(
+            "{} is on the deny list, so it didn't run.",
+            command_name(command)
+        )),
+        RequestCommandOutputResult::LongRunningCommandSnapshot { .. }
+        | RequestCommandOutputResult::CancelledBeforeExecution
+        | RequestCommandOutputResult::TerminalBusy { .. } => None,
     }
 }
 

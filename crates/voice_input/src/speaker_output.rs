@@ -40,6 +40,8 @@ pub struct SpeechOutput {
     _stream: cpal::Stream,
     shared: Arc<Mutex<Shared>>,
     device_rate: u32,
+    device_name: String,
+    reports_headphones: bool,
 }
 
 impl SpeechOutput {
@@ -59,6 +61,19 @@ impl SpeechOutput {
         }
         let channels = usize::from(config.channels().max(1));
         let device_rate = config.sample_rate();
+        let (device_name, reports_headphones) = match device.description() {
+            Ok(description) => (
+                description.name().to_owned(),
+                matches!(
+                    description.device_type(),
+                    cpal::DeviceType::Headphones
+                        | cpal::DeviceType::Headset
+                        | cpal::DeviceType::Earpiece
+                        | cpal::DeviceType::HearingAid
+                ),
+            ),
+            Err(_) => (String::new(), false),
+        };
         let shared = Arc::new(Mutex::new(Shared::default()));
         let callback_shared = shared.clone();
         let mut logged_error = false;
@@ -85,7 +100,19 @@ impl SpeechOutput {
             _stream: stream,
             shared,
             device_rate,
+            device_name,
+            reports_headphones,
         })
+    }
+
+    /// The name of the output device, such as "MacBook Pro Speakers".
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    /// Whether the system reports the output device as headphones or a headset.
+    pub fn reports_headphones(&self) -> bool {
+        self.reports_headphones
     }
 
     /// Plays mono `samples` recorded at `sample_rate`, replacing anything playing, and calls

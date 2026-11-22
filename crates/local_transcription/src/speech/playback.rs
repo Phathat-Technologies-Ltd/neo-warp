@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use instant::Instant;
 
-use super::approval::{ApprovalFlow, ApprovalReply, is_stop_phrase};
+use super::approval::{ApprovalFlow, ApprovalReply, ApprovalVerdict, ECHO_TAIL, is_stop_phrase};
 use super::chunker::{ChunkerOptions, SentenceChunker};
 
 /// What the conversation indicator shows.
@@ -33,9 +33,33 @@ impl ConversationState {
     }
 }
 
-/// How long the user must talk over the assistant before the speech stops, so a cough or a
-/// click does not interrupt it.
+/// How long the user must talk over the assistant before the speech stops when the output is
+/// headphones, so a cough or a click does not interrupt it.
 pub const BARGE_IN_AFTER: Duration = Duration::from_millis(120);
+
+/// The same on loudspeakers, where the microphone also hears the assistant: without echo
+/// cancellation only sustained speech is trusted to be the user's.
+pub const BARGE_IN_AFTER_ON_SPEAKERS: Duration = Duration::from_millis(600);
+
+/// How often the owner re-checks barge-in while the user keeps talking.
+pub const BARGE_IN_POLL: Duration = Duration::from_millis(40);
+
+/// Whether an output device name looks like headphones or a headset, whose sound the microphone
+/// does not pick up.
+pub fn is_headphone_device_name(name: &str) -> bool {
+    let name = name.to_lowercase();
+    [
+        "headphone",
+        "headset",
+        "airpods",
+        "earbud",
+        "earphone",
+        "buds",
+        "beats",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
+}
 
 /// Work the owner must carry out.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,7 +74,8 @@ pub enum PlaybackAction<A> {
     Interrupted { reply: u64 },
 }
 
-/// What a final utterance meant to the conversation.
+/// What a final utterance meant to the conversation. Every outcome but `NotConsumed` keeps the
+/// utterance out of the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FinalOutcome<Id> {
     /// The utterance is a normal prompt for the input.
@@ -59,6 +84,20 @@ pub enum FinalOutcome<Id> {
     Stopped,
     /// The utterance answered the pending approval.
     Answered(Id, ApprovalReply),
+    /// An approval phrase that could not answer the pending approval.
+    Ignored,
+    /// The utterance started while the assistant was audible and never barged in, so it is likely
+    /// the assistant's own voice.
+    Echo,
+}
+
+/// The utterance the VAD is hearing or has just heard.
+#[derive(Debug, Clone, Copy)]
+struct Utterance {
+    started_at: Instant,
+    /// The assistant was audible (or its echo tail was) when the speech started.
+    overlapped: bool,
+    barged_in: bool,
 }
 
 #[derive(Debug)]
@@ -75,8 +114,18 @@ pub struct ConversationController<A, Id> {
     ready: VecDeque<(u64, A)>,
     playing: Option<u64>,
     reply_done: bool,
-    /// When the user started talking while the assistant was speaking.
-    talking_since: Option<Instant>,
+    /// Set when the user interrupted or said "stop"; later replies of the same turn stay silent.
+    interrupted: bool,
+    /// When the current run of audio started playing.
+    playing_since: Option<Instant>,
+    /// When audio last stopped playing, for the echo tail.
+    played_until: Option<Instant>,
+    /// Whether the user is talking right now.
+    talking: bool,
+    utterance: Option<Utterance>,
+    headphones: bool,
+    /// The sentence that is the pending approval's prompt.
+    approval_prompt_seq: Option<u64>,
     approvals: ApprovalFlow<Id>,
 }
 
@@ -93,7 +142,13 @@ impl<A, Id> Default for ConversationController<A, Id> {
             ready: VecDeque::new(),
             playing: None,
             reply_done: true,
-            talking_since: None,
+            interrupted: false,
+            playing_since: None,
+            played_until: None,
+            talking: false,
+            utterance: None,
+            headphones: false,
+            approval_prompt_seq: None,
             approvals: ApprovalFlow::default(),
         }
     }
@@ -112,22 +167,34 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         &self.approvals
     }
 
+    /// Whether the user is talking, so the owner keeps re-checking barge-in.
+    pub fn is_user_talking(&self) -> bool {
+        self.talking
+    }
+
     pub fn start(&mut self, chunker_options: ChunkerOptions) {
         *self = Self {
             state: ConversationState::Listening,
             chunker_options,
             chunker: SentenceChunker::new(chunker_options),
             reply: self.reply + 1,
+            headphones: self.headphones,
             ..Self::default()
         };
     }
 
     pub fn stop(&mut self) -> Vec<PlaybackAction<A>> {
-        let actions = self.silence();
+        let actions = self.silence(None);
         let reply = self.reply + 1;
         *self = Self::default();
         self.reply = reply;
         actions
+    }
+
+    /// Whether the output is headphones, which the microphone doesn't hear, so barge-in can be
+    /// quick and speech over the assistant is trusted.
+    pub fn set_headphones(&mut self, headphones: bool) {
+        self.headphones = headphones;
     }
 
     fn is_on(&self) -> bool {
@@ -138,14 +205,34 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.playing.is_some() || self.synthesizing.is_some() || !self.ready.is_empty()
     }
 
+    fn barge_in_after(&self) -> Duration {
+        if self.headphones {
+            BARGE_IN_AFTER
+        } else {
+            BARGE_IN_AFTER_ON_SPEAKERS
+        }
+    }
+
+    /// Whether the assistant is audible at `now`, or was within the echo tail.
+    fn is_audible(&self, now: Instant) -> bool {
+        self.playing.is_some()
+            || self
+                .played_until
+                .is_some_and(|until| now < until + ECHO_TAIL)
+    }
+
     /// Drops all queued speech, returning the action that stops the audio when some is playing.
-    fn silence(&mut self) -> Vec<PlaybackAction<A>> {
+    fn silence(&mut self, now: Option<Instant>) -> Vec<PlaybackAction<A>> {
         let was_playing = self.playing.is_some();
         self.queued.clear();
         self.ready.clear();
         self.synthesizing = None;
         self.playing = None;
-        self.talking_since = None;
+        self.playing_since = None;
+        if was_playing && let Some(now) = now {
+            self.played_until = Some(now);
+        }
+        self.approval_prompt_seq = None;
         self.reply += 1;
         self.chunker = SentenceChunker::new(self.chunker_options);
         if was_playing {
@@ -160,11 +247,24 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         if !self.is_on() {
             return Vec::new();
         }
-        let actions = self.silence();
+        let actions = self.silence(None);
         self.approvals.clear();
         self.reply_done = false;
+        self.interrupted = false;
         self.state = ConversationState::Thinking;
         actions
+    }
+
+    /// Another reply of the same turn started streaming, such as the agent's follow-up after a
+    /// tool call. It is spoken unless the user interrupted this turn.
+    pub fn reply_started(&mut self) {
+        if !self.is_on() || self.interrupted || !self.reply_done {
+            return;
+        }
+        self.reply_done = false;
+        if !self.is_speaking() {
+            self.state = ConversationState::Thinking;
+        }
     }
 
     /// Adds streamed reply text.
@@ -192,9 +292,10 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         actions
     }
 
-    /// Speaks `text` after anything already queued, such as a tool-call summary.
+    /// Speaks `text` after anything already queued, such as a tool-result summary. Nothing is
+    /// said once the user has interrupted the turn.
     pub fn speak(&mut self, text: String) -> Vec<PlaybackAction<A>> {
-        if !self.is_on() {
+        if !self.is_on() || self.interrupted {
             return Vec::new();
         }
         self.enqueue(text);
@@ -202,7 +303,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     }
 
     /// The agent waits on approval `id` to run `command`; the prompt is spoken after the reply so
-    /// far.
+    /// far. Spoken answers count only once the prompt has played.
     pub fn approval_requested(
         &mut self,
         id: Id,
@@ -216,12 +317,30 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         for sentence in self.chunker.finish() {
             self.enqueue(sentence);
         }
-        self.speak(prompt)
+        self.approval_prompt_seq = Some(self.next_seq);
+        self.enqueue(prompt);
+        let actions = self.pump();
+        self.state = if self.is_speaking() {
+            self.state
+        } else {
+            ConversationState::Listening
+        };
+        actions
     }
 
     /// The approval was answered on screen or went away.
     pub fn approval_resolved(&mut self, id: &Id) {
         self.approvals.resolved(id);
+    }
+
+    /// Closes the spoken answer window once it has passed, returning the speech that says the
+    /// approval moved to the screen.
+    pub fn check_approval_timeout(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
+        if !self.is_on() || !self.approvals.check_timeout(now) {
+            return Vec::new();
+        }
+        self.enqueue("I'll wait for you to approve it on screen.".to_owned());
+        self.pump()
     }
 
     fn enqueue(&mut self, text: String) {
@@ -254,42 +373,61 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         }
     }
 
-    /// Reports a synthesis result; failed sentences are skipped.
+    /// Records that sentence `seq` is done with (played or skipped) at `now`.
+    fn sentence_done(&mut self, seq: u64, now: Instant) {
+        if self.approval_prompt_seq == Some(seq) {
+            self.approval_prompt_seq = None;
+            self.approvals.prompt_played(now);
+        }
+    }
+
+    /// Reports a synthesis result at `now`; failed sentences are skipped.
     pub fn synthesized(
         &mut self,
         reply: u64,
         seq: u64,
         audio: Option<A>,
+        now: Instant,
     ) -> Vec<PlaybackAction<A>> {
         if reply != self.reply || self.synthesizing != Some(seq) {
             return Vec::new();
         }
         self.synthesizing = None;
         let mut actions = Vec::new();
-        if let Some(audio) = audio {
-            if self.playing.is_none() {
+        match audio {
+            Some(audio) if self.playing.is_none() => {
                 self.playing = Some(seq);
+                self.playing_since = Some(now);
                 self.state = ConversationState::Speaking;
                 actions.push(PlaybackAction::Play { reply, seq, audio });
-            } else {
-                self.ready.push_back((seq, audio));
             }
+            Some(audio) => self.ready.push_back((seq, audio)),
+            None => self.sentence_done(seq, now),
         }
         actions.extend(self.pump());
         self.settle();
         actions
     }
 
-    /// Reports that sentence `seq` finished playing.
-    pub fn playback_finished(&mut self, reply: u64, seq: u64) -> Vec<PlaybackAction<A>> {
+    /// Reports that sentence `seq` finished playing at `now`.
+    pub fn playback_finished(
+        &mut self,
+        reply: u64,
+        seq: u64,
+        now: Instant,
+    ) -> Vec<PlaybackAction<A>> {
         if reply != self.reply || self.playing != Some(seq) {
             return Vec::new();
         }
         self.playing = None;
+        self.sentence_done(seq, now);
         let mut actions = Vec::new();
         if let Some((seq, audio)) = self.ready.pop_front() {
             self.playing = Some(seq);
             actions.push(PlaybackAction::Play { reply, seq, audio });
+        } else {
+            self.playing_since = None;
+            self.played_until = Some(now);
         }
         actions.extend(self.pump());
         if self.playing.is_none() && !self.reply_done {
@@ -299,50 +437,85 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         actions
     }
 
-    /// The VAD heard the start of speech.
+    /// The VAD heard the start of speech at `now`.
     pub fn speech_started(&mut self, now: Instant) {
-        if self.is_speaking() {
-            self.talking_since.get_or_insert(now);
-        }
+        self.talking = true;
+        self.utterance = Some(Utterance {
+            started_at: now,
+            overlapped: self.is_audible(now),
+            barged_in: false,
+        });
     }
 
     /// The VAD heard the end of speech.
     pub fn speech_ended(&mut self) {
-        self.talking_since = None;
+        self.talking = false;
     }
 
-    /// Stops the speech once the user has talked over it for [`BARGE_IN_AFTER`].
+    /// Stops the speech once the user has talked over it long enough (see [`BARGE_IN_AFTER`]).
+    /// The owner calls it every [`BARGE_IN_POLL`] while the user keeps talking.
     pub fn check_barge_in(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
-        let Some(since) = self.talking_since else {
+        if !self.talking || !self.is_speaking() {
+            return Vec::new();
+        }
+        let Some(utterance) = self.utterance else {
             return Vec::new();
         };
-        if !self.is_speaking() || now.saturating_duration_since(since) < BARGE_IN_AFTER {
+        let overlap_start = match self.playing_since {
+            Some(since) => since.max(utterance.started_at),
+            None => utterance.started_at,
+        };
+        if now.saturating_duration_since(overlap_start) < self.barge_in_after() {
             return Vec::new();
         }
         let reply = self.reply;
-        let mut actions = self.silence();
+        let mut actions = self.silence(Some(now));
         actions.push(PlaybackAction::Interrupted { reply });
+        if let Some(utterance) = &mut self.utterance {
+            utterance.barged_in = true;
+        }
         self.reply_done = true;
+        self.interrupted = true;
         self.state = ConversationState::Listening;
         actions
     }
 
-    /// Interprets a final utterance: "stop" ends the speech and an approval phrase answers the
-    /// pending approval; anything else goes to the input as usual.
-    pub fn on_final(&mut self, text: &str) -> (FinalOutcome<Id>, Vec<PlaybackAction<A>>) {
+    /// Interprets a final utterance heard by `now`: likely echo is dropped, "stop" ends the speech
+    /// while the assistant is speaking or thinking, and an approval phrase answers the pending
+    /// approval; anything else goes to the input as usual.
+    pub fn on_final(
+        &mut self,
+        text: &str,
+        now: Instant,
+    ) -> (FinalOutcome<Id>, Vec<PlaybackAction<A>>) {
+        let utterance = self.utterance.take();
         if !self.is_on() {
             return (FinalOutcome::NotConsumed, Vec::new());
         }
-        if is_stop_phrase(text) {
-            let actions = self.silence();
+        let barged_in = utterance.is_some_and(|utterance| utterance.barged_in);
+        let overlapped = utterance.is_some_and(|utterance| utterance.overlapped);
+        let assistant_busy = matches!(
+            self.state,
+            ConversationState::Speaking | ConversationState::Thinking
+        );
+        // "Stop" is short enough never to barge in on loudspeakers, and the assistant doesn't say
+        // it on its own, so it is honoured even when it overlapped the speech.
+        if (assistant_busy || barged_in || overlapped) && is_stop_phrase(text) {
+            let actions = self.silence(Some(now));
             self.reply_done = true;
+            self.interrupted = true;
             self.state = ConversationState::Listening;
             return (FinalOutcome::Stopped, actions);
         }
-        if let Some((id, reply)) = self.approvals.on_utterance(text) {
-            return (FinalOutcome::Answered(id, reply), Vec::new());
+        if overlapped && !barged_in && !self.headphones {
+            return (FinalOutcome::Echo, Vec::new());
         }
-        (FinalOutcome::NotConsumed, Vec::new())
+        let started_at = utterance.map(|utterance| utterance.started_at);
+        match self.approvals.on_utterance(text, started_at, now) {
+            ApprovalVerdict::NotAnAnswer => (FinalOutcome::NotConsumed, Vec::new()),
+            ApprovalVerdict::Ignored => (FinalOutcome::Ignored, Vec::new()),
+            ApprovalVerdict::Answered(id, reply) => (FinalOutcome::Answered(id, reply), Vec::new()),
+        }
     }
 }
 
