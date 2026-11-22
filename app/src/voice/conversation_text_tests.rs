@@ -179,3 +179,89 @@ fn replies_without_a_spoken_block_use_the_filtered_readout() {
         "Updated so capture recovers. Run cargo test next."
     );
 }
+
+#[test]
+fn tool_calls_are_not_in_the_reply_text() {
+    let mut output = reply("");
+    output.messages.push(AIAgentOutputMessage {
+        id: MessageId::new("a".to_owned()),
+        message: AIAgentOutputMessageType::Action(crate::ai::agent::AIAgentAction {
+            id: crate::ai::agent::AIAgentActionId::from("action".to_owned()),
+            action: command("find . -type d", Some(false)),
+            task_id: crate::ai::agent::task::TaskId::new("t".to_owned()),
+            requires_result: true,
+        }),
+        citations: Vec::new(),
+    });
+    assert_eq!(spoken_reply_text(&output, false), "");
+    assert_eq!(
+        reply_actions(&output)
+            .map(action_announcement)
+            .collect::<Vec<_>>(),
+        vec![ActionAnnouncement::Progress(ProgressKind::Command, 1)]
+    );
+}
+
+#[test]
+fn quick_reads_are_announced_once() {
+    let start = Instant::now();
+    let mut progress = ProgressAnnouncer::default();
+    for offset in [0, 300, 600] {
+        progress.action_started(ProgressKind::Read, 1, start + Duration::from_millis(offset));
+    }
+    assert_eq!(progress.take_due(start + Duration::from_millis(1500)), None);
+    assert_eq!(
+        progress
+            .take_due(start + Duration::from_millis(2100))
+            .as_deref(),
+        Some("Looking at three files.")
+    );
+    assert_eq!(progress.take_due(start + Duration::from_secs(5)), None);
+}
+
+#[test]
+fn batches_wait_a_bounded_time() {
+    let start = Instant::now();
+    let mut progress = ProgressAnnouncer::default();
+    let mut due = start;
+    for offset in (0..10).map(|step| step * 1000) {
+        due = progress.action_started(
+            ProgressKind::Search,
+            1,
+            start + Duration::from_millis(offset),
+        );
+    }
+    assert_eq!(due, start + Duration::from_secs(4));
+}
+
+#[test]
+fn quick_turns_with_a_summary_have_no_tool_line() {
+    let start = Instant::now();
+    let mut progress = ProgressAnnouncer::default();
+    progress.action_started(ProgressKind::Read, 1, start);
+    progress.cancel();
+    assert_eq!(progress.due_at(), None);
+    assert_eq!(progress.take_due(start + Duration::from_secs(2)), None);
+}
+
+#[test]
+fn long_turns_are_rate_limited() {
+    let start = Instant::now();
+    let at = |secs: u64| start + Duration::from_secs(secs);
+    let mut progress = ProgressAnnouncer::default();
+    progress.action_started(ProgressKind::Read, 1, at(0));
+    assert_eq!(
+        progress.take_due(at(2)).as_deref(),
+        Some("Looking at a file.")
+    );
+    let due = progress.action_started(ProgressKind::Command, 1, at(3));
+    assert_eq!(due, at(10));
+    assert_eq!(progress.take_due(at(5)), None);
+    assert_eq!(
+        progress.take_due(at(10)).as_deref(),
+        Some("Running a command.")
+    );
+    // An identical line right after the previous one is not repeated.
+    progress.action_started(ProgressKind::Command, 1, at(20));
+    assert_eq!(progress.take_due(at(22)), None);
+}

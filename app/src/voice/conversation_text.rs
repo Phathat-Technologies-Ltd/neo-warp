@@ -1,10 +1,13 @@
 //! What conversation mode says for an agent reply: its prose as markdown for the sentence chunker,
 //! with tool calls replaced by short summaries.
 
-use local_transcription::speech::spoken::fallback_readout;
+use std::time::Duration;
+
+use instant::Instant;
+use local_transcription::speech::spoken::{fallback_readout, plain_speech};
 use local_transcription::speech::summary::{
-    command_approval_subject, command_denied_readout, command_description, command_result_readout,
-    plural, SpokenSummary,
+    ProgressKind, SpokenSummary, command_approval_subject, command_denied_readout,
+    command_description, command_result_readout, plural, progress_line,
 };
 
 use crate::ai::agent::{
@@ -119,9 +122,137 @@ pub fn spoken_action_result(result: &AIAgentActionResultType) -> Option<String> 
     }
 }
 
+/// How a tool call is announced while it runs: grouped with nearby calls into one progress
+/// line, said right away because the user must act, or not at all.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ActionAnnouncement {
+    Progress(ProgressKind, usize),
+    Immediate(String),
+    Silent,
+}
+
+pub fn action_announcement(action: &AIAgentActionType) -> ActionAnnouncement {
+    use ActionAnnouncement::{Immediate, Progress, Silent};
+    match action {
+        AIAgentActionType::RequestCommandOutput { .. } => Progress(ProgressKind::Command, 1),
+        AIAgentActionType::RequestFileEdits { file_edits, .. } => {
+            Progress(ProgressKind::Edit, file_edits.len())
+        }
+        AIAgentActionType::ReadFiles(request) => {
+            Progress(ProgressKind::Read, request.locations.len())
+        }
+        AIAgentActionType::Grep { .. }
+        | AIAgentActionType::FileGlob { .. }
+        | AIAgentActionType::FileGlobV2 { .. }
+        | AIAgentActionType::SearchCodebase(_) => Progress(ProgressKind::Search, 1),
+        AIAgentActionType::CallMCPTool { .. }
+        | AIAgentActionType::RunAgents(_)
+        | AIAgentActionType::UseComputer(_)
+        | AIAgentActionType::RequestComputerUse(_) => Progress(ProgressKind::Other, 1),
+        AIAgentActionType::AskUserQuestion { .. }
+        | AIAgentActionType::TransferShellCommandControlToUser { .. } => {
+            match SpokenAction(action).spoken_summary() {
+                Some(summary) => Immediate(summary),
+                None => Silent,
+            }
+        }
+        AIAgentActionType::WriteToLongRunningShellCommand { .. }
+        | AIAgentActionType::ReadShellCommandOutput { .. }
+        | AIAgentActionType::UploadArtifact(_)
+        | AIAgentActionType::ReadMCPResource { .. }
+        | AIAgentActionType::SuggestNewConversation { .. }
+        | AIAgentActionType::SuggestPrompt(_)
+        | AIAgentActionType::InitProject
+        | AIAgentActionType::OpenCodeReview
+        | AIAgentActionType::ReadDocuments(_)
+        | AIAgentActionType::EditDocuments(_)
+        | AIAgentActionType::CreateDocuments(_)
+        | AIAgentActionType::InsertCodeReviewComments { .. }
+        | AIAgentActionType::StartRecording { .. }
+        | AIAgentActionType::StopRecording { .. }
+        | AIAgentActionType::ReadSkill(_)
+        | AIAgentActionType::FetchConversation { .. }
+        | AIAgentActionType::SendMessageToAgent { .. }
+        | AIAgentActionType::WaitForEvents { .. } => Silent,
+    }
+}
+
+/// The tool calls of `output`, in order.
+pub fn reply_actions(output: &AIAgentOutput) -> impl Iterator<Item = &AIAgentActionType> {
+    output
+        .messages
+        .iter()
+        .filter_map(|message| match &message.message {
+            AIAgentOutputMessageType::Action(action) => Some(&action.action),
+            _ => None,
+        })
+}
+
+/// How long to wait after a tool call starts for more to group with it.
+const PROGRESS_DEBOUNCE: Duration = Duration::from_millis(1500);
+/// The longest a batch waits for more calls before it is announced.
+const PROGRESS_MAX_WAIT: Duration = Duration::from_secs(4);
+/// The shortest gap between progress lines of one reply.
+const PROGRESS_MIN_GAP: Duration = Duration::from_secs(8);
+
+/// Groups the tool calls of one reply into occasional progress lines.
+#[derive(Default)]
+pub struct ProgressAnnouncer {
+    batch: Vec<(ProgressKind, usize)>,
+    batch_started: Option<Instant>,
+    due_at: Option<Instant>,
+    last_spoken: Option<(Instant, String)>,
+}
+
+impl ProgressAnnouncer {
+    /// Adds a started tool call to the pending batch. Returns when the batch is due.
+    pub fn action_started(&mut self, kind: ProgressKind, count: usize, now: Instant) -> Instant {
+        let started = *self.batch_started.get_or_insert(now);
+        self.batch.push((kind, count));
+        let mut due = (now + PROGRESS_DEBOUNCE).min(started + PROGRESS_MAX_WAIT);
+        if let Some((at, _)) = &self.last_spoken {
+            due = due.max(*at + PROGRESS_MIN_GAP);
+        }
+        self.due_at = Some(due);
+        due
+    }
+
+    /// When the pending batch is due, if there is one.
+    pub fn due_at(&self) -> Option<Instant> {
+        self.due_at
+    }
+
+    /// Takes the line to speak once the pending batch is due. A line identical to the previous
+    /// one is dropped.
+    pub fn take_due(&mut self, now: Instant) -> Option<String> {
+        if self.due_at.is_none_or(|due| now < due) {
+            return None;
+        }
+        let line = plain_speech(&progress_line(&self.batch)?);
+        self.cancel();
+        if line.is_empty()
+            || self
+                .last_spoken
+                .as_ref()
+                .is_some_and(|(_, last)| *last == line)
+        {
+            return None;
+        }
+        self.last_spoken = Some((now, line.clone()));
+        Some(line)
+    }
+
+    /// Drops the pending batch: the turn finished, a summary covers it, or the agent asks for
+    /// approval.
+    pub fn cancel(&mut self) {
+        self.batch.clear();
+        self.batch_started = None;
+        self.due_at = None;
+    }
+}
+
 /// Builds the text to speak for `output`: each text message's `<spoken>` summary, or a short
-/// filtered readout of its prose when it has none, and short summaries of tool calls. Tool calls
-/// are skipped once any message has a `<spoken>` summary, since that summary covers the turn.
+/// filtered readout of its prose when it has none. Tool calls are announced separately.
 pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     let has_spoken = reply_has_spoken_summary(output);
@@ -154,13 +285,8 @@ pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
                     parts.push(part);
                 }
             }
-            AIAgentOutputMessageType::Action(_) if has_spoken => {}
-            AIAgentOutputMessageType::Action(action) => {
-                if let Some(summary) = SpokenAction(&action.action).spoken_summary() {
-                    parts.push(summary);
-                }
-            }
-            AIAgentOutputMessageType::Reasoning { .. }
+            AIAgentOutputMessageType::Action(_)
+            | AIAgentOutputMessageType::Reasoning { .. }
             | AIAgentOutputMessageType::Summarization { .. }
             | AIAgentOutputMessageType::Subagent(_)
             | AIAgentOutputMessageType::TodoOperation(_)
