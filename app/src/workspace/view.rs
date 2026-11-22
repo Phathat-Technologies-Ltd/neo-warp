@@ -25497,8 +25497,9 @@ impl TypedActionView for Workspace {
                 send_telemetry_from_ctx!(TelemetryEvent::DisableInputSync, ctx);
             }
             Reauth if auth::is_organization_sign_in() => {
-                // Organization sign-in starts from the sign-in screen.
-                auth::log_out(ctx);
+                // Organization sign-in starts from the sign-in screen. Logging out updates the
+                // root view, which can't happen while this workspace is mid-update, so it's queued.
+                ctx.dispatch_global_action("app:log_out", ());
             }
             Reauth => {
                 AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
