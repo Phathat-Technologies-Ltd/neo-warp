@@ -34,6 +34,7 @@ use warp_multi_agent_api::message::{
 };
 use warp_multi_agent_api::request::settings::custom_model_providers::CustomEndpointSchema;
 
+use super::responses::{self, ResponsesProvider};
 use super::{prompt, tools};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com";
@@ -62,6 +63,11 @@ pub enum ModelEndpoint {
         base_url: String,
         api_key: String,
     },
+    /// An endpoint that speaks the OpenAI Responses API, such as ChatGPT's Codex backend.
+    OpenAiResponses {
+        base_url: String,
+        api_key: String,
+    },
 }
 
 impl ModelEndpoint {
@@ -69,7 +75,11 @@ impl ModelEndpoint {
     fn display_name(&self) -> String {
         match self {
             Self::Anthropic { .. } => "Anthropic".to_owned(),
-            Self::OpenAiChatCompletions { base_url, .. } => url::Url::parse(base_url)
+            Self::OpenAiResponses { base_url, .. } if responses::is_codex_backend(base_url) => {
+                "ChatGPT".to_owned()
+            }
+            Self::OpenAiChatCompletions { base_url, .. }
+            | Self::OpenAiResponses { base_url, .. } => url::Url::parse(base_url)
                 .ok()
                 .and_then(|url| url.host_str().map(str::to_owned))
                 .unwrap_or_else(|| base_url.clone()),
@@ -79,7 +89,9 @@ impl ModelEndpoint {
     fn llm_provider(&self) -> api::LlmProvider {
         match self {
             Self::Anthropic { .. } => api::LlmProvider::Anthropic,
-            Self::OpenAiChatCompletions { .. } => api::LlmProvider::Unknown,
+            Self::OpenAiChatCompletions { .. } | Self::OpenAiResponses { .. } => {
+                api::LlmProvider::Unknown
+            }
         }
     }
 }
@@ -620,15 +632,6 @@ fn resolve_model(
     if let Some((provider, model)) = custom {
         let schema = CustomEndpointSchema::try_from(provider.schema)
             .unwrap_or(CustomEndpointSchema::OpenaiChatCompletions);
-        match schema {
-            CustomEndpointSchema::OpenaiChatCompletions => {}
-            CustomEndpointSchema::OpenaiResponses | CustomEndpointSchema::AnthropicMessages => {
-                return Err(internal(format!(
-                    "this server can't call {} endpoints yet",
-                    schema.as_str_name()
-                )));
-            }
-        }
         let api_key = provider.api_key.trim();
         if api_key.is_empty() {
             return Err(TurnError::InvalidApiKey {
@@ -636,13 +639,23 @@ fn resolve_model(
                 model: model.slug.clone(),
             });
         }
-        return Ok((
-            ModelEndpoint::OpenAiChatCompletions {
-                base_url: provider.base_url.trim().to_owned(),
-                api_key: api_key.to_owned(),
-            },
-            model.slug.clone(),
-        ));
+        let base_url = provider.base_url.trim().to_owned();
+        let api_key = api_key.to_owned();
+        let endpoint = match schema {
+            CustomEndpointSchema::OpenaiChatCompletions => {
+                ModelEndpoint::OpenAiChatCompletions { base_url, api_key }
+            }
+            CustomEndpointSchema::OpenaiResponses => {
+                ModelEndpoint::OpenAiResponses { base_url, api_key }
+            }
+            CustomEndpointSchema::AnthropicMessages => {
+                return Err(internal(format!(
+                    "this server can't call {} endpoints yet",
+                    schema.as_str_name()
+                )));
+            }
+        };
+        return Ok((endpoint, model.slug.clone()));
     }
 
     if !selected.starts_with("claude-") {
@@ -679,6 +692,9 @@ fn provider_for(endpoint: &ModelEndpoint) -> Result<Arc<dyn Provider>> {
                 String::new(),
             )))
         }
+        ModelEndpoint::OpenAiResponses { base_url, api_key } => Ok(Arc::new(
+            ResponsesProvider::new(endpoint.display_name(), base_url, api_key)?,
+        )),
     }
 }
 

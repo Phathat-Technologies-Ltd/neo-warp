@@ -556,9 +556,30 @@ fn custom_schemas_the_server_cannot_call_are_refused() {
     use api::request::settings::custom_model_providers::CustomEndpointSchema;
     let mut settings = settings_with_custom_provider("cerebras:qwen-3-coder", "csk-test");
     settings.custom_model_providers.as_mut().unwrap().providers[0].schema =
-        CustomEndpointSchema::OpenaiResponses as i32;
+        CustomEndpointSchema::AnthropicMessages as i32;
     assert!(matches!(
         resolve_model(Some(&settings)),
-        Err(TurnError::Internal(message)) if message.contains("OPENAI_RESPONSES")
+        Err(TurnError::Internal(message)) if message.contains("ANTHROPIC_MESSAGES")
     ));
+}
+
+#[test]
+fn responses_providers_run_on_the_responses_api() {
+    use api::request::settings::custom_model_providers::CustomEndpointSchema;
+    let mut settings = settings_with_custom_provider("cerebras:qwen-3-coder", "token");
+    let provider = &mut settings.custom_model_providers.as_mut().unwrap().providers[0];
+    provider.schema = CustomEndpointSchema::OpenaiResponses as i32;
+    provider.base_url = "https://chatgpt.com/backend-api/codex".to_owned();
+    let Ok((endpoint, model)) = resolve_model(Some(&settings)) else {
+        panic!("the Responses model should resolve");
+    };
+    assert_eq!(
+        endpoint,
+        ModelEndpoint::OpenAiResponses {
+            base_url: "https://chatgpt.com/backend-api/codex".to_owned(),
+            api_key: "token".to_owned(),
+        }
+    );
+    assert_eq!(model, "qwen-3-coder");
+    assert_eq!(endpoint.display_name(), "ChatGPT");
 }

@@ -4,6 +4,7 @@
 //! `specs/self-hosted-sso/AGENT_PROTOCOL.md`.
 
 mod prompt;
+mod responses;
 mod tools;
 mod turn;
 
