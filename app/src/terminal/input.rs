@@ -10062,6 +10062,12 @@ impl Input {
     }
 
     fn editor_escape(&mut self, ctx: &mut ViewContext<Self>) {
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        if crate::voice::conversation::ConversationSession::handle(ctx)
+            .update(ctx, |session, ctx| session.stop_speaking(ctx))
+        {
+            return;
+        }
         let vim_mode = self.editor.as_ref(ctx).vim_mode(ctx);
         let has_attached_context = {
             let context_model = self.ai_context_model.as_ref(ctx);

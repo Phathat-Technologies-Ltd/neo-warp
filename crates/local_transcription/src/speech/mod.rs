@@ -8,6 +8,7 @@ pub mod g2p;
 #[cfg(feature = "kokoro")]
 mod kokoro;
 pub mod playback;
+pub mod spoken;
 pub mod summary;
 #[cfg(feature = "tiny_voca")]
 mod tiny_voca;

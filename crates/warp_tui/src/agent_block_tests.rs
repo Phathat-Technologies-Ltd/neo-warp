@@ -2576,7 +2576,7 @@ fn failed_output(
 fn text_message(id: &str, sections: Vec<AIAgentTextSection>) -> AIAgentOutputMessage {
     AIAgentOutputMessage {
         id: MessageId::new(id.to_owned()),
-        message: AIAgentOutputMessageType::Text(AIAgentText { sections }),
+        message: AIAgentOutputMessageType::Text(AIAgentText { sections, .. }),
         citations: Vec::new(),
     }
 }
@@ -2721,6 +2721,7 @@ fn reasoning_message(
                 sections: vec![AIAgentTextSection::PlainText {
                     text: body.to_owned().into(),
                 }],
+                spoken: None,
             },
             finished_duration,
         },
@@ -2741,6 +2742,7 @@ fn summarization_message(
                 sections: vec![AIAgentTextSection::PlainText {
                     text: body.to_owned().into(),
                 }],
+                spoken: None,
             },
             finished_duration,
             summarization_type,

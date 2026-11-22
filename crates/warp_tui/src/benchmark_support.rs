@@ -513,6 +513,7 @@ fn completed_text_status(text: String) -> AIBlockOutputStatus {
                 id: MessageId::new("benchmark-response".to_owned()),
                 message: AIAgentOutputMessageType::Text(AIAgentText {
                     sections: vec![AIAgentTextSection::PlainText { text: text.into() }],
+                    spoken: None,
                 }),
                 citations: Vec::new(),
             }],

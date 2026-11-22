@@ -127,6 +127,8 @@ pub struct ConversationController<A, Id> {
     /// The sentence that is the pending approval's prompt.
     approval_prompt_seq: Option<u64>,
     approvals: ApprovalFlow<Id>,
+    /// Conversation mode stays on but nothing is read aloud.
+    muted: bool,
 }
 
 impl<A, Id> Default for ConversationController<A, Id> {
@@ -150,6 +152,7 @@ impl<A, Id> Default for ConversationController<A, Id> {
             headphones: false,
             approval_prompt_seq: None,
             approvals: ApprovalFlow::default(),
+            muted: false,
         }
     }
 }
@@ -179,6 +182,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             chunker: SentenceChunker::new(chunker_options),
             reply: self.reply + 1,
             headphones: self.headphones,
+            muted: self.muted,
             ..Self::default()
         };
     }
@@ -201,7 +205,13 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.state != ConversationState::Off
     }
 
-    fn is_speaking(&self) -> bool {
+    pub fn is_muted(&self) -> bool {
+        self.muted
+    }
+
+    /// Whether a reply is being read aloud or about to be (a sentence is in synthesis or queued
+    /// for the output).
+    pub fn is_speaking(&self) -> bool {
         self.playing.is_some() || self.synthesizing.is_some() || !self.ready.is_empty()
     }
 
@@ -240,6 +250,39 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         } else {
             Vec::new()
         }
+    }
+
+    /// The user asked to stop the readout (Esc or the Stop button). The rest of the reply being
+    /// read is dropped, not resumed; the next reply of the turn and later replies are spoken.
+    pub fn stop_speaking(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
+        if !self.is_on() || (!self.is_speaking() && self.queued.is_empty()) {
+            return Vec::new();
+        }
+        let actions = self.silence(Some(now));
+        self.reply_done = true;
+        self.state = ConversationState::Listening;
+        actions
+    }
+
+    /// Mutes or unmutes the readout at `now`. Muting stops what is playing; unmuting speaks from
+    /// the next sentence on.
+    pub fn set_muted(&mut self, muted: bool, now: Instant) -> Vec<PlaybackAction<A>> {
+        if self.muted == muted {
+            return Vec::new();
+        }
+        self.muted = muted;
+        if !muted || !self.is_on() {
+            return Vec::new();
+        }
+        let reply_done = self.reply_done;
+        let actions = self.silence(Some(now));
+        self.reply_done = reply_done;
+        self.state = if reply_done {
+            ConversationState::Listening
+        } else {
+            ConversationState::Thinking
+        };
+        actions
     }
 
     /// A prompt was sent; the reply that follows replaces whatever is being said.
@@ -314,6 +357,9 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             return Vec::new();
         }
         let prompt = self.approvals.request(id, command, needs_screen);
+        if self.muted {
+            return Vec::new();
+        }
         for sentence in self.chunker.finish() {
             self.enqueue(sentence);
         }
@@ -344,6 +390,9 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     }
 
     fn enqueue(&mut self, text: String) {
+        if self.muted {
+            return;
+        }
         let seq = self.next_seq;
         self.next_seq += 1;
         self.queued.push_back((seq, text));

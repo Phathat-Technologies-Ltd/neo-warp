@@ -187,3 +187,41 @@ off.
     indicator (shown in the window header instead), the footer toggle button, and the TUI.
   - Commands without a risk classification other than `RequestCommandOutput` are announced and left
     to the on-screen buttons.
+- **Guided readout** (`local_transcription::speech::spoken`):
+  - While conversation mode is on, the client sets `VOICE_CONVERSATION_ACTIVE`, and every agent
+    request (including follow-ups after tool calls) carries `voice_conversation: true` in
+    `Request.metadata.logging` (an existing free-form map, so no proto change). The embedded server
+    (`selfhost_server::agent::prompt::wants_spoken_summary`) then appends instructions: open every
+    reply with one or two plain-English sentences in `<spoken>…</spoken>`, with no paths, commands,
+    code, flags, hashes, URLs, long numbers, or lists, and one sentence for questions.
+  - `split_spoken_block` runs whenever an `AgentOutput` message is converted
+    (`From<AgentOutput> for AIAgentText`, which reruns on every streamed append). The summary goes
+    to `AIAgentText::spoken` and is kept out of `sections`, so the screen shows only the full
+    answer. While the tag streams (split across chunks, including a partial `</spo`), the summary
+    so far is spoken and nothing is shown.
+  - `spoken_reply_text` speaks only `spoken` when present. Otherwise `fallback_readout` drops code
+    blocks, inline code, paths, URLs, hashes, flags, long numbers, tables, lists, and markdown, and
+    keeps the first two sentences (40 words at most); a trailing partial word is held back while
+    streaming. Code-block summaries are no longer spoken; command-result readouts and approval
+    prompts are unchanged.
+- **Stop and mute**:
+  - Esc in the input stops the readout when a reply is being read (otherwise Esc behaves as
+    before). A "Stop speaking" palette entry (bound to Esc at the workspace level, active only
+    while speaking) does the same, as does the "■ Stop" button next to the window-header mic
+    indicator.
+  - Stopping (`ConversationController::stop_speaking`) drops the rest of the reply being read and
+    does not resume it; unlike "stop"/barge-in, the next reply of the turn is spoken normally.
+  - Mute (header toggle and "Mute/Unmute voice conversation readout" palette entries) keeps
+    conversation mode on and silences everything, including approval prompts (which then wait for
+    the screen), until unmuted. The header shows "(muted)".
+- **Microphone recovery** (`voice_input::recovery`): the cpal input stream lives on a supervisor
+  thread. Underruns/overruns (`Xrun`), real-time denial, and route changes are transient: logged
+  once and the audio is dropped. Fatal errors, or no audio for 2 s, rebuild the stream with backoff
+  (250 ms doubling, 5 tries in a row; audio resets the count). Only when recovery gives up does
+  hands-free stop with a toast.
+- **Echo cancellation, still not done**: VoiceProcessingIO needs one duplex AudioUnit for capture
+  and TTS playback, replacing both cpal paths (`LiveCapture` and `SpeechOutput`), plus format
+  handling for the processed input. That is too large to do safely alongside this pass, so the echo
+  gate stays and loudspeaker barge-in stays at 600 ms. To make "stop" reliable on speakers anyway,
+  short stop phrases (now also "enough" and "that's enough") are honoured even when they overlap
+  playback and never barged in; they are checked before the echo filter.

@@ -991,6 +991,7 @@ fn markdown_output_status(markdown: &str) -> AIBlockOutputStatus {
                     sections: vec![AIAgentTextSection::PlainText {
                         text: markdown.to_owned().into(),
                     }],
+                    spoken: None,
                 }),
                 citations: Vec::new(),
             }],

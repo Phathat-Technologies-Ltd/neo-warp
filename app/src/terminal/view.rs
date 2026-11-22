@@ -24115,6 +24115,7 @@ impl TerminalView {
                     sections: vec![AIAgentTextSection::PlainText {
                         text: output.into(),
                     }],
+                    spoken: None,
                 },
             )],
             server_output_id: Some(Self::dummy_server_output_id()),
@@ -24187,6 +24188,7 @@ impl TerminalView {
                         sections: vec![AIAgentTextSection::PlainText {
                             text: summary.into(),
                         }],
+                        spoken: None,
                     },
                 ),
                 AIAgentOutputMessage::action(

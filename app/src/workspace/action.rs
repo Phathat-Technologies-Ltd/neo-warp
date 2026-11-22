@@ -322,6 +322,10 @@ pub enum WorkspaceAction {
     },
     /// Turns voice conversation mode on or off.
     ToggleVoiceConversation,
+    /// Stops reading the current agent reply aloud in voice conversation mode.
+    StopVoiceSpeaking,
+    /// Mutes or unmutes the voice conversation readout without leaving conversation mode.
+    ToggleVoiceReadoutMute,
     ViewPrivacyPolicy,
     SendFeedback,
     /// Open the log directory in the system file explorer with the current log file selected.
@@ -1056,6 +1060,8 @@ impl WorkspaceAction {
             | DownloadSpeechOutputModel
             | CancelVoiceModelDownload { .. }
             | ToggleVoiceConversation
+            | StopVoiceSpeaking
+            | ToggleVoiceReadoutMute
             | ViewPrivacyPolicy
             | SendFeedback
             | ChangeCursor(_)

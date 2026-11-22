@@ -1,6 +1,7 @@
 //! What conversation mode says for an agent reply: its prose as markdown for the sentence chunker,
 //! with tool calls replaced by short summaries.
 
+use local_transcription::speech::spoken::fallback_readout;
 use local_transcription::speech::summary::{
     SpokenSummary, command_name, command_result_readout, plural,
 };
@@ -116,29 +117,34 @@ pub fn spoken_action_result(result: &AIAgentActionResultType) -> Option<String> 
     }
 }
 
-/// Builds the markdown to speak for `output`. While the reply streams, a trailing code block is
-/// left open so its summary counts all of its lines.
+/// Builds the text to speak for `output`: each text message's `<spoken>` summary, or a short
+/// filtered readout of its prose when it has none, and short summaries of tool calls.
 pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
-    for message in &output.messages {
+    let last_index = output.messages.len().saturating_sub(1);
+    for (index, message) in output.messages.iter().enumerate() {
         match &message.message {
             AIAgentOutputMessageType::Text(text) => {
-                for section in &text.sections {
-                    match section {
-                        AIAgentTextSection::PlainText { text } => {
-                            parts.push(text.text().to_owned())
-                        }
-                        AIAgentTextSection::Code { code, language, .. } => {
-                            let language = language
-                                .as_ref()
-                                .map(|language| language.display_name())
-                                .unwrap_or_default();
-                            parts.push(format!("```{language}\n{}\n```", code.trim_end()));
-                        }
-                        AIAgentTextSection::Table { .. }
-                        | AIAgentTextSection::Image { .. }
-                        | AIAgentTextSection::MermaidDiagram { .. } => {}
+                let part = match &text.spoken {
+                    Some(spoken) => spoken.clone(),
+                    None => {
+                        let prose = text
+                            .sections
+                            .iter()
+                            .filter_map(|section| match section {
+                                AIAgentTextSection::PlainText { text } => Some(text.text()),
+                                AIAgentTextSection::Code { .. }
+                                | AIAgentTextSection::Table { .. }
+                                | AIAgentTextSection::Image { .. }
+                                | AIAgentTextSection::MermaidDiagram { .. } => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        fallback_readout(&prose, finished || index < last_index)
                     }
+                };
+                if !part.is_empty() {
+                    parts.push(part);
                 }
             }
             AIAgentOutputMessageType::Action(action) => {
@@ -160,11 +166,7 @@ pub fn spoken_reply_text(output: &AIAgentOutput, finished: bool) -> String {
             | AIAgentOutputMessageType::EventsFromAgents { .. } => {}
         }
     }
-    let mut text = parts.join("\n\n");
-    if !finished && text.ends_with("\n```") {
-        text.truncate(text.len() - "\n```".len());
-    }
-    text
+    parts.join("\n\n")
 }
 
 #[cfg(test)]

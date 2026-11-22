@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::StreamExt;
 use warp_core::features::FeatureFlag;
@@ -12,6 +13,12 @@ use crate::ai::blocklist::video_recording_enabled;
 use crate::server::server_api::{AIApiError, ServerApi};
 use crate::server::team_scope::RequestTeamScope;
 use crate::terminal::model::session::SessionType;
+
+/// The request metadata key that asks the agent to open each reply with a `<spoken>` summary.
+pub const VOICE_CONVERSATION_METADATA_KEY: &str = "voice_conversation";
+
+/// Whether voice conversation mode is on, so agent requests ask for a spoken summary.
+pub static VOICE_CONVERSATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub async fn generate_multi_agent_output(
     server_api: Arc<ServerApi>,
@@ -48,6 +55,15 @@ pub async fn generate_multi_agent_output(
                 kind: Some(prost_types::value::Kind::BoolValue(
                     metadata.is_auto_resume_after_error,
                 )),
+            },
+        );
+    }
+
+    if VOICE_CONVERSATION_ACTIVE.load(Ordering::Relaxed) {
+        logging_metadata.insert(
+            VOICE_CONVERSATION_METADATA_KEY.to_owned(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::BoolValue(true)),
             },
         );
     }

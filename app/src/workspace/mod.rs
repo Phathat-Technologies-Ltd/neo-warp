@@ -1164,6 +1164,35 @@ pub fn init(app: &mut AppContext) {
         .with_mac_key_binding("cmd-alt-shift-V")
         .with_linux_or_windows_key_binding("ctrl-alt-shift-V"),
         EditableBinding::new(
+            "workspace:stop_voice_speaking",
+            "Stop speaking",
+            WorkspaceAction::StopVoiceSpeaking,
+        )
+        .with_context_predicate(
+            id!("Workspace") & id!(flags::VOICE_CONVERSATION_SPEAKING_CONTEXT_FLAG),
+        )
+        .with_key_binding("escape"),
+        EditableBinding::new(
+            "workspace:mute_voice_readout",
+            "Mute voice conversation readout",
+            WorkspaceAction::ToggleVoiceReadoutMute,
+        )
+        .with_context_predicate(
+            id!("Workspace")
+                & id!(flags::VOICE_CONVERSATION_ACTIVE_CONTEXT_FLAG)
+                & !id!(flags::VOICE_READOUT_MUTED_CONTEXT_FLAG),
+        ),
+        EditableBinding::new(
+            "workspace:unmute_voice_readout",
+            "Unmute voice conversation readout",
+            WorkspaceAction::ToggleVoiceReadoutMute,
+        )
+        .with_context_predicate(
+            id!("Workspace")
+                & id!(flags::VOICE_CONVERSATION_ACTIVE_CONTEXT_FLAG)
+                & id!(flags::VOICE_READOUT_MUTED_CONTEXT_FLAG),
+        ),
+        EditableBinding::new(
             "workspace:enable_hands_free_voice",
             "Enable hands-free voice",
             WorkspaceAction::ToggleHandsFreeVoice,
