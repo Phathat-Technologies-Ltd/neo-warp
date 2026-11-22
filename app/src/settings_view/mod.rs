@@ -540,6 +540,8 @@ pub mod flags {
     pub const NOTIFICATIONS_CONTEXT_FLAG: &str = "Notifications_Enabled";
     pub const HANDS_FREE_VOICE_AVAILABLE_CONTEXT_FLAG: &str = "Hands_Free_Voice_Available";
     pub const HANDS_FREE_VOICE_ACTIVE_CONTEXT_FLAG: &str = "Hands_Free_Voice_Active";
+    pub const VOICE_CONVERSATION_AVAILABLE_CONTEXT_FLAG: &str = "Voice_Conversation_Available";
+    pub const VOICE_CONVERSATION_ACTIVE_CONTEXT_FLAG: &str = "Voice_Conversation_Active";
     pub const LONG_RUNNING_NOTIFICATIONS_FLAG: &str = "Long_Running_Notifications";
     pub const AGENT_TASK_COMPLETED_NOTIFICATIONS_FLAG: &str = "Agent_Task_Completed_Notifications";
     pub const NEEDS_ATTENTION_NOTIFICATIONS_FLAG: &str = "Needs_Attention_Notifications";

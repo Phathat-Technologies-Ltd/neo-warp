@@ -2946,6 +2946,18 @@ impl Workspace {
             Self::handle_network_status_event,
         );
 
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        {
+            ctx.subscribe_to_model(
+                &crate::voice::hands_free::HandsFreeSession::handle(ctx),
+                |_, _, _, ctx| ctx.notify(),
+            );
+            ctx.subscribe_to_model(
+                &crate::voice::conversation::ConversationSession::handle(ctx),
+                |_, _, _, ctx| ctx.notify(),
+            );
+        }
+
         let palette =
             ctx.add_typed_action_view(|ctx| CommandPalette::new(NavigationMode::Normal, ctx));
         ctx.subscribe_to_view(&palette, |me, _, event, ctx| {
@@ -21640,6 +21652,19 @@ impl Workspace {
             );
         }
 
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        if let Some(label) = crate::voice::mic_indicator_label(ctx) {
+            target.add_child(
+                Container::new(
+                    Text::new_inline(label, appearance.ui_font_family(), 12.)
+                        .with_color(appearance.theme().ansi_fg_red())
+                        .finish(),
+                )
+                .with_margin_right(8.)
+                .finish(),
+            );
+        }
+
         let is_online = NetworkStatus::as_ref(ctx).is_online();
 
         if !is_online {
@@ -23358,6 +23383,16 @@ impl Workspace {
                         .insert(flags::HANDS_FREE_VOICE_ACTIVE_CONTEXT_FLAG);
                 }
             }
+            if crate::voice::local_model::is_conversation_enabled() {
+                context
+                    .set
+                    .insert(flags::VOICE_CONVERSATION_AVAILABLE_CONTEXT_FLAG);
+                if crate::voice::conversation::ConversationSession::as_ref(app).is_active() {
+                    context
+                        .set
+                        .insert(flags::VOICE_CONVERSATION_ACTIVE_CONTEXT_FLAG);
+                }
+            }
         }
         if session_settings.notifications.is_long_running_enabled {
             context.set.insert(flags::LONG_RUNNING_NOTIFICATIONS_FLAG);
@@ -24763,6 +24798,36 @@ impl TypedActionView for Workspace {
                 {
                     let window_id = ctx.window_id();
                     crate::voice::hands_free::toggle_hands_free(window_id, ctx);
+                }
+            }
+            DownloadSpeechOutputModel => {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let window_id = ctx.window_id();
+                    crate::voice::local_model::SpeechOutputModel::handle(ctx)
+                        .update(ctx, |model, ctx| model.download(window_id, ctx));
+                }
+            }
+            CancelVoiceModelDownload { speech_output } => {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    use crate::voice::local_model::{LocalVoiceModel, SpeechOutputModel};
+                    if *speech_output {
+                        SpeechOutputModel::handle(ctx)
+                            .update(ctx, |model, ctx| model.cancel_download(ctx));
+                    } else {
+                        LocalVoiceModel::handle(ctx)
+                            .update(ctx, |model, ctx| model.cancel_download(ctx));
+                    }
+                }
+                #[cfg(target_family = "wasm")]
+                let _ = speech_output;
+            }
+            ToggleVoiceConversation => {
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                {
+                    let window_id = ctx.window_id();
+                    crate::voice::conversation::toggle_conversation(window_id, ctx);
                 }
             }
             ViewPrivacyPolicy => self.view_privacy_policy(ctx),

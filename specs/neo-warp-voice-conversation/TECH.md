@@ -105,3 +105,52 @@ off.
 - Kokoro may sound worse with the CMUdict phonemizer than with espeak-ng.
 - tiny-voca is new and has not been widely tested.
 - VoiceProcessingIO changes the input device format and may lower the mic level.
+
+## Implementation notes (v1)
+- **Pinned files** (hashes checked against each Hugging Face LFS `oid`; `tokenizer.json`,
+  `config.json`, and CMUdict are not LFS files and were hashed with `shasum -a 256`):
+
+  | Model | File | Size | SHA-256 |
+  |---|---|---|---|
+  | Kokoro, `onnx-community/Kokoro-82M-v1.0-ONNX@1939ad2a` | `onnx/model_quantized.onnx` | 92,361,116 | `fbae9257…1478` |
+  | | `tokenizer.json` | 3,497 | `77a02c8e…0a34` |
+  | | `voices/af_heart.bin`, `af_bella`, `am_michael`, `am_adam` | 522,240 each | see `model.rs` |
+  | tiny-voca, `n4ze3m/tiny-voca@5fe06641` | `onnx/model.onnx` | 21,386,372 | `fe6d9187…ae46` |
+  | | `config.json` | 2,129 | `27bcbf32…f69c` |
+  | CMUdict, `cmusphinx/cmudict@74790861` (both models) | `cmudict.dict` | 3,618,488 | `81917843…3d22` |
+
+  The Kokoro bundle is 99 MB (four voices rather than all 54), and the consent toast shows the
+  computed size rather than the estimate in `PRODUCT.md`.
+- **Code layout**: `local_transcription::speech` holds the `Speaker` trait, `tts_text`, the
+  `SentenceChunker`, `approval` (phrase matching and `ApprovalFlow`), `summary` (`SpokenSummary`
+  and command-output summaries), `playback` (`ConversationController`, the pure state machine for
+  the queue, one-ahead synthesis, barge-in, "stop", and approvals), and `g2p` (CMUdict plus a
+  terminal lexicon and letter rules). `KokoroSpeaker` (feature `kokoro`) and `TinyVocaSpeaker`
+  (feature `tiny_voca`) map the ARPAbet output to each model's phoneme set. Both were run against
+  the real models (ignored `synthesizes_with_the_real_model` tests): a warm Kokoro sentence takes
+  about 270 ms in a release build; loading takes a few seconds, so the session warms the model up
+  when conversation mode starts.
+- **App**: `app/src/voice/conversation.rs` (`ConversationSession`) drives the controller, runs
+  synthesis on a thread, and plays through `voice_input::SpeechOutput` (cpal). It follows the
+  `BlocklistAIHistoryModel` stream for the surface that sent the last prompt;
+  `conversation_text.rs` turns an exchange's output into markdown for the chunker and implements
+  `SpokenSummary` for tool calls (exhaustive match). `Input` forwards prompts sent and approval
+  requests from its `BlocklistAIActionModel`. Hands-free hands conversation mode each final before
+  applying it, so "stop" and approval answers never reach the input.
+- **Models**: `VoiceModel<K>` generalizes the speech model's consent, progress, cancel, and toasts;
+  `SpeechOutputModel` is the speech output model, with its own consent toast (size, live progress,
+  Cancel link) and a Settings > Voice > Speech Output Model row with Download, Cancel, and Remove.
+  Settings > Voice also has the engine, voice, rate (0.8x to 1.5x), and Read Code Summaries rows,
+  shown only when `VoiceConversation` is on.
+- **Toggle**: Command Palette entries and `cmd-alt-shift-V` (`ctrl-alt-shift-V` on Linux and
+  Windows). Turning it on asks for the speech output model if needed and turns on hands-free.
+- **Not done in v1**:
+  - macOS VoiceProcessingIO echo cancellation. Output uses cpal on every platform, so barge-in
+    works reliably only with headphones; the higher VAD threshold during playback is not done.
+  - Command-output summaries ("Ran cargo check: 2 errors") are implemented
+    (`summary::command_result_summary`) but not yet wired to action results; tool calls are
+    announced when they start ("Running cargo check.").
+  - Marking an interrupted reply in its block (it is logged), the footer Listening/Thinking/Speaking
+    indicator (shown in the window header instead), the footer toggle button, and the TUI.
+  - Commands without a risk classification other than `RequestCommandOutput` are announced and left
+    to the on-screen buttons.

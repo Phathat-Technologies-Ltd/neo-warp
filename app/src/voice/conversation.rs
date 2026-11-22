@@ -1,0 +1,422 @@
+//! Voice conversation mode: hands-free input plus agent replies spoken aloud on this computer.
+//! Synthesis runs in the client, one sentence ahead of playback; the embedded server only does
+//! speech-to-text.
+
+use std::sync::Arc;
+
+use futures::channel::{mpsc, oneshot};
+use instant::Instant;
+use local_transcription::Audio;
+use local_transcription::speech::approval::ApprovalReply;
+use local_transcription::speech::chunker::ChunkerOptions;
+use local_transcription::speech::playback::{
+    BARGE_IN_AFTER, ConversationController, ConversationState, FinalOutcome, PlaybackAction,
+};
+use local_transcription::speech::{KokoroSpeaker, Speaker, TinyVocaSpeaker, VoiceId};
+use voice_input::SpeechOutput;
+use warpui::r#async::Timer;
+use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity, WindowId};
+
+use super::conversation_text::{spoken_action_prompt, spoken_reply_text};
+use super::hands_free::{HandsFreeEvent, HandsFreeSession, toggle_hands_free};
+use super::local_model::{
+    SpeechOutputEngine, SpeechOutputModel, ensure_speech_output_ready, is_conversation_enabled,
+    speech_output_store,
+};
+use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::agent::{AIAgentActionId, CancellationReason};
+use crate::ai::blocklist::{
+    BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
+};
+use crate::settings::AISettings;
+use crate::view_components::DismissibleToast;
+use crate::workspace::ToastStack;
+
+pub enum ConversationEvent {
+    StateChanged,
+}
+
+/// The action model and conversation of the approval being asked about.
+struct ApprovalTarget {
+    action_model: ModelHandle<BlocklistAIActionModel>,
+    conversation_id: AIConversationId,
+}
+
+/// The reply being spoken: which exchange, and how much of its text was fed to the chunker.
+struct SpokenReply {
+    exchange_id: crate::ai::agent::AIAgentExchangeId,
+    fed: String,
+}
+
+pub struct ConversationSession {
+    controller: ConversationController<Arc<Audio>, AIAgentActionId>,
+    speaker: Option<Arc<dyn Speaker>>,
+    voice: VoiceId,
+    rate: f32,
+    output: Option<SpeechOutput>,
+    window_id: Option<WindowId>,
+    /// The terminal surface whose agent replies are spoken.
+    surface: Option<EntityId>,
+    reply: Option<SpokenReply>,
+    approval: Option<ApprovalTarget>,
+    finished_tx: mpsc::UnboundedSender<(u64, u64)>,
+}
+
+impl ConversationSession {
+    pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+        let (finished_tx, finished_rx) = mpsc::unbounded();
+        ctx.spawn_stream_local(
+            finished_rx,
+            |me, (reply, seq), ctx| {
+                let actions = me.controller.playback_finished(reply, seq);
+                me.apply(actions, ctx);
+            },
+            |_, _| {},
+        );
+        ctx.subscribe_to_model(&HandsFreeSession::handle(ctx), |me, session, event, ctx| {
+            if matches!(event, HandsFreeEvent::StateChanged)
+                && me.is_active()
+                && !session.as_ref(ctx).is_active()
+            {
+                me.stop(ctx);
+            }
+        });
+        ctx.subscribe_to_model(
+            &BlocklistAIHistoryModel::handle(ctx),
+            |me, _, event, ctx| {
+                me.handle_history_event(event, ctx);
+            },
+        );
+        ctx.subscribe_to_model(&AISettings::handle(ctx), |_, _, _, ctx| {
+            let engine = SpeechOutputEngine::from_setting(
+                &AISettings::as_ref(ctx).conversation_speech_engine,
+            );
+            SpeechOutputModel::handle(ctx).update(ctx, |model, ctx| model.set_engine(engine, ctx));
+        });
+        Self {
+            controller: ConversationController::default(),
+            speaker: None,
+            voice: VoiceId::new(""),
+            rate: 1.0,
+            output: None,
+            window_id: None,
+            surface: None,
+            reply: None,
+            approval: None,
+            finished_tx,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.controller.state() != ConversationState::Off
+    }
+
+    pub fn state(&self) -> ConversationState {
+        self.controller.state()
+    }
+
+    /// Whether `window_id` is where conversation mode runs.
+    pub fn is_in_window(&self, window_id: WindowId) -> bool {
+        self.is_active() && self.window_id == Some(window_id)
+    }
+
+    fn start(&mut self, window_id: WindowId, ctx: &mut ModelContext<Self>) -> Result<(), String> {
+        let settings = AISettings::as_ref(ctx);
+        let engine = SpeechOutputEngine::from_setting(&settings.conversation_speech_engine);
+        let store = speech_output_store(engine);
+        let speaker: Arc<dyn Speaker> = match engine {
+            SpeechOutputEngine::Kokoro => Arc::new(KokoroSpeaker::new(store)),
+            SpeechOutputEngine::TinyVoca => Arc::new(TinyVocaSpeaker::new(store)),
+        };
+        let voices = speaker.voices();
+        let chosen = settings.conversation_voice.as_str();
+        self.voice = voices
+            .iter()
+            .find(|voice| voice.id.as_str() == chosen)
+            .or_else(|| voices.first())
+            .map(|voice| voice.id.clone())
+            .ok_or_else(|| "The speech output model has no voices".to_owned())?;
+        self.rate = settings.conversation_speech_rate();
+        let options = ChunkerOptions {
+            read_code_summaries: *settings.conversation_read_code_summaries,
+        };
+        self.output = Some(
+            SpeechOutput::open()
+                .map_err(|error| format!("Couldn't open the speaker: {error:#}"))?,
+        );
+        // Loading the model takes seconds, so do it now rather than on the first sentence.
+        let warm = speaker.clone();
+        let voice = self.voice.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = warm.synthesize("Ready.", &voice, 1.0) {
+                log::warn!("Couldn't load the speech output model: {error}");
+            }
+        });
+        self.speaker = Some(speaker);
+        self.window_id = Some(window_id);
+        self.controller.start(options);
+        ctx.emit(ConversationEvent::StateChanged);
+        ctx.notify();
+        Ok(())
+    }
+
+    pub fn stop(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.is_active() {
+            return;
+        }
+        let actions = self.controller.stop();
+        self.apply(actions, ctx);
+        self.output = None;
+        self.speaker = None;
+        self.surface = None;
+        self.reply = None;
+        self.approval = None;
+        ctx.emit(ConversationEvent::StateChanged);
+        ctx.notify();
+    }
+
+    /// A prompt was sent from the input of `surface` in `window_id`; its reply is spoken.
+    pub fn prompt_sent(
+        &mut self,
+        surface: EntityId,
+        window_id: WindowId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.is_in_window(window_id) {
+            return;
+        }
+        self.surface = Some(surface);
+        self.reply = None;
+        self.approval = None;
+        let actions = self.controller.prompt_sent();
+        self.apply(actions, ctx);
+    }
+
+    fn handle_history_event(
+        &mut self,
+        event: &BlocklistAIHistoryEvent,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let (exchange_id, conversation_id, surface) = match event {
+            BlocklistAIHistoryEvent::UpdatedStreamingExchange {
+                exchange_id,
+                conversation_id,
+                terminal_surface_id,
+                is_hidden: false,
+            }
+            | BlocklistAIHistoryEvent::AppendedExchange {
+                exchange_id,
+                conversation_id,
+                terminal_surface_id,
+                is_hidden: false,
+                ..
+            } => (*exchange_id, *conversation_id, *terminal_surface_id),
+            _ => return,
+        };
+        if !self.is_active() || self.surface != Some(surface) {
+            return;
+        }
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        let Some(exchange) = history
+            .conversation(&conversation_id)
+            .and_then(|conversation| conversation.exchange_with_id(exchange_id))
+        else {
+            return;
+        };
+        let finished = exchange.output_status.is_finished();
+        let text = exchange
+            .output_status
+            .output()
+            .map(|output| spoken_reply_text(&output.get(), finished))
+            .unwrap_or_default();
+        let reply = match &mut self.reply {
+            Some(reply) if reply.exchange_id == exchange_id => reply,
+            _ => self.reply.insert(SpokenReply {
+                exchange_id,
+                fed: String::new(),
+            }),
+        };
+        let common = common_prefix_len(&reply.fed, &text);
+        let delta = text[common..].to_owned();
+        reply.fed = text;
+        let mut actions = self.controller.reply_text(&delta);
+        if finished {
+            actions.extend(self.controller.reply_finished());
+        }
+        self.apply(actions, ctx);
+    }
+
+    /// The agent waits on the user to approve an action in `surface`.
+    pub fn approval_requested(
+        &mut self,
+        surface: EntityId,
+        action_model: ModelHandle<BlocklistAIActionModel>,
+        conversation_id: AIConversationId,
+        action_id: AIAgentActionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.is_active() || self.surface != Some(surface) {
+            return;
+        }
+        let Some((command, needs_screen)) = action_model
+            .as_ref(ctx)
+            .get_pending_action_by_id(&action_id)
+            .map(|action| spoken_action_prompt(&action.action))
+        else {
+            return;
+        };
+        self.approval = Some(ApprovalTarget {
+            action_model,
+            conversation_id,
+        });
+        let actions = self
+            .controller
+            .approval_requested(action_id, &command, needs_screen);
+        self.apply(actions, ctx);
+    }
+
+    /// The action stopped waiting for approval (answered on screen, run, or cancelled).
+    pub fn approval_resolved(&mut self, action_id: &AIAgentActionId) {
+        self.controller.approval_resolved(action_id);
+    }
+
+    /// Lets conversation mode handle a final utterance before hands-free applies it. Returns
+    /// whether it was consumed ("stop", or an approval answer) and must not reach the input.
+    pub fn intercept_final(&mut self, text: &str, ctx: &mut ModelContext<Self>) -> bool {
+        let (outcome, actions) = self.controller.on_final(text);
+        self.apply(actions, ctx);
+        match outcome {
+            FinalOutcome::NotConsumed => false,
+            FinalOutcome::Stopped => true,
+            FinalOutcome::Answered(action_id, reply) => {
+                if let Some(target) = self.approval.take() {
+                    let conversation_id = target.conversation_id;
+                    target.action_model.update(ctx, |model, ctx| match reply {
+                        ApprovalReply::Approve => {
+                            model.execute_action(&action_id, conversation_id, ctx)
+                        }
+                        ApprovalReply::Reject => model.cancel_action_with_id(
+                            conversation_id,
+                            &action_id,
+                            CancellationReason::ManuallyCancelled,
+                            ctx,
+                        ),
+                    });
+                }
+                true
+            }
+        }
+    }
+
+    /// The VAD heard speech start; talking over the reply for long enough stops it.
+    pub fn speech_started(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.is_active() {
+            return;
+        }
+        self.controller.speech_started(Instant::now());
+        ctx.spawn(Timer::after(BARGE_IN_AFTER), |me, _, ctx| {
+            let actions = me.controller.check_barge_in(Instant::now());
+            me.apply(actions, ctx);
+        });
+    }
+
+    pub fn speech_ended(&mut self) {
+        self.controller.speech_ended();
+    }
+
+    fn apply(&mut self, actions: Vec<PlaybackAction<Arc<Audio>>>, ctx: &mut ModelContext<Self>) {
+        let before = self.controller.state();
+        for action in actions {
+            match action {
+                PlaybackAction::Synthesize { reply, seq, text } => {
+                    let Some(speaker) = self.speaker.clone() else {
+                        continue;
+                    };
+                    let (tx, rx) = oneshot::channel();
+                    let voice = self.voice.clone();
+                    let rate = self.rate;
+                    std::thread::spawn(move || {
+                        let _ = tx.send(speaker.synthesize(&text, &voice, rate));
+                    });
+                    ctx.spawn(rx, move |me, result, ctx| {
+                        let audio = match result {
+                            Ok(Ok(audio)) => Some(Arc::new(audio)),
+                            Ok(Err(error)) => {
+                                log::warn!("Speech synthesis failed: {error}");
+                                None
+                            }
+                            Err(_) => None,
+                        };
+                        let actions = me.controller.synthesized(reply, seq, audio);
+                        me.apply(actions, ctx);
+                    });
+                }
+                PlaybackAction::Play { reply, seq, audio } => {
+                    if let Some(output) = &self.output {
+                        let finished_tx = self.finished_tx.clone();
+                        output.play(&audio.samples, audio.sample_rate, move || {
+                            let _ = finished_tx.unbounded_send((reply, seq));
+                        });
+                    }
+                }
+                PlaybackAction::StopPlayback => {
+                    if let Some(output) = &self.output {
+                        output.stop();
+                    }
+                }
+                PlaybackAction::Interrupted { reply } => {
+                    log::info!("Voice conversation reply {reply} interrupted by the user");
+                }
+            }
+        }
+        if self.controller.state() != before {
+            ctx.emit(ConversationEvent::StateChanged);
+            ctx.notify();
+        }
+    }
+}
+
+/// The byte length of the longest common prefix of `a` and `b`, on a char boundary.
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.char_indices()
+        .zip(b.chars())
+        .find(|((_, x), y)| x != y)
+        .map_or_else(|| a.len().min(b.len()), |((index, _), _)| index)
+}
+
+impl Entity for ConversationSession {
+    type Event = ConversationEvent;
+}
+
+impl SingletonEntity for ConversationSession {}
+
+/// Turns conversation mode on or off. Turning it on first makes sure the speech output model is
+/// installed (asking the user to download it) and turns on hands-free input.
+pub fn toggle_conversation(window_id: WindowId, ctx: &mut AppContext) {
+    if !is_conversation_enabled() {
+        return;
+    }
+    let session = ConversationSession::handle(ctx);
+    if session.as_ref(ctx).is_active() {
+        session.update(ctx, |session, ctx| session.stop(ctx));
+        return;
+    }
+    if !ensure_speech_output_ready(window_id, ctx) {
+        return;
+    }
+    if !HandsFreeSession::as_ref(ctx).is_active() {
+        toggle_hands_free(window_id, ctx);
+        if !HandsFreeSession::as_ref(ctx).is_active() {
+            return;
+        }
+    }
+    if let Err(message) = session.update(ctx, |session, ctx| session.start(window_id, ctx)) {
+        ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+            stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+        });
+    }
+}
+
+#[cfg(test)]
+#[path = "conversation_tests.rs"]
+mod tests;

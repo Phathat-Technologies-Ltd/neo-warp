@@ -147,9 +147,17 @@ fn feature_flags_for(area: ProductArea) -> (FeatureFlag, &'static [FeatureFlag])
             FeatureFlag::ConversationCloudSync,
             &[FeatureFlag::CloudConversations],
         ),
-        // Hands-free voice builds on voice input, so turning voice input off turns it off too.
-        ProductArea::VoiceInput => (FeatureFlag::VoiceInput, &[FeatureFlag::VoiceHandsFree]),
-        ProductArea::VoiceHandsFree => (FeatureFlag::VoiceHandsFree, &[]),
+        // Hands-free voice builds on voice input, and conversation mode on hands-free, so turning
+        // one off turns off what builds on it.
+        ProductArea::VoiceInput => (
+            FeatureFlag::VoiceInput,
+            &[FeatureFlag::VoiceHandsFree, FeatureFlag::VoiceConversation],
+        ),
+        ProductArea::VoiceHandsFree => (
+            FeatureFlag::VoiceHandsFree,
+            &[FeatureFlag::VoiceConversation],
+        ),
+        ProductArea::VoiceConversation => (FeatureFlag::VoiceConversation, &[]),
         ProductArea::CodebaseIndexing => (
             FeatureFlag::CodebaseIndexing,
             &[

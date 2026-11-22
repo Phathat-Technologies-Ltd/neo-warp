@@ -2446,7 +2446,8 @@ impl Input {
         });
     }
 
-    /// Applies a hands-free transcript edit when this input has focus.
+    /// Refreshes the hands-free indicator on every state change, and applies transcript edits when
+    /// this is the focused input of the session's window.
     #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
     fn handle_hands_free_event(
         &mut self,
@@ -2454,16 +2455,12 @@ impl Input {
         ctx: &mut ViewContext<Self>,
     ) {
         use crate::voice::hands_free::{HandsFreeEvent, HandsFreeSession};
-        use crate::voice::hands_free_controller::HandsFreeEffect;
+        use crate::voice::hands_free_controller::{
+            HandsFreeEffect, final_text_for_input, sends_input,
+        };
 
-        if !self.editor.is_focused(ctx) {
-            return;
-        }
         let effect = match event {
             HandsFreeEvent::StateChanged => {
-                let normalize = self.input_type(ctx) == InputType::Shell;
-                HandsFreeSession::handle(ctx)
-                    .update(ctx, |session, _| session.set_normalize_finals(normalize));
                 let state = HandsFreeSession::as_ref(ctx).state();
                 self.agent_input_footer.update(ctx, |footer, ctx| {
                     footer.set_voice_is_active(state.is_mic_on(), ctx);
@@ -2485,16 +2482,27 @@ impl Input {
             }
             HandsFreeEvent::Effect(effect) => effect,
         };
+        if HandsFreeSession::as_ref(ctx).window_id() != Some(ctx.window_id())
+            || !self.editor.is_focused(ctx)
+        {
+            return;
+        }
+        let is_shell = self.input_type(ctx) == InputType::Shell;
         let buffer = self.buffer_text(ctx);
         let text = match effect {
             HandsFreeEffect::ShowPartial(text) => self.hands_free_range.replace(&buffer, text),
-            HandsFreeEffect::Commit(text) => self.hands_free_range.commit(&buffer, text),
+            HandsFreeEffect::Commit(text) => self
+                .hands_free_range
+                .commit(&buffer, &final_text_for_input(text, is_shell)),
             HandsFreeEffect::InsertNewline => format!("{buffer}\n"),
             HandsFreeEffect::ClearInput => {
                 self.hands_free_range.clear();
                 String::new()
             }
-            HandsFreeEffect::Send => {
+            HandsFreeEffect::Send | HandsFreeEffect::AutoSend => {
+                if !sends_input(effect, is_shell) {
+                    return;
+                }
                 self.hands_free_range.clear();
                 self.hands_free_written = None;
                 if !buffer.trim().is_empty() {
@@ -2506,6 +2514,54 @@ impl Input {
         self.hands_free_written = Some(text.clone());
         self.editor
             .update(ctx, |editor, ctx| editor.set_buffer_text(&text, ctx));
+    }
+
+    /// Tells conversation mode when an agent action of this input's terminal waits for approval
+    /// and when it stops waiting.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn forward_action_event_to_conversation(
+        &mut self,
+        action_model: ModelHandle<BlocklistAIActionModel>,
+        event: &crate::ai::blocklist::BlocklistAIActionEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use crate::ai::blocklist::BlocklistAIActionEvent;
+        use crate::voice::conversation::ConversationSession;
+
+        let conversation = ConversationSession::handle(ctx);
+        if !conversation.as_ref(ctx).is_active() {
+            return;
+        }
+        match event {
+            BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(action_id) => {
+                let Some(conversation_id) = BlocklistAIHistoryModel::as_ref(ctx)
+                    .active_conversation_id(self.terminal_view_id)
+                else {
+                    return;
+                };
+                let surface = self.terminal_view_id;
+                let action_id = action_id.clone();
+                conversation.update(ctx, |conversation, ctx| {
+                    conversation.approval_requested(
+                        surface,
+                        action_model,
+                        conversation_id,
+                        action_id,
+                        ctx,
+                    );
+                });
+            }
+            BlocklistAIActionEvent::ExecutingAction(action_id)
+            | BlocklistAIActionEvent::FinishedAction { action_id, .. } => {
+                conversation.update(ctx, |conversation, _| {
+                    conversation.approval_resolved(action_id)
+                });
+            }
+            BlocklistAIActionEvent::QueuedAction(_)
+            | BlocklistAIActionEvent::InitProject(_)
+            | BlocklistAIActionEvent::ToggleCodeReview(_)
+            | BlocklistAIActionEvent::InsertCodeReviewComments { .. } => {}
+        }
     }
 
     /// Pauses hands-free transcripts while the user types, and resumes them once the input is
@@ -3662,6 +3718,15 @@ impl Input {
                 is_queued_prompt,
                 ..
             } => {
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                if *is_user_initiated {
+                    let surface = me.terminal_view_id;
+                    let window_id = ctx.window_id();
+                    crate::voice::conversation::ConversationSession::handle(ctx)
+                        .update(ctx, |conversation, ctx| {
+                            conversation.prompt_sent(surface, window_id, ctx)
+                        });
+                }
                 // Skip the buffer clear for queued prompts. The user may have typed new
                 // input while the agent was busy and we don't want to wipe it on auto-send.
                 if *is_user_initiated && !*is_queued_prompt {
@@ -3895,6 +3960,11 @@ impl Input {
             &crate::voice::hands_free::HandsFreeSession::handle(ctx),
             |me, _, event, ctx| me.handle_hands_free_event(event, ctx),
         );
+
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        ctx.subscribe_to_model(&ai_action_model, |me, action_model, event, ctx| {
+            me.forward_action_event_to_conversation(action_model, event, ctx);
+        });
 
         ctx.subscribe_to_model(
             &IgnoredSuggestionsModel::handle(ctx),

@@ -42,6 +42,7 @@ network call to a server that will not answer.
 | `conversation_cloud_sync` | off | Cloud conversation history and sharing. Local history stays |
 | `voice_input` | on | Voice input |
 | `voice_hands_free` | on | Hands-free voice input (needs `voice_input`; off whenever `voice_input` is off) |
+| `voice_conversation` | on | Voice conversation mode: agent replies spoken aloud (needs `voice_hands_free`; off whenever it is off) |
 | `codebase_indexing` | on | Codebase indexing and embedding, including the embedded server's index |
 | `ai_prompt_suggestions` | on | AI prompt suggestions |
 | `ai_command_search` | on | AI command search |

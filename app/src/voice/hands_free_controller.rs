@@ -71,7 +71,11 @@ pub enum HandsFreeEffect {
     Commit(String),
     InsertNewline,
     ClearInput,
+    /// Send the input because the user said a send command.
     Send,
+    /// Send the input because the auto-send pause passed. Inputs that run shell commands ignore
+    /// it, so a misheard utterance never runs without an explicit command.
+    AutoSend,
 }
 
 #[derive(Debug, Default)]
@@ -88,11 +92,6 @@ pub struct HandsFreeController {
 impl HandsFreeController {
     pub fn state(&self) -> HandsFreeState {
         self.state
-    }
-
-    #[cfg(test)]
-    pub fn is_paused(&self) -> bool {
-        self.paused
     }
 
     pub fn auto_send_at(&self) -> Option<Instant> {
@@ -127,14 +126,14 @@ impl HandsFreeController {
         self.auto_send_at = None;
     }
 
-    /// Handles a server message. `input_is_empty` describes the input after earlier effects, and
-    /// `normalize` says whether final text should be rewritten as terminal syntax.
-    pub fn on_message(
-        &mut self,
-        message: ServerMessage,
-        normalize: bool,
-        now: Instant,
-    ) -> Vec<HandsFreeEffect> {
+    /// Whether transcripts are dropped because the user is typing.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Handles a server message. Final text is left as spoken; the input that applies it decides
+    /// whether to rewrite it as terminal syntax.
+    pub fn on_message(&mut self, message: ServerMessage, now: Instant) -> Vec<HandsFreeEffect> {
         if !self.state.is_mic_on() {
             return Vec::new();
         }
@@ -163,7 +162,7 @@ impl HandsFreeController {
                     return Vec::new();
                 }
                 let shown = self.showing.take() == Some(utterance);
-                self.final_effects(&text, shown, normalize, now)
+                self.final_effects(&text, shown, now)
             }
             ServerMessage::Error { message } => {
                 log::warn!("Hands-free transcription error: {message}");
@@ -175,22 +174,11 @@ impl HandsFreeController {
         }
     }
 
-    fn final_effects(
-        &mut self,
-        text: &str,
-        shown: bool,
-        normalize: bool,
-        now: Instant,
-    ) -> Vec<HandsFreeEffect> {
+    fn final_effects(&mut self, text: &str, shown: bool, now: Instant) -> Vec<HandsFreeEffect> {
         let (text, command) = if self.options.voice_commands {
             split_voice_command(text)
         } else {
             (text.trim().to_owned(), None)
-        };
-        let text = if normalize {
-            terminal_text::normalize(&text)
-        } else {
-            text
         };
         let mut effects = Vec::new();
         if !text.is_empty() || shown {
@@ -223,9 +211,31 @@ impl HandsFreeController {
             && self.state == HandsFreeState::Listening;
         if due {
             self.input_reset();
-            return Some(HandsFreeEffect::Send);
+            return Some(HandsFreeEffect::AutoSend);
         }
         None
+    }
+}
+
+/// The final text to write into an input, rewritten as terminal syntax for shell inputs.
+pub fn final_text_for_input(text: &str, is_shell: bool) -> String {
+    if is_shell {
+        terminal_text::normalize(text)
+    } else {
+        text.to_owned()
+    }
+}
+
+/// Whether `effect` submits the input. Auto-send applies only to agent prompts, so a shell command
+/// runs only after an explicit spoken send.
+pub fn sends_input(effect: &HandsFreeEffect, is_shell: bool) -> bool {
+    match effect {
+        HandsFreeEffect::Send => true,
+        HandsFreeEffect::AutoSend => !is_shell,
+        HandsFreeEffect::ShowPartial(_)
+        | HandsFreeEffect::Commit(_)
+        | HandsFreeEffect::InsertNewline
+        | HandsFreeEffect::ClearInput => false,
     }
 }
 

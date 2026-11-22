@@ -93,8 +93,22 @@ Add `FeatureFlag::VoiceHandsFree` to `crates/warp_features`, add it to the org d
 - The consent toast and the Speech Model settings row cover a `ModelBundle`: Parakeet, plus Silero
   when `VoiceHandsFree` is on. With the flag on, a user who already has Parakeet is asked once more,
   for the 2 MB VAD, before voice input starts again.
-- Spoken-form normalization runs on finals only when the focused input is in shell mode. Agent
-  prompts are natural language, and normalization would strip their punctuation and casing.
+- Spoken-form normalization runs on finals only when the input that applies them is in shell mode,
+  read when the edit is applied (so switching modes or inputs mid-session uses the right rule).
+  Agent prompts are natural language, and normalization would strip their punctuation and casing.
+- Auto-send after a pause applies only to agent prompts. In shell mode a command runs only after
+  the explicit "send" command, so a misrecognized utterance never runs on its own
+  (`HandsFreeEffect::AutoSend` versus `Send`, decided by `sends_input`).
+- State changes reach every input, so each refreshes or clears its "Mic on" placeholder and footer
+  indicator; transcript edits apply only in the focused input of the window that started the
+  session, so two windows never submit the same transcript.
+- The window header (tab bar) shows a red "Mic on" label whenever the microphone is open, whatever
+  has focus. It also shows the conversation-mode state.
+- Typing pauses hands-free: transcripts are dropped and the client stops sending audio to the
+  server (the microphone stays open so resuming is instant) until the input is cleared or sent.
+- Server errors (`error` messages, a failed socket, VAD load failures) show an error toast in the
+  session's window. The socket task ends as soon as either direction ends or fails.
+- `LiveCapture` accepts f32, i16, u16, and i32 input devices.
 - The server sends `speech_end` as soon as the VAD ends an utterance, and `final` once its decode
   finishes. The client's auto-send timer starts at the `final`.
 - Capture uses a new `voice_input::LiveCapture` (cpal plus a linear resampler to 16 kHz).
@@ -102,8 +116,7 @@ Add `FeatureFlag::VoiceHandsFree` to `crates/warp_features`, add it to the org d
   Linux and Windows), shown only when the flags and the local server are on. The listening state
   and a "Mic on" label are shown in the input's placeholder, and the footer's voice indicator turns
   on.
-- Not done in v1: the footer mic button, the level meter, the window-header and TUI status-line
-  privacy dot, the Settings > Voice rows (the settings `agents.voice.hands_free_auto_send_ms` and
+- Not done in v1: the footer mic button, the level meter, the TUI status-line privacy dot, the Settings > Voice rows (the settings `agents.voice.hands_free_auto_send_ms` and
   `agents.voice.hands_free_voice_commands` exist in the settings file), TUI wiring, and the macOS
   VoiceProcessingIO capture path (only needed with conversation mode).
 

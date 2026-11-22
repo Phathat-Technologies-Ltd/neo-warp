@@ -51,6 +51,11 @@
       "variants": { "on": true, "off": false },
       "defaultVariant": "on"
     },
+    "voice_conversation": {
+      "state": "ENABLED",
+      "variants": { "on": true, "off": false },
+      "defaultVariant": "on"
+    },
     "codebase_indexing": {
       "state": "ENABLED",
       "variants": { "on": true, "off": false },

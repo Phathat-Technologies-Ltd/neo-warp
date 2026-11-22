@@ -102,14 +102,15 @@ use crate::server::telemetry::{
 use crate::settings::{
     AIAutoDetectionEnabled, AICommandDenylist, AISettings, AISettingsChangedEvent,
     AgentModeQuerySuggestionsEnabled, AutoApproveBypassesCommandDenylist, AwsBedrockAutoLogin,
-    AwsBedrockCredentialsEnabled, CanUseWarpCreditsForFallback, EnableAiCommandSearchHashTrigger,
-    GeminiEnterpriseCredentialsEnabled, GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory,
-    InputSettings, IntelligentAutosuggestionsEnabled, LongRunningCommandSubmissionMode,
-    NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled, OrchestrationMessageDisplayMode,
-    PromptSubmissionMode, SharedBlockTitleGenerationEnabled,
-    ShouldRenderUseAgentToolbarForUserCommands, ShouldShowOzUpdatesInZeroState, ShowAgentTips,
-    ShowConversationHistory, ShowHintText, ThinkingDisplayMode, VOICE_INPUT_LANGUAGES,
-    VoiceInputEnabled, VoiceInputLanguage, VoiceInputToggleKey, WarpCloudModelsEnabled,
+    AwsBedrockCredentialsEnabled, CanUseWarpCreditsForFallback, ConversationReadCodeSummaries,
+    EnableAiCommandSearchHashTrigger, GeminiEnterpriseCredentialsEnabled,
+    GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory, InputSettings,
+    IntelligentAutosuggestionsEnabled, LongRunningCommandSubmissionMode, NLDInTerminalEnabled,
+    NaturalLanguageAutosuggestionsEnabled, OrchestrationMessageDisplayMode, PromptSubmissionMode,
+    SharedBlockTitleGenerationEnabled, ShouldRenderUseAgentToolbarForUserCommands,
+    ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
+    ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceInputEnabled, VoiceInputLanguage,
+    VoiceInputToggleKey, WarpCloudModelsEnabled,
 };
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -891,6 +892,13 @@ impl WarpAgentPageView {
         if ctx.has_singleton_model::<crate::voice::local_model::LocalVoiceModel>() {
             ctx.subscribe_to_model(
                 &crate::voice::local_model::LocalVoiceModel::handle(ctx),
+                |_, _, _, ctx| ctx.notify(),
+            );
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if ctx.has_singleton_model::<crate::voice::local_model::SpeechOutputModel>() {
+            ctx.subscribe_to_model(
+                &crate::voice::local_model::SpeechOutputModel::handle(ctx),
                 |_, _, _, ctx| ctx.notify(),
             );
         }
@@ -2711,6 +2719,16 @@ pub enum WarpAgentPageAction {
     DownloadLocalVoiceModel,
     CancelLocalVoiceModelDownload,
     RemoveLocalVoiceModel,
+    DownloadSpeechOutputModel,
+    CancelSpeechOutputModelDownload,
+    RemoveSpeechOutputModel,
+    /// Switches conversation mode to the next speech output engine.
+    CycleConversationSpeechEngine,
+    /// Switches conversation mode to the engine's next voice.
+    CycleConversationVoice,
+    /// Switches conversation mode to the next speaking rate.
+    CycleConversationSpeechRate,
+    ToggleConversationReadCodeSummaries,
     SetVoiceInputToggleKey(VoiceInputToggleKey),
     SetVoiceInputLanguage(String),
     ToggleGlobalAI,
@@ -3040,10 +3058,93 @@ impl TypedActionView for WarpAgentPageView {
                 crate::voice::local_model::LocalVoiceModel::handle(ctx)
                     .update(ctx, |model, ctx| model.remove(ctx));
             }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::DownloadSpeechOutputModel => {
+                let window_id = ctx.window_id();
+                crate::voice::local_model::SpeechOutputModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.download(window_id, ctx));
+            }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::CancelSpeechOutputModelDownload => {
+                crate::voice::local_model::SpeechOutputModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.cancel_download(ctx));
+            }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::RemoveSpeechOutputModel => {
+                crate::voice::local_model::SpeechOutputModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.remove(ctx));
+            }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::CycleConversationSpeechEngine => {
+                use crate::voice::local_model::SpeechOutputEngine;
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let next = match SpeechOutputEngine::from_setting(
+                        &settings.conversation_speech_engine,
+                    ) {
+                        SpeechOutputEngine::Kokoro => "tiny_voca",
+                        SpeechOutputEngine::TinyVoca => "kokoro",
+                    };
+                    report_if_error!(
+                        settings
+                            .conversation_speech_engine
+                            .set_value(next.to_owned(), ctx)
+                    );
+                    report_if_error!(settings.conversation_voice.set_value(String::new(), ctx));
+                });
+                ctx.notify();
+            }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::CycleConversationVoice => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let voices = conversation_voices(&settings.conversation_speech_engine);
+                    let current = voices
+                        .iter()
+                        .position(|(id, _)| *id == settings.conversation_voice.as_str())
+                        .unwrap_or(0);
+                    let next = voices[(current + 1) % voices.len()].0;
+                    report_if_error!(settings.conversation_voice.set_value(next.to_owned(), ctx));
+                });
+                ctx.notify();
+            }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::CycleConversationSpeechRate => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let current = *settings.conversation_speech_rate_percent;
+                    let next = CONVERSATION_RATES
+                        .iter()
+                        .copied()
+                        .find(|rate| *rate > current)
+                        .unwrap_or(CONVERSATION_RATES[0]);
+                    report_if_error!(
+                        settings
+                            .conversation_speech_rate_percent
+                            .set_value(next, ctx)
+                    );
+                });
+                ctx.notify();
+            }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::ToggleConversationReadCodeSummaries => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(
+                        settings
+                            .conversation_read_code_summaries
+                            .toggle_and_save_value(ctx)
+                    );
+                });
+                ctx.notify();
+            }
             #[cfg(target_family = "wasm")]
             WarpAgentPageAction::DownloadLocalVoiceModel
             | WarpAgentPageAction::CancelLocalVoiceModelDownload
-            | WarpAgentPageAction::RemoveLocalVoiceModel => {}
+            | WarpAgentPageAction::RemoveLocalVoiceModel
+            | WarpAgentPageAction::DownloadSpeechOutputModel
+            | WarpAgentPageAction::CancelSpeechOutputModelDownload
+            | WarpAgentPageAction::RemoveSpeechOutputModel
+            | WarpAgentPageAction::CycleConversationSpeechEngine
+            | WarpAgentPageAction::CycleConversationVoice
+            | WarpAgentPageAction::CycleConversationSpeechRate
+            | WarpAgentPageAction::ToggleConversationReadCodeSummaries => {}
             WarpAgentPageAction::ToggleVoiceInput => {
                 match AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     settings
@@ -4343,6 +4444,11 @@ struct VoiceWidget {
     voice_input_toggle: SwitchStateHandle,
     wispr_highlight_index: HighlightedHyperlink,
     local_model_button: MouseStateHandle,
+    speech_output_model_button: MouseStateHandle,
+    conversation_engine_button: MouseStateHandle,
+    conversation_voice_button: MouseStateHandle,
+    conversation_rate_button: MouseStateHandle,
+    conversation_code_summaries_toggle: SwitchStateHandle,
 }
 
 impl VoiceWidget {
@@ -4434,65 +4540,153 @@ impl VoiceWidget {
             ));
             #[cfg(not(target_family = "wasm"))]
             if let Some(state) = crate::voice::local_model::local_model_state(app) {
-                column.add_child(self.render_local_model(state, appearance, app));
+                use crate::voice::local_model::LocalVoiceModel;
+                let model = LocalVoiceModel::as_ref(app);
+                column.add_child(self.render_model_row(
+                    "Speech Model",
+                    ModelRow {
+                        state,
+                        display_name: model.display_name(),
+                        size: model.download_size(),
+                        download: WarpAgentPageAction::DownloadLocalVoiceModel,
+                        cancel: WarpAgentPageAction::CancelLocalVoiceModelDownload,
+                        remove: WarpAgentPageAction::RemoveLocalVoiceModel,
+                    },
+                    self.local_model_button.clone(),
+                    appearance,
+                ));
+            }
+            #[cfg(not(target_family = "wasm"))]
+            if crate::voice::local_model::is_conversation_enabled() {
+                self.render_conversation_settings(&mut column, view, appearance, app);
             }
         }
 
         column.finish()
     }
 
-    /// The on-device speech model's status, with a button to download, cancel, or remove it.
+    /// Settings > Voice rows for conversation mode: the speech output model and how replies are
+    /// read.
     #[cfg(not(target_family = "wasm"))]
-    fn render_local_model(
+    fn render_conversation_settings(
         &self,
-        state: local_transcription::ModelState,
+        column: &mut Flex,
+        view: &WarpAgentPageView,
         appearance: &Appearance,
         app: &AppContext,
+    ) {
+        use crate::voice::local_model::SpeechOutputModel;
+
+        let model = SpeechOutputModel::as_ref(app);
+        column.add_child(self.render_model_row(
+            "Speech Output Model",
+            ModelRow {
+                state: model.state().clone(),
+                display_name: model.display_name(),
+                size: model.download_size(),
+                download: WarpAgentPageAction::DownloadSpeechOutputModel,
+                cancel: WarpAgentPageAction::CancelSpeechOutputModelDownload,
+                remove: WarpAgentPageAction::RemoveSpeechOutputModel,
+            },
+            self.speech_output_model_button.clone(),
+            appearance,
+        ));
+        let settings = AISettings::as_ref(app);
+        let voices = conversation_voices(&settings.conversation_speech_engine);
+        let voice = voices
+            .iter()
+            .find(|(id, _)| *id == settings.conversation_voice.as_str())
+            .or_else(|| voices.first())
+            .map_or("Default", |(_, name)| *name);
+        column.add_child(render_cycle_row(
+            "Speech Output Engine",
+            "Kokoro sounds best; tiny-voca is a smaller download.",
+            &model.display_name(),
+            WarpAgentPageAction::CycleConversationSpeechEngine,
+            self.conversation_engine_button.clone(),
+            appearance,
+        ));
+        column.add_child(render_cycle_row(
+            "Conversation Voice",
+            "The voice that reads agent replies aloud.",
+            voice,
+            WarpAgentPageAction::CycleConversationVoice,
+            self.conversation_voice_button.clone(),
+            appearance,
+        ));
+        column.add_child(render_cycle_row(
+            "Speaking Rate",
+            "How fast agent replies are read.",
+            &format!("{:.1}x", settings.conversation_speech_rate()),
+            WarpAgentPageAction::CycleConversationSpeechRate,
+            self.conversation_rate_button.clone(),
+            appearance,
+        ));
+        column.add_child(render_ai_setting_toggle::<ConversationReadCodeSummaries>(
+            "Read Code Summaries",
+            WarpAgentPageAction::ToggleConversationReadCodeSummaries,
+            *settings.conversation_read_code_summaries,
+            true,
+            self.conversation_code_summaries_toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        ));
+    }
+
+    /// A downloadable model's status, with a button to download, cancel, or remove it.
+    #[cfg(not(target_family = "wasm"))]
+    fn render_model_row(
+        &self,
+        label: &str,
+        row: ModelRow,
+        button_state: MouseStateHandle,
+        appearance: &Appearance,
     ) -> Box<dyn Element> {
-        use crate::voice::local_model::{LocalVoiceModel, format_megabytes, format_progress};
+        use crate::voice::local_model::{format_megabytes, format_progress};
         use local_transcription::ModelState;
 
-        let model = LocalVoiceModel::as_ref(app);
-        let size = format_megabytes(model.download_size());
+        let ModelRow {
+            state,
+            display_name,
+            size,
+            download,
+            cancel,
+            remove,
+        } = row;
+        let size = format_megabytes(size);
         let (description, button_label, action) = match state {
             ModelState::NotInstalled | ModelState::AwaitingConsent => (
-                format!(
-                    "{} runs on this computer. Not downloaded ({size}).",
-                    model.display_name()
-                ),
+                format!("{display_name} runs on this computer. Not downloaded ({size})."),
                 "Download",
-                WarpAgentPageAction::DownloadLocalVoiceModel,
+                download,
             ),
             ModelState::Downloading(progress) => (
                 format!(
-                    "Downloading {} ({}).",
-                    model.display_name(),
+                    "Downloading {display_name} ({}).",
                     format_progress(progress)
                 ),
                 "Cancel",
-                WarpAgentPageAction::CancelLocalVoiceModelDownload,
+                cancel,
             ),
             ModelState::Installed => (
-                format!("{} is downloaded ({size}).", model.display_name()),
+                format!("{display_name} is downloaded ({size})."),
                 "Remove",
-                WarpAgentPageAction::RemoveLocalVoiceModel,
+                remove,
             ),
-            ModelState::Failed(error) => (
-                format!("The download failed: {error}"),
-                "Retry",
-                WarpAgentPageAction::DownloadLocalVoiceModel,
-            ),
+            ModelState::Failed(error) => {
+                (format!("The download failed: {error}"), "Retry", download)
+            }
         };
         let button = appearance
             .ui_builder()
-            .button(ButtonVariant::Secondary, self.local_model_button.clone())
+            .button(ButtonVariant::Secondary, button_state)
             .with_text_label(button_label.to_owned())
             .build()
             .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
             .finish();
         build_toggle_element(
             render_body_item_label::<WarpAgentPageAction>(
-                "Speech Model".to_owned(),
+                label.to_owned(),
                 None,
                 None,
                 LocalOnlyIconState::Hidden,
@@ -4508,11 +4702,71 @@ impl VoiceWidget {
     }
 }
 
+/// What a model row in Settings > Voice shows and does.
+#[cfg(not(target_family = "wasm"))]
+struct ModelRow {
+    state: local_transcription::ModelState,
+    display_name: String,
+    size: u64,
+    download: WarpAgentPageAction,
+    cancel: WarpAgentPageAction,
+    remove: WarpAgentPageAction,
+}
+
+/// Speaking rates offered, in percent.
+#[cfg(not(target_family = "wasm"))]
+const CONVERSATION_RATES: [u32; 5] = [80, 100, 120, 135, 150];
+
+/// The voices of the engine named by the `conversation_speech_engine` setting, as (id, name).
+#[cfg(not(target_family = "wasm"))]
+fn conversation_voices(engine: &str) -> &'static [(&'static str, &'static str)] {
+    use crate::voice::local_model::SpeechOutputEngine;
+    use local_transcription::speech::{KOKORO_VOICES, TINY_VOCA_VOICES};
+    match SpeechOutputEngine::from_setting(engine) {
+        SpeechOutputEngine::Kokoro => KOKORO_VOICES,
+        SpeechOutputEngine::TinyVoca => TINY_VOCA_VOICES,
+    }
+}
+
+/// A row whose button shows the current value and switches to the next one.
+#[cfg(not(target_family = "wasm"))]
+fn render_cycle_row(
+    label: &str,
+    description: &str,
+    value: &str,
+    action: WarpAgentPageAction,
+    button_state: MouseStateHandle,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let button = appearance
+        .ui_builder()
+        .button(ButtonVariant::Secondary, button_state)
+        .with_text_label(value.to_owned())
+        .build()
+        .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
+        .finish();
+    build_toggle_element(
+        render_body_item_label::<WarpAgentPageAction>(
+            label.to_owned(),
+            None,
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::Enabled,
+            appearance,
+        ),
+        Container::new(button)
+            .with_padding_right(TOGGLE_BUTTON_RIGHT_PADDING)
+            .finish(),
+        appearance,
+        Some(description.to_owned()),
+    )
+}
+
 impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

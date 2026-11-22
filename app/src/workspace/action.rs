@@ -312,6 +312,16 @@ pub enum WorkspaceAction {
     DownloadLocalVoiceModel,
     /// Turns hands-free voice input on or off.
     ToggleHandsFreeVoice,
+    /// Downloads the on-device speech output model after the user agreed in the conversation
+    /// mode prompt.
+    DownloadSpeechOutputModel,
+    /// Cancels a running voice model download.
+    CancelVoiceModelDownload {
+        /// Whether the download is of the speech output model rather than the speech model.
+        speech_output: bool,
+    },
+    /// Turns voice conversation mode on or off.
+    ToggleVoiceConversation,
     ViewPrivacyPolicy,
     SendFeedback,
     /// Open the log directory in the system file explorer with the current log file selected.
@@ -1041,6 +1051,9 @@ impl WorkspaceAction {
             | ViewLatestChangelog
             | DownloadLocalVoiceModel
             | ToggleHandsFreeVoice
+            | DownloadSpeechOutputModel
+            | CancelVoiceModelDownload { .. }
+            | ToggleVoiceConversation
             | ViewPrivacyPolicy
             | SendFeedback
             | ChangeCursor(_)

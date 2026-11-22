@@ -25,11 +25,11 @@ fn indicator_follows_speech() {
     let now = Instant::now();
     let mut controller = started();
     assert_eq!(controller.state(), HandsFreeState::Listening);
-    controller.on_message(ServerMessage::SpeechStart, false, now);
+    controller.on_message(ServerMessage::SpeechStart, now);
     assert_eq!(controller.state(), HandsFreeState::Hearing);
-    controller.on_message(ServerMessage::SpeechEnd, false, now);
+    controller.on_message(ServerMessage::SpeechEnd, now);
     assert_eq!(controller.state(), HandsFreeState::Transcribing);
-    controller.on_message(final_(1, "hi"), false, now);
+    controller.on_message(final_(1, "hi"), now);
     assert_eq!(controller.state(), HandsFreeState::Listening);
     controller.stop();
     assert!(!controller.state().is_mic_on());
@@ -39,20 +39,20 @@ fn indicator_follows_speech() {
 fn partials_then_final_then_auto_send() {
     let now = Instant::now();
     let mut controller = started();
-    controller.on_message(ServerMessage::SpeechStart, false, now);
+    controller.on_message(ServerMessage::SpeechStart, now);
     assert_eq!(
-        controller.on_message(partial(1, "run the"), false, now),
+        controller.on_message(partial(1, "run the"), now),
         vec![HandsFreeEffect::ShowPartial("run the".to_owned())]
     );
-    controller.on_message(ServerMessage::SpeechEnd, false, now);
+    controller.on_message(ServerMessage::SpeechEnd, now);
     assert_eq!(
-        controller.on_message(final_(1, "Run the tests."), false, now),
+        controller.on_message(final_(1, "Run the tests."), now),
         vec![HandsFreeEffect::Commit("Run the tests.".to_owned())]
     );
     assert_eq!(controller.tick(now + Duration::from_millis(1000)), None);
     assert_eq!(
         controller.tick(now + Duration::from_millis(1200)),
-        Some(HandsFreeEffect::Send)
+        Some(HandsFreeEffect::AutoSend)
     );
     assert_eq!(controller.tick(now + Duration::from_secs(5)), None);
 }
@@ -61,8 +61,8 @@ fn partials_then_final_then_auto_send() {
 fn speech_restarts_the_auto_send_timer() {
     let now = Instant::now();
     let mut controller = started();
-    controller.on_message(final_(1, "first"), false, now);
-    controller.on_message(ServerMessage::SpeechStart, false, now);
+    controller.on_message(final_(1, "first"), now);
+    controller.on_message(ServerMessage::SpeechStart, now);
     assert_eq!(controller.tick(now + Duration::from_secs(2)), None);
 }
 
@@ -74,7 +74,7 @@ fn auto_send_can_be_off() {
         auto_send_after: None,
         voice_commands: true,
     });
-    controller.on_message(final_(1, "first"), false, now);
+    controller.on_message(final_(1, "first"), now);
     assert_eq!(controller.tick(now + Duration::from_secs(60)), None);
 }
 
@@ -83,18 +83,18 @@ fn voice_commands_send_cancel_and_insert_newlines() {
     let now = Instant::now();
     let mut controller = started();
     assert_eq!(
-        controller.on_message(final_(1, "run the tests, send it."), false, now),
+        controller.on_message(final_(1, "run the tests, send it."), now),
         vec![
             HandsFreeEffect::Commit("run the tests".to_owned()),
             HandsFreeEffect::Send
         ]
     );
     assert_eq!(
-        controller.on_message(final_(2, "scratch that"), false, now),
+        controller.on_message(final_(2, "scratch that"), now),
         vec![HandsFreeEffect::ClearInput]
     );
     assert_eq!(
-        controller.on_message(final_(3, "step one new line"), false, now),
+        controller.on_message(final_(3, "step one new line"), now),
         vec![
             HandsFreeEffect::Commit("step one".to_owned()),
             HandsFreeEffect::InsertNewline
@@ -112,21 +112,29 @@ fn voice_commands_can_be_off() {
         voice_commands: false,
     });
     assert_eq!(
-        controller.on_message(final_(1, "send"), false, now),
+        controller.on_message(final_(1, "send"), now),
         vec![HandsFreeEffect::Commit("send".to_owned())]
     );
 }
 
 #[test]
-fn command_text_is_normalized_when_asked() {
-    let now = Instant::now();
-    let mut controller = started();
+fn finals_are_normalized_only_for_shell_inputs() {
     assert_eq!(
-        controller.on_message(final_(1, "cargo test dash dash no fail fast"), true, now),
-        vec![HandsFreeEffect::Commit(
-            "cargo test --no-fail-fast".to_owned()
-        )]
+        final_text_for_input("cargo test dash dash no fail fast", true),
+        "cargo test --no-fail-fast"
     );
+    assert_eq!(
+        final_text_for_input("Explain this error, please.", false),
+        "Explain this error, please."
+    );
+}
+
+#[test]
+fn auto_send_never_runs_shell_commands() {
+    assert!(sends_input(&HandsFreeEffect::AutoSend, false));
+    assert!(!sends_input(&HandsFreeEffect::AutoSend, true));
+    assert!(sends_input(&HandsFreeEffect::Send, true));
+    assert!(!sends_input(&HandsFreeEffect::ClearInput, false));
 }
 
 #[test]
@@ -135,16 +143,12 @@ fn typing_pauses_until_the_input_resets() {
     let mut controller = started();
     controller.user_typed();
     assert!(controller.is_paused());
-    assert!(
-        controller
-            .on_message(partial(1, "x"), false, now)
-            .is_empty()
-    );
-    assert!(controller.on_message(final_(1, "x"), false, now).is_empty());
+    assert!(controller.on_message(partial(1, "x"), now).is_empty());
+    assert!(controller.on_message(final_(1, "x"), now).is_empty());
     assert_eq!(controller.tick(now + Duration::from_secs(5)), None);
     controller.input_reset();
     assert_eq!(
-        controller.on_message(final_(2, "y"), false, now),
+        controller.on_message(final_(2, "y"), now),
         vec![HandsFreeEffect::Commit("y".to_owned())]
     );
 }
@@ -153,12 +157,12 @@ fn typing_pauses_until_the_input_resets() {
 fn an_empty_final_clears_a_shown_partial() {
     let now = Instant::now();
     let mut controller = started();
-    controller.on_message(partial(1, "uh"), false, now);
+    controller.on_message(partial(1, "uh"), now);
     assert_eq!(
-        controller.on_message(final_(1, ""), false, now),
+        controller.on_message(final_(1, ""), now),
         vec![HandsFreeEffect::Commit(String::new())]
     );
-    assert!(controller.on_message(final_(2, ""), false, now).is_empty());
+    assert!(controller.on_message(final_(2, ""), now).is_empty());
 }
 
 #[test]
@@ -166,7 +170,7 @@ fn messages_are_ignored_when_off() {
     let mut controller = HandsFreeController::default();
     assert!(
         controller
-            .on_message(final_(1, "x"), false, Instant::now())
+            .on_message(final_(1, "x"), Instant::now())
             .is_empty()
     );
 }

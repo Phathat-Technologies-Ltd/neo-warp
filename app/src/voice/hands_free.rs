@@ -4,6 +4,7 @@
 
 use instant::Instant;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::channel::mpsc;
 use futures::{SinkExt as _, StreamExt as _};
@@ -14,6 +15,7 @@ use warpui::platform::MicrophoneAccessState;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
 use websocket::WebsocketMessage as _;
 
+use super::conversation::ConversationSession;
 use super::hands_free_controller::{
     HandsFreeController, HandsFreeEffect, HandsFreeOptions, HandsFreeState,
 };
@@ -24,8 +26,9 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
 pub enum HandsFreeEvent {
+    /// The state changed; every input refreshes its indicator.
     StateChanged,
-    /// An edit for the focused input.
+    /// An edit for the focused input of the session's window.
     Effect(HandsFreeEffect),
 }
 
@@ -40,9 +43,10 @@ pub struct HandsFreeSession {
     capture: Option<LiveCapture>,
     /// Counts sessions so updates from an ended one are dropped.
     generation: u64,
-    /// Whether finals are rewritten as terminal syntax, which suits shell commands but not agent
-    /// prompts.
-    normalize_finals: bool,
+    /// The window whose focused input receives effects, so one transcript is applied once.
+    window_id: Option<WindowId>,
+    /// Shared with the socket writer, which drops audio while the user types.
+    audio_paused: Arc<AtomicBool>,
 }
 
 impl HandsFreeSession {
@@ -54,24 +58,44 @@ impl HandsFreeSession {
         self.controller.state().is_mic_on()
     }
 
+    /// The window whose focused input applies effects.
+    pub fn window_id(&self) -> Option<WindowId> {
+        self.window_id
+    }
+
     pub fn user_typed(&mut self, ctx: &mut ModelContext<Self>) {
         self.controller.user_typed();
+        self.sync_audio_paused();
         ctx.notify();
     }
 
     pub fn input_reset(&mut self, ctx: &mut ModelContext<Self>) {
         self.controller.input_reset();
+        self.sync_audio_paused();
         ctx.notify();
     }
 
-    /// Delivers a server message to the controller, rewriting finals as terminal syntax when
-    /// `normalize` is set.
+    fn sync_audio_paused(&self) {
+        self.audio_paused
+            .store(self.controller.is_paused(), Ordering::Relaxed);
+    }
+
+    fn show_error(&self, message: String, ctx: &mut ModelContext<Self>) {
+        let Some(window_id) = self.window_id else {
+            return;
+        };
+        ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+            stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+        });
+    }
+
     fn handle_message(&mut self, message: ServerMessage, ctx: &mut ModelContext<Self>) {
-        let normalize = self.normalize_finals;
+        if let ServerMessage::Error { message } = &message {
+            self.show_error(format!("Hands-free voice input: {message}"), ctx);
+        }
+        let message = self.route_to_conversation(message, ctx);
         let before = self.controller.state();
-        let effects = self
-            .controller
-            .on_message(message, normalize, Instant::now());
+        let effects = self.controller.on_message(message, Instant::now());
         for effect in effects {
             ctx.emit(HandsFreeEvent::Effect(effect));
         }
@@ -80,6 +104,37 @@ impl HandsFreeSession {
             ctx.emit(HandsFreeEvent::StateChanged);
         }
         ctx.notify();
+    }
+
+    /// Tells conversation mode about speech so it can stop talking, and lets it take finals that
+    /// answer it ("stop", or an approval answer), which then only clear their partial.
+    fn route_to_conversation(
+        &mut self,
+        message: ServerMessage,
+        ctx: &mut ModelContext<Self>,
+    ) -> ServerMessage {
+        let conversation = ConversationSession::handle(ctx);
+        match message {
+            ServerMessage::SpeechStart => {
+                conversation.update(ctx, |conversation, ctx| conversation.speech_started(ctx));
+                ServerMessage::SpeechStart
+            }
+            ServerMessage::SpeechEnd => {
+                conversation.update(ctx, |conversation, _| conversation.speech_ended());
+                ServerMessage::SpeechEnd
+            }
+            ServerMessage::Final { utterance, text } => {
+                let consumed = !self.controller.is_paused()
+                    && conversation.update(ctx, |conversation, ctx| {
+                        conversation.intercept_final(&text, ctx)
+                    });
+                ServerMessage::Final {
+                    utterance,
+                    text: if consumed { String::new() } else { text },
+                }
+            }
+            message @ (ServerMessage::Partial { .. } | ServerMessage::Error { .. }) => message,
+        }
     }
 
     fn schedule_auto_send(&mut self, ctx: &mut ModelContext<Self>) {
@@ -98,7 +153,7 @@ impl HandsFreeSession {
         });
     }
 
-    fn start(&mut self, ctx: &mut ModelContext<Self>) -> Result<(), String> {
+    fn start(&mut self, window_id: WindowId, ctx: &mut ModelContext<Self>) -> Result<(), String> {
         if matches!(
             ctx.microphone_access_state(),
             MicrophoneAccessState::Denied | MicrophoneAccessState::Restricted
@@ -112,6 +167,8 @@ impl HandsFreeSession {
         .map_err(|error| format!("Couldn't open the microphone: {error:#}"))?;
         self.generation += 1;
         self.capture = Some(capture);
+        self.window_id = Some(window_id);
+        self.audio_paused = Arc::new(AtomicBool::new(false));
         let settings = AISettings::as_ref(ctx);
         let options = HandsFreeOptions {
             auto_send_after: settings.hands_free_auto_send_after(),
@@ -124,7 +181,13 @@ impl HandsFreeSession {
         let server_api = ServerApiProvider::as_ref(ctx).get();
         let generation = self.generation;
         ctx.spawn(
-            run_socket(server_api, language, audio_rx, update_tx),
+            run_socket(
+                server_api,
+                language,
+                audio_rx,
+                self.audio_paused.clone(),
+                update_tx,
+            ),
             |_, _, _| {},
         );
         ctx.spawn_stream_local(
@@ -138,6 +201,7 @@ impl HandsFreeSession {
                     SocketUpdate::Closed(error) => {
                         if let Some(error) = error {
                             log::warn!("Hands-free voice input stopped: {error}");
+                            me.show_error(format!("Hands-free voice input stopped: {error}"), ctx);
                         }
                         me.stop(ctx);
                     }
@@ -161,18 +225,15 @@ impl HandsFreeSession {
             ctx.notify();
         }
     }
-
-    /// Whether finals are rewritten as terminal syntax; set by the input that receives them.
-    pub fn set_normalize_finals(&mut self, normalize: bool) {
-        self.normalize_finals = normalize;
-    }
 }
 
-/// Streams audio to the server and its messages back, until the audio ends or the socket fails.
+/// Streams audio to the server and its messages back, until the audio ends, the server closes the
+/// socket, or either direction fails.
 async fn run_socket(
     server_api: Arc<crate::server::server_api::ServerApi>,
     language: Option<String>,
     mut audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
+    audio_paused: Arc<AtomicBool>,
     update_tx: mpsc::UnboundedSender<SocketUpdate>,
 ) {
     let socket = match server_api.open_transcribe_stream().await {
@@ -199,7 +260,10 @@ async fn run_socket(
     let reader_tx = update_tx.clone();
     let reader = async move {
         while let Some(message) = stream.next().await {
-            let Ok(message) = message else { break };
+            let message = match message {
+                Ok(message) => message,
+                Err(error) => return Some(error.to_string()),
+            };
             let Some(text) = message.text() else { continue };
             match serde_json::from_str::<ServerMessage>(text) {
                 Ok(message) => {
@@ -208,22 +272,27 @@ async fn run_socket(
                 Err(error) => log::warn!("Unexpected hands-free server message: {error}"),
             }
         }
+        None
     };
     let writer = async move {
         while let Some(chunk) = audio_rx.next().await {
-            if sink
-                .send(websocket::Message::new_binary(chunk.pcm))
-                .await
-                .is_err()
-            {
-                return update_tx;
+            if audio_paused.load(Ordering::Relaxed) {
+                continue;
+            }
+            if let Err(error) = sink.send(websocket::Message::new_binary(chunk.pcm)).await {
+                return Some(error.to_string());
             }
         }
         let _ = sink.send(text(&ClientMessage::End)).await;
-        update_tx
+        None
     };
-    let (_, update_tx) = futures::join!(reader, writer);
-    let _ = update_tx.unbounded_send(SocketUpdate::Closed(None));
+    futures::pin_mut!(reader, writer);
+    let error = match futures::future::select(reader, writer).await {
+        futures::future::Either::Left((error, _)) | futures::future::Either::Right((error, _)) => {
+            error
+        }
+    };
+    let _ = update_tx.unbounded_send(SocketUpdate::Closed(error));
 }
 
 impl Entity for HandsFreeSession {
@@ -246,7 +315,7 @@ pub fn toggle_hands_free(window_id: WindowId, ctx: &mut AppContext) {
     if !ensure_ready_to_record(window_id, ctx) {
         return;
     }
-    if let Err(message) = session.update(ctx, |session, ctx| session.start(ctx)) {
+    if let Err(message) = session.update(ctx, |session, ctx| session.start(window_id, ctx)) {
         ToastStack::handle(ctx).update(ctx, |stack, ctx| {
             stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
         });
