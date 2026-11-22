@@ -17,6 +17,7 @@ use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
 use websocket::WebsocketMessage as _;
 
 use super::conversation::ConversationSession;
+use super::footer_controls::DictationMode;
 use super::hands_free_controller::{
     HandsFreeController, HandsFreeEffect, HandsFreeOptions, HandsFreeState,
 };
@@ -51,6 +52,8 @@ pub struct HandsFreeSession {
     window_id: Option<WindowId>,
     /// Shared with the socket writer, which drops audio while the user types.
     audio_paused: Arc<AtomicBool>,
+    /// What a click on a footer mic button does; shared so every footer agrees.
+    dictation_mode: DictationMode,
 }
 
 impl HandsFreeSession {
@@ -60,6 +63,19 @@ impl HandsFreeSession {
 
     pub fn is_active(&self) -> bool {
         self.controller.state().is_mic_on()
+    }
+
+    pub fn dictation_mode(&self) -> DictationMode {
+        self.dictation_mode
+    }
+
+    pub fn set_dictation_mode(&mut self, mode: DictationMode, ctx: &mut ModelContext<Self>) {
+        if self.dictation_mode == mode {
+            return;
+        }
+        self.dictation_mode = mode;
+        ctx.emit(HandsFreeEvent::StateChanged);
+        ctx.notify();
     }
 
     /// The window whose focused input applies effects.

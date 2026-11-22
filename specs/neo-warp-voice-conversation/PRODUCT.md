@@ -6,6 +6,13 @@ agent's replies aloud, so a user can drive a terminal task entirely by voice.
 ## Behavior
 - **Toggle**: a "Conversation mode" toggle next to the hands-free mic, a palette entry, and a
   keybinding. Turning conversation mode on also turns on hands-free.
+- **Footer waveform button (GUI)**: a waveform button sits right after the mic and its mode
+  dropdown in the agent input footer and the terminal (agent view) input footer. Clicking it starts
+  conversation mode (turning hands-free on, and asking to download any missing model first); clicking
+  it again stops it. While active it is drawn in red with the current state as its label
+  (Starting, Listening, Thinking, or Speaking, with "(muted)" when the readout is muted). The tooltip
+  shows Start or Stop voice conversation and the cmd-alt-shift-V shortcut. Hidden when
+  `VoiceConversation` is off.
 - **Indicators**: Listening, Thinking (request sent, no text yet), and Speaking. They appear in the
   input footer (GUI) and status line (TUI), alongside the mic privacy indicator from hands-free.
 - **Speaking replies**: agent text is spoken one sentence at a time as it streams in. Audio should

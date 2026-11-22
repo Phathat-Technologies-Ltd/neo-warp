@@ -16,7 +16,7 @@ use chrono::{DateTime, Local};
 use parking_lot::FairMutex;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::{Vector2F, vec2f};
-#[cfg(feature = "voice_input")]
+#[cfg(all(target_family = "wasm", feature = "voice_input"))]
 use settings::Setting;
 use settings::ToggleableSetting;
 #[cfg(not(target_family = "wasm"))]
@@ -119,6 +119,8 @@ use crate::view_components::ToastLink;
 use crate::view_components::action_button::{
     ActionButton, ActionButtonTheme, AdjoinedSide, ButtonSize, KeystrokeSource, TooltipAlignment,
 };
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+use crate::voice::footer_controls::{VoiceControls, VoiceControlsStyle};
 use crate::workspace::ToastStack;
 #[cfg(not(target_family = "wasm"))]
 use crate::workspace::WorkspaceAction;
@@ -203,6 +205,8 @@ pub struct AgentInputFooter {
     terminal_view_id: EntityId,
     #[cfg_attr(not(feature = "voice_input"), allow(unused))]
     mic_button: ViewHandle<ActionButton>,
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    voice_controls: ViewHandle<VoiceControls>,
     nld_button: ViewHandle<ActionButton>,
     file_button: ViewHandle<ActionButton>,
     start_remote_control_button: ViewHandle<ActionButton>,
@@ -418,7 +422,21 @@ impl AgentInputFooter {
             button
         });
 
-        #[cfg(feature = "voice_input")]
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        let voice_controls = {
+            let mic_button = mic_button.clone();
+            let menu_positioning_provider = menu_positioning_provider.clone();
+            ctx.add_typed_action_view(|ctx| {
+                VoiceControls::new(
+                    VoiceControlsStyle::AgentFooter,
+                    mic_button,
+                    menu_positioning_provider,
+                    ctx,
+                )
+            })
+        };
+
+        #[cfg(all(target_family = "wasm", feature = "voice_input"))]
         {
             let tooltip = AISettings::as_ref(ctx)
                 .voice_input_toggle_key
@@ -1012,6 +1030,8 @@ impl AgentInputFooter {
             ambient_agent_view_model: None,
             nld_button,
             mic_button,
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            voice_controls,
             file_button,
             file_explorer_button,
             rich_input_button,
@@ -1155,7 +1175,7 @@ impl AgentInputFooter {
         // user has voice input enabled in settings, matching V1's behavior.
         #[cfg(feature = "voice_input")]
         if AISettings::as_ref(app).is_voice_input_enabled(app) {
-            right = right.with_child(ChildView::new(&self.mic_button).finish());
+            right = right.with_child(self.render_voice_buttons());
         }
 
         right = right.with_child(ChildView::new(&self.file_button).finish());
@@ -1953,6 +1973,23 @@ impl AgentInputFooter {
         }
     }
 
+    /// The mic plus, where available, the dictation mode dropdown and conversation button.
+    #[cfg(feature = "voice_input")]
+    fn render_voice_buttons(&self) -> Box<dyn Element> {
+        let mic = ChildView::new(&self.mic_button).finish();
+        #[cfg(not(target_family = "wasm"))]
+        {
+            Flex::row()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(mic)
+                .with_child(ChildView::new(&self.voice_controls).finish())
+                .finish()
+        }
+        #[cfg(target_family = "wasm")]
+        mic
+    }
+
     pub fn set_voice_is_active(&mut self, is_active: bool, ctx: &mut ViewContext<Self>) {
         self.mic_button.update(ctx, |button, ctx| {
             button.set_active(is_active, ctx);
@@ -2461,7 +2498,7 @@ impl AgentInputFooter {
                 {
                     let enabled =
                         crate::settings::AISettings::as_ref(app).is_voice_input_enabled(app);
-                    enabled.then(|| ChildView::new(&self.mic_button).finish())
+                    enabled.then(|| self.render_voice_buttons())
                 }
                 #[cfg(not(feature = "voice_input"))]
                 None
@@ -2881,6 +2918,18 @@ impl TypedActionView for AgentInputFooter {
         match action {
             #[cfg(feature = "voice_input")]
             AgentInputFooterAction::ToggleVoiceInput => {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    // CLI agent sessions write dictation to the PTY, which hands-free input
+                    // can't target, so there the mic only stops a running hands-free session.
+                    let routes_to_hands_free = !self.is_cli_agent_session_active(ctx)
+                        || crate::voice::hands_free::HandsFreeSession::as_ref(ctx).is_active();
+                    if routes_to_hands_free
+                        && crate::voice::footer_controls::handle_mic_click(ctx.window_id(), ctx)
+                    {
+                        return;
+                    }
+                }
                 // In CLI agent mode, handle voice recording/transcription
                 // directly so text is written to the PTY instead of the editor.
                 if self.is_cli_agent_session_active(ctx) {

@@ -13,6 +13,15 @@ is not a goal.
 ## Behavior
 - **Toggle**: a mic toggle in the input footer (GUI and TUI), a Command Palette entry
   "Enable/Disable hands-free voice", and a keybinding. Off by default in each session.
+- **Footer mic and mode dropdown (GUI)**: the agent input footer and the terminal (agent view)
+  input footer share one mic button with a small chevron dropdown next to it. The dropdown picks the
+  dictation mode, shared by every footer: "Push to talk / click to record" (default; one recording
+  per click, the existing voice input) or "Hands-free". Clicking the mic starts the selected mode.
+  While hands-free has the microphone open, the mic is drawn in red and a click turns hands-free
+  off, whatever mode is selected. The tooltip names the action and its shortcut (the hold-to-talk
+  key for recording, cmd-shift-H for hands-free). The dropdown is hidden when `VoiceHandsFree` is
+  off or local models aren't served, and the mic is hidden when voice input is off. In a CLI agent
+  session the mic keeps its PTY recording behavior and only stops a running hands-free session.
 - **Listening indicator**: while hands-free is on, the input shows a pulsing mic glyph with a level
   meter and three states: Listening (idle), Hearing (speech detected), and Transcribing.
 - **Privacy indicator**: whenever the microphone is open, a red dot and a "Mic on" label stay in the
