@@ -395,3 +395,33 @@ redact_patterns = ["corp-[0-9]+", "internal_[a-z]+"]
         ["corp-[0-9]+", "internal_[a-z]+"]
     );
 }
+
+#[test]
+fn mcp_oauth_redirect_defaults_to_an_ephemeral_ipv4_loopback() {
+    let (_dir, path) = write_config_file("");
+    let config = OrganizationConfig::from_file(&path).unwrap();
+    assert_eq!(config.mcp_oauth.redirect_port, None);
+    assert_eq!(
+        config.mcp_oauth.redirect_host,
+        McpOAuthRedirectHost::Ipv4Literal
+    );
+}
+
+#[test]
+fn mcp_oauth_fixed_redirect_is_read() {
+    let (_dir, path) = write_config_file(
+        r#"
+[mcp_oauth]
+redirect_port = 53682
+redirect_host = "localhost"
+"#,
+    );
+    let config = OrganizationConfig::from_file(&path).unwrap();
+    assert_eq!(
+        config.mcp_oauth,
+        McpOAuthConfig {
+            redirect_port: Some(53682),
+            redirect_host: McpOAuthRedirectHost::Localhost,
+        }
+    );
+}

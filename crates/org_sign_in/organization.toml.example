@@ -25,3 +25,9 @@ display_name = "Microsoft"
 # exact registered port (Entra and Google accept any port on http://localhost/callback).
 # extra_scopes = []
 # redirect_port = 53682
+
+# Optional: pin the MCP OAuth loopback redirect (http://<host>:<port>/callback) for MCP gateways
+# that only approve an exact redirect URI. By default the port is OS-assigned per sign-in.
+# [mcp_oauth]
+# redirect_port = 53683
+# redirect_host = "127.0.0.1"   # or "localhost"

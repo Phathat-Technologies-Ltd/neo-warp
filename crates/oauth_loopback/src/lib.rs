@@ -143,10 +143,31 @@ impl LoopbackListener {
         expected_state: String,
         cancellation: CancellationHandle,
     ) -> (ReleaseSignal, impl Future<Output = anyhow::Result<String>>) {
+        let (release, callback) = self.wait_for_callback(expected_state, cancellation);
+        (release, async move { Ok(callback.await?.code) })
+    }
+
+    /// Like [`Self::wait_for_code`], but also returns the RFC 9207 `iss` parameter.
+    pub fn wait_for_callback(
+        self,
+        expected_state: String,
+        cancellation: CancellationHandle,
+    ) -> (
+        ReleaseSignal,
+        impl Future<Output = anyhow::Result<AuthorizationCallback>>,
+    ) {
         let (release_tx, release_rx) = async_channel::bounded(1);
         let result = run(self, expected_state, cancellation, release_tx);
         (ReleaseSignal(release_rx), result)
     }
+}
+
+/// A successful authorization redirect whose `state` matched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthorizationCallback {
+    pub code: String,
+    /// The authorization server's `iss` response parameter (RFC 9207), when sent.
+    pub issuer: Option<String>,
 }
 
 async fn run(
@@ -154,7 +175,7 @@ async fn run(
     expected_state: String,
     cancellation: CancellationHandle,
     release_tx: async_channel::Sender<()>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<AuthorizationCallback> {
     let LoopbackListener {
         listeners, config, ..
     } = loopback;
@@ -165,7 +186,7 @@ async fn run(
     let callback_thread = std::thread::Builder::new()
         .name(format!("{}-oauth-callback", label.to_lowercase()))
         .spawn(move || {
-            let callback = wait_for_callback(&listeners, &config, &cancellation);
+            let callback = wait_for_callback(&listeners, &config, &expected_state, &cancellation);
             // Close the sockets *before* publishing the result: whoever observes the result may
             // immediately rebind the port (a retried sign-in), which fails with "address in use"
             // while a listener is still open.
@@ -189,23 +210,15 @@ async fn run(
     // control returns, on the cancelled, timed-out, and completed paths alike.
     let _ = callback_thread.join();
 
-    let callback = callback??;
-    if callback.state != expected_state {
-        bail!("the authorization response state did not match — aborting to prevent CSRF");
-    }
-    Ok(callback.code)
-}
-
-struct CallbackData {
-    code: String,
-    state: String,
+    callback?
 }
 
 fn wait_for_callback(
     listeners: &[TcpListener],
     config: &LoopbackConfig,
+    expected_state: &str,
     cancellation: &CancellationHandle,
-) -> anyhow::Result<CallbackData> {
+) -> anyhow::Result<AuthorizationCallback> {
     let label = config.label;
     let deadline = Instant::now() + config.timeout;
     loop {
@@ -220,7 +233,9 @@ fn wait_for_callback(
             match listener.accept() {
                 Ok((stream, _)) => {
                     accepted_any = true;
-                    if let Some(data) = handle_callback_connection(stream, config, cancellation)? {
+                    if let Some(data) =
+                        handle_callback_connection(stream, config, expected_state, cancellation)?
+                    {
                         return Ok(data);
                     }
                     // Unrelated request (e.g. /favicon.ico); keep waiting.
@@ -243,12 +258,13 @@ fn wait_for_callback(
 ///
 /// Returns `Ok(None)` for requests that aren't the OAuth callback (so the caller keeps
 /// listening), `Ok(Some(..))` on a successful callback, and `Err` when the provider reported an
-/// error or the callback was malformed.
+/// error, the callback was malformed, or its `state` didn't match.
 fn handle_callback_connection(
     mut stream: TcpStream,
     config: &LoopbackConfig,
+    expected_state: &str,
     cancellation: &CancellationHandle,
-) -> anyhow::Result<Option<CallbackData>> {
+) -> anyhow::Result<Option<AuthorizationCallback>> {
     let label = config.label;
     let request = read_callback_request(&mut stream, label, cancellation)?;
     let origin = request_header(&request, "Origin");
@@ -282,6 +298,7 @@ fn handle_callback_connection(
     let mut state = None;
     let mut error = None;
     let mut error_description = None;
+    let mut issuer = None;
     let pairs: Vec<(String, String)> = serde_urlencoded::from_str(query).unwrap_or_default();
     for (key, value) in pairs {
         match key.as_str() {
@@ -289,6 +306,7 @@ fn handle_callback_connection(
             "state" => state = Some(value),
             "error" => error = Some(value),
             "error_description" => error_description = Some(value),
+            "iss" => issuer = Some(value),
             _ => {}
         }
     }
@@ -307,8 +325,12 @@ fn handle_callback_connection(
         respond(&mut stream, "400 Bad Request", config.failure_html);
         bail!("the {label} authorization callback was missing the code or state parameter");
     };
+    if state != expected_state {
+        respond(&mut stream, "400 Bad Request", config.failure_html);
+        bail!("the authorization response state did not match — aborting to prevent CSRF");
+    }
     respond(&mut stream, "200 OK", config.success_html);
-    Ok(Some(CallbackData { code, state }))
+    Ok(Some(AuthorizationCallback { code, issuer }))
 }
 
 /// Reads `stream` until its headers are fully received (a blank line), the buffer fills, or the

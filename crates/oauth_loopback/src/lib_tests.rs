@@ -81,6 +81,26 @@ fn matching_callback_returns_the_code() {
 
 #[test]
 #[serial_test::serial(oauth_loopback_port)]
+fn callback_reports_the_issuer_parameter() {
+    let (listener, address) = bind_test_listener();
+    let browser = send_browser_request(
+        address,
+        "GET /callback?code=c&state=s1&iss=https%3A%2F%2Fidp.example HTTP/1.1",
+    );
+    let (_release, result) = listener.wait_for_callback("s1".to_owned(), CancellationHandle::new());
+    let callback = futures::executor::block_on(result).expect("callback should succeed");
+    assert_eq!(
+        callback,
+        AuthorizationCallback {
+            code: "c".to_owned(),
+            issuer: Some("https://idp.example".to_owned()),
+        }
+    );
+    browser.join().unwrap();
+}
+
+#[test]
+#[serial_test::serial(oauth_loopback_port)]
 fn unrelated_requests_are_ignored_until_the_callback_arrives() {
     let (listener, address) = bind_test_listener();
     let favicon = send_browser_request(address, "GET /favicon.ico HTTP/1.1");
