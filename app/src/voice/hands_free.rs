@@ -11,6 +11,7 @@ use futures::{SinkExt as _, StreamExt as _};
 use instant::Instant;
 use local_transcription::denoise::DenoiseStage;
 use local_transcription::speaker::Sensitivity;
+use local_transcription::speech::playback::BARGE_IN_CHECK_AFTER;
 use local_transcription::stream::{ClientMessage, ServerMessage, VadOptions};
 use voice_input::{LiveCapture, LiveChunk};
 use warpui::r#async::Timer;
@@ -26,7 +27,7 @@ use super::hands_free_controller::{
     HandsFreeController, HandsFreeEffect, HandsFreeOptions, HandsFreeState, VoiceTarget,
 };
 use super::local_model::{ensure_ready_to_record, is_hands_free_enabled};
-use super::speaker_gate::{AudioTap, GateStep, SpeakerGate, VerifyRequest};
+use super::speaker_gate::{AudioTap, GateStep, SpeakerGate, Verdict, VerifyRequest};
 use super::speaker_id::SpeakerProfile;
 use crate::server::server_api::ServerApiProvider;
 use crate::settings::AISettings;
@@ -35,6 +36,9 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
 /// How often a held auto-send re-checks whether the reply has gone quiet.
+/// How far before `SpeechStart` arrives a barge-in's audio is taken from: VAD onset and delivery,
+/// without the server's longer pre-roll, which would mostly hold the reply's own audio.
+const BARGE_IN_START_SLACK_SAMPLES: u64 = 16_000 / 4;
 const ECHO_RECHECK: Duration = Duration::from_millis(200);
 
 pub enum HandsFreeEvent {
@@ -232,6 +236,39 @@ impl HandsFreeSession {
         });
     }
 
+    /// Checks the speaker of the speech that just started once enough of it has arrived, so a
+    /// reply ducked for barge-in either stops (the user) or resumes (its own echo).
+    fn schedule_barge_in_check(&mut self, ctx: &mut ModelContext<Self>) {
+        let start = self
+            .tap_total()
+            .saturating_sub(BARGE_IN_START_SLACK_SAMPLES);
+        let generation = self.generation;
+        ctx.spawn(Timer::after(BARGE_IN_CHECK_AFTER), move |me, _, ctx| {
+            if me.generation != generation
+                || !ConversationSession::as_ref(ctx).wants_barge_in_verdict()
+            {
+                return;
+            }
+            let samples = me
+                .tap
+                .lock()
+                .map(|tap| tap.slice(start..tap.total()))
+                .unwrap_or_default();
+            let sensitivity = me.sensitivity;
+            let verdict = SpeakerProfile::handle(ctx).update(ctx, |profile, _| {
+                profile.verify(samples, sensitivity, 0, "barge-in")
+            });
+            ctx.spawn(verdict, move |me, verdict, ctx| {
+                if me.generation != generation {
+                    return;
+                }
+                ConversationSession::handle(ctx).update(ctx, |conversation, ctx| {
+                    conversation.barge_in_verdict(verdict == Verdict::Match, ctx)
+                });
+            });
+        });
+    }
+
     fn show_rejection(&mut self, ctx: &mut ModelContext<Self>) {
         self.rejected_until = Some(Instant::now() + REJECTION_NOTICE);
         ctx.emit(HandsFreeEvent::StateChanged);
@@ -283,7 +320,13 @@ impl HandsFreeSession {
         let conversation = ConversationSession::handle(ctx);
         match message {
             ServerMessage::SpeechStart => {
-                conversation.update(ctx, |conversation, ctx| conversation.speech_started(ctx));
+                let verify = self.verify_speaker && !self.controller.is_paused();
+                conversation.update(ctx, |conversation, ctx| {
+                    conversation.speech_started(verify, ctx)
+                });
+                if verify {
+                    self.schedule_barge_in_check(ctx);
+                }
                 ServerMessage::SpeechStart
             }
             ServerMessage::SpeechEnd => {

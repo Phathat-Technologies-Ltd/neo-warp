@@ -11,8 +11,8 @@ use local_transcription::Audio;
 use local_transcription::speech::approval::ApprovalReply;
 use local_transcription::speech::chunker::ChunkerOptions;
 use local_transcription::speech::playback::{
-    BARGE_IN_POLL, ConversationController, ConversationState, FinalOutcome, PlaybackAction,
-    is_headphone_device_name,
+    BARGE_IN_POLL, BARGE_IN_VERDICT_TIMEOUT, ConversationController, ConversationState,
+    FinalOutcome, PlaybackAction, is_headphone_device_name,
 };
 use local_transcription::speech::{KokoroSpeaker, Speaker, TinyVocaSpeaker, VoiceId};
 use voice_input::SpeechOutput;
@@ -448,14 +448,27 @@ impl ConversationSession {
         }
     }
 
-    /// The VAD heard speech start; talking over the reply for long enough stops it.
-    pub fn speech_started(&mut self, ctx: &mut ModelContext<Self>) {
+    /// The VAD heard speech start; talking over the reply for long enough stops it. With
+    /// `verify_speaker`, it only ducks the reply until [`Self::barge_in_verdict`].
+    pub fn speech_started(&mut self, verify_speaker: bool, ctx: &mut ModelContext<Self>) {
         if !self.is_active() {
             return;
         }
         self.refresh_echo_cancellation();
+        self.controller.set_verify_barge_in(verify_speaker);
         self.controller.speech_started(Instant::now());
         self.poll_barge_in(ctx);
+    }
+
+    /// Whether a ducked reply is waiting for the speaker check of the speech over it.
+    pub fn wants_barge_in_verdict(&self) -> bool {
+        self.is_active() && self.controller.is_barge_in_pending()
+    }
+
+    /// Reports whether the speech over the reply is the enrolled user's.
+    pub fn barge_in_verdict(&mut self, matched: bool, ctx: &mut ModelContext<Self>) {
+        let actions = self.controller.barge_in_verdict(matched, Instant::now());
+        self.apply(actions, ctx);
     }
 
     /// Re-checks barge-in until the user stops talking or the speech stops.
@@ -551,6 +564,20 @@ impl ConversationSession {
                 }
                 PlaybackAction::Interrupted { reply } => {
                     log::info!("Voice conversation reply {reply} interrupted by the user");
+                }
+                PlaybackAction::Duck { gain } => {
+                    if let Some(output) = &self.output {
+                        output.set_gain(gain);
+                    }
+                    ctx.spawn(Timer::after(BARGE_IN_VERDICT_TIMEOUT), |me, _, ctx| {
+                        let actions = me.controller.check_barge_in(Instant::now());
+                        me.apply(actions, ctx);
+                    });
+                }
+                PlaybackAction::Restore => {
+                    if let Some(output) = &self.output {
+                        output.set_gain(1.0);
+                    }
                 }
             }
         }
