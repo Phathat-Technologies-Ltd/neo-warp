@@ -325,6 +325,111 @@ async fn unanswered_tool_calls_are_cancelled_before_the_next_query() {
     assert!(sent.contains(CANCELLED_TOOL_RESULT));
 }
 
+fn with_mcp(mut request: api::Request) -> api::Request {
+    request
+        .settings
+        .as_mut()
+        .unwrap()
+        .supported_tools
+        .push(api::ToolType::CallMcpTool as i32);
+    request.mcp_context = Some(api::request::McpContext {
+        servers: vec![api::request::mcp_context::McpServer {
+            id: "0b7e5c1e-0000-4000-8000-000000000001".to_owned(),
+            name: "linear".to_owned(),
+            tools: vec![api::request::mcp_context::McpTool {
+                name: "search_issues".to_owned(),
+                description: "Search issues".to_owned(),
+                input_schema: None,
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    request
+}
+
+fn mcp_result(tool_call_id: &str, text: &str) -> api::request::input::Type {
+    use api::call_mcp_tool_result::success::{Result as Part, result};
+    use api::request::input::user_inputs::{UserInput, user_input};
+    api::request::input::Type::UserInputs(api::request::input::UserInputs {
+        inputs: vec![UserInput {
+            input: Some(user_input::Input::ToolCallResult(
+                api::request::input::ToolCallResult {
+                    tool_call_id: tool_call_id.to_owned(),
+                    result: Some(api::request::input::tool_call_result::Result::CallMcpTool(
+                        api::CallMcpToolResult {
+                            result: Some(api::call_mcp_tool_result::Result::Success(
+                                api::call_mcp_tool_result::Success {
+                                    results: vec![Part {
+                                        result: Some(result::Result::Text(result::Text {
+                                            text: text.to_owned(),
+                                        })),
+                                    }],
+                                },
+                            )),
+                        },
+                    )),
+                },
+            )),
+        }],
+    })
+}
+
+#[tokio::test]
+async fn mcp_tools_are_offered_called_on_the_client_and_their_results_resume_the_turn() {
+    let provider = ScriptedProvider::new(vec![
+        vec![tool_request(
+            "toolu_m",
+            "mcp__linear__search_issues",
+            json!({ "query": "login bug", "limit": 5 }),
+        )],
+        vec![Message::assistant().with_text("Found APP-1.")],
+    ]);
+    let first = run_turn(
+        with_mcp(request(user_query("find the login bug"), Vec::new())),
+        provider.clone(),
+    )
+    .await;
+    let call = added_messages(&first)
+        .into_iter()
+        .find_map(|message| match message.message {
+            Some(Kind::ToolCall(call)) => Some(call),
+            _ => None,
+        })
+        .expect("the MCP call reaches the client");
+    let Some(api::message::tool_call::Tool::CallMcpTool(mcp)) = call.tool else {
+        panic!("expected an MCP tool call");
+    };
+    assert_eq!(mcp.name, "search_issues");
+    assert_eq!(mcp.server_id, "0b7e5c1e-0000-4000-8000-000000000001");
+    assert!(mcp.args.unwrap().fields.contains_key("query"));
+
+    let second = run_turn(
+        with_mcp(request(
+            mcp_result("toolu_m", "APP-1: login fails"),
+            vec![root_task(&first)],
+        )),
+        provider.clone(),
+    )
+    .await;
+    assert!(added_messages(&second).iter().any(|message| matches!(&message.message, Some(Kind::AgentOutput(output)) if output.text == "Found APP-1.")));
+
+    let calls = provider.calls.lock().unwrap();
+    assert_eq!(
+        calls[0].2,
+        vec![
+            "run_shell_command",
+            "read_files",
+            "mcp__linear__search_issues"
+        ]
+    );
+    let sent = serde_json::to_string(&calls[1].1).unwrap();
+    assert!(
+        sent.contains("APP-1: login fails"),
+        "the model sees the MCP result: {sent}"
+    );
+}
+
 #[tokio::test]
 async fn missing_key_or_unsupported_model_still_starts_and_finishes_the_stream() {
     let mut no_key = request(user_query("hi"), Vec::new());

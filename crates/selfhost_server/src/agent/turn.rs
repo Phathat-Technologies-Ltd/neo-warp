@@ -35,6 +35,7 @@ use warp_multi_agent_api::message::{
 };
 use warp_multi_agent_api::request::settings::custom_model_providers::CustomEndpointSchema;
 
+use super::mcp::McpTools;
 use super::responses::{self, ResponsesProvider};
 use super::{prompt, tools};
 
@@ -144,6 +145,7 @@ struct Stream {
     task_id: String,
     /// The streamed text message the next text delta extends.
     open_text_message: Option<String>,
+    mcp_tools: McpTools,
 }
 
 impl Stream {
@@ -160,6 +162,7 @@ impl Stream {
             request_id: Uuid::new_v4().to_string(),
             task_id: String::new(),
             open_text_message: None,
+            mcp_tools: McpTools::from_request(request),
         };
         // Init must precede every action, including on failures.
         stream.send(api::response_event::Type::Init(
@@ -290,11 +293,12 @@ impl Stream {
 
         let settings = request.settings.as_ref();
         let (endpoint, model) = resolve_model(settings)?;
-        let tools = tools::definitions(
+        let mut tools = tools::definitions(
             settings
                 .map(|settings| settings.supported_tools.as_slice())
                 .unwrap_or(&[]),
         );
+        tools.extend(self.mcp_tools.definitions());
         let system_prompt = prompt::system_prompt(input.context.as_ref());
 
         let provider = make_provider(&endpoint).map_err(|error| internal(format!("{error:#}")))?;
@@ -451,7 +455,13 @@ impl Stream {
                         .tool_call
                         .as_ref()
                         .map_err(|error| error.message.to_string())
-                        .and_then(|call| tools::to_warp_tool(&call.name, call.arguments.as_ref()));
+                        .and_then(|call| {
+                            let arguments = call.arguments.as_ref();
+                            match self.mcp_tools.to_warp_tool(&call.name, arguments) {
+                                Some(tool) => Ok(tool),
+                                None => tools::to_warp_tool(&call.name, arguments),
+                            }
+                        });
                     match tool {
                         Ok(tool) => self.tool_call(request.id.clone(), tool),
                         Err(error) => log::warn!("Dropping an unusable tool call: {error}"),
