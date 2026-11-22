@@ -11,6 +11,8 @@ use org_sign_in::{OrganizationConfig, OrganizationSignInConfig};
 use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
 
+use crate::server::server_api::auth::UserAuthenticationError;
+
 static ORGANIZATION_CONFIG: OnceLock<OrganizationConfig> = OnceLock::new();
 
 /// How long an organization sign-in lasts before the user must pass the identity provider again.
@@ -43,6 +45,11 @@ pub(crate) fn init() {
         eprintln!("Error: invalid organization server URL {server_url}: {error:#}");
         log::error!("Invalid organization server URL {server_url}: {error:#}");
     }
+    if config.sign_in.is_some() && !(config.server_url.is_none() && bundled_remote_server_builds().is_some()) {
+        // The SSH extension installs a Linux build of the app on the remote host, downloaded from
+        // the server; only the embedded server, from builds bundled with the app, offers them.
+        FeatureFlag::SshRemoteServer.set_enabled(false);
+    }
     let _ = ORGANIZATION_CONFIG.set(config);
 }
 
@@ -58,6 +65,7 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
         client_id: sign_in.client_id.clone(),
         signing_secret,
         session_max_age: EMBEDDED_SESSION_MAX_AGE,
+        remote_server_artifacts: bundled_remote_server_builds(),
     }) {
         Ok(address) => Some(format!("http://{address}")),
         Err(error) => {
@@ -66,6 +74,13 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
             None
         }
     }
+}
+
+/// The directory of Linux builds bundled with the app for its SSH extension, if any.
+fn bundled_remote_server_builds() -> Option<PathBuf> {
+    warp_core::paths::bundled_resources_dir()
+        .map(|dir| dir.join("remote-server"))
+        .filter(|dir| dir.is_dir())
 }
 
 /// Reads the embedded server's token-signing secret, creating it on first use. Keeping it across
@@ -107,6 +122,31 @@ fn apply_server_url(server_url: &str) -> Result<(), url::ParseError> {
     ChannelState::override_auth_token_root_url(server_url.to_owned())?;
     log::info!("Using the self-hosted server at {server_url}");
     Ok(())
+}
+
+/// The product name organization builds show in place of "Warp".
+pub const PRODUCT_NAME: &str = "neo-warp";
+
+pub const SIGN_IN_EXPIRED_MESSAGE: &str = "Your sign-in expired. Sign in again to continue.";
+
+/// The message to show when signing in, or keeping a session, fails.
+pub fn login_failure_message(err: &UserAuthenticationError) -> String {
+    match err {
+        // A refused refresh means the organization session ended, not a broken login.
+        UserAuthenticationError::DeniedAccessToken(_)
+        | UserAuthenticationError::UserAccountDisabled(_)
+            if sign_in_config().is_some() =>
+        {
+            SIGN_IN_EXPIRED_MESSAGE.to_owned()
+        }
+        UserAuthenticationError::DeniedAccessToken(_)
+        | UserAuthenticationError::UserAccountDisabled(_)
+        | UserAuthenticationError::InvalidStateParameter
+        | UserAuthenticationError::MissingStateParameter
+        | UserAuthenticationError::DeviceCodeRequestTimedOut { .. }
+        | UserAuthenticationError::OrganizationAccessDenied(_)
+        | UserAuthenticationError::Unexpected(_) => format!("{err:#}"),
+    }
 }
 
 /// The organization sign-in settings, when this build signs users in through their organization

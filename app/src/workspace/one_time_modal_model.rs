@@ -491,6 +491,9 @@ impl OneTimeModalModel {
     /// workspace, since the connection status usually arrives while onboarding is still up.
     /// Returns true when the modal was opened.
     fn maybe_trigger_chatgpt_plan_modal(&mut self, ctx: &mut ModelContext<Self>) -> bool {
+        if crate::auth::is_organization_sign_in() {
+            return false;
+        }
         let Some(window_id) = self
             .target_window_id
             .or_else(|| ctx.windows().active_window())
@@ -635,8 +638,9 @@ impl OneTimeModalModel {
     }
 
     fn check_and_trigger_all_modals(&mut self, ctx: &mut ModelContext<Self>) {
-        // Never show one-time modals on WASM.
-        if cfg!(target_family = "wasm") {
+        // Never show one-time modals on WASM. They announce Warp's own products and plans, so
+        // organization builds skip them too.
+        if cfg!(target_family = "wasm") || crate::auth::is_organization_sign_in() {
             return;
         }
 

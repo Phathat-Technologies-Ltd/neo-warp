@@ -21,6 +21,7 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
         verifier: OidcVerifier::with_keys(ISSUER, CLIENT_ID, keys),
         sessions: SessionStore::new(Some(b"test-secret"), max_age),
         required_group: required_group.map(str::to_owned),
+        remote_server_artifacts: None,
     })
 }
 
@@ -441,6 +442,51 @@ async fn tui_onboarding_markers_read_as_already_shown() {
 }
 
 #[tokio::test]
+async fn ai_credits_are_always_available() {
+    use warp_graphql::queries::get_ai_credit_availability::{GetAICreditAvailability, UserResult};
+    let data: GetAICreditAvailability = signed_in_query("GetAICreditAvailability").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetAICreditAvailability should return a UserOutput");
+    };
+    assert!(output.user.ai_credit_availability.available);
+}
+
+#[tokio::test]
+async fn there_are_no_teams_to_discover() {
+    use warp_graphql::queries::get_discoverable_teams::{GetDiscoverableTeams, UserResult};
+    let data: GetDiscoverableTeams = signed_in_query("GetDiscoverableTeams").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetDiscoverableTeams should return a UserOutput");
+    };
+    assert!(output.user.discoverable_teams.is_empty());
+    assert!(output.user.discoverable_workspaces.is_empty());
+}
+
+#[tokio::test]
+async fn conversation_usage_is_empty() {
+    use warp_graphql::queries::get_conversation_usage::{GetConversationUsage, UserResult};
+    let data: GetConversationUsage = signed_in_query("GetConversationUsage").await;
+    let UserResult::UserOutput(output) = data.user else {
+        panic!("GetConversationUsage should return a UserOutput");
+    };
+    assert!(output.user.conversation_usage.is_empty());
+}
+
+#[tokio::test]
+async fn there_are_no_cloud_environments() {
+    use warp_graphql::queries::get_cloud_environments::{
+        GetCloudEnvironmentsQuery, GetCloudEnvironmentsResult,
+    };
+    let data: GetCloudEnvironmentsQuery = signed_in_query("GetCloudEnvironmentsQuery").await;
+    let GetCloudEnvironmentsResult::GetCloudEnvironmentsOutput(output) =
+        data.get_cloud_environments
+    else {
+        panic!("GetCloudEnvironmentsQuery should return a GetCloudEnvironmentsOutput");
+    };
+    assert!(output.cloud_environments.is_empty());
+}
+
+#[tokio::test]
 async fn signed_in_operations_require_a_valid_server_token() {
     let state = state();
     assert_eq!(
@@ -504,6 +550,7 @@ fn embedded_server_answers_on_its_reported_port() {
         client_id: CLIENT_ID.to_owned(),
         signing_secret: b"test-secret".to_vec(),
         session_max_age: Duration::from_secs(3600),
+        remote_server_artifacts: None,
     })
     .expect("embedded server should start");
     assert!(address.ip().is_loopback());
@@ -541,4 +588,44 @@ async fn model_catalog_lists_claude_models_with_opus_as_the_default() {
                 .any(|model| model["id"] == "claude-sonnet-5-5")
         );
     }
+}
+
+fn download_request(os: &str, arch: &str) -> Request<Body> {
+    Request::get(format!("/download/cli?package=tar&os={os}&arch={arch}&channel=dev"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn serves_remote_server_builds_for_linux() {
+    let artifacts = tempfile::tempdir().unwrap();
+    std::fs::write(
+        artifacts.path().join("remote-server-linux-aarch64.tar.gz"),
+        b"arm64 build",
+    )
+    .unwrap();
+    let state = Arc::new(AppState {
+        remote_server_artifacts: Some(artifacts.path().to_owned()),
+        ..Arc::into_inner(state()).unwrap()
+    });
+
+    let (status, body) = send(&state, download_request("linux", "aarch64")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, Value::String("arm64 build".to_owned()));
+
+    // Missing builds and unknown platforms, including path-like values, are not found.
+    for (os, arch) in [("linux", "x86_64"), ("darwin", "aarch64"), ("linux", "..%2F..%2Fetc")] {
+        assert_eq!(
+            send(&state, download_request(os, arch)).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+}
+
+#[tokio::test]
+async fn remote_server_downloads_need_configured_builds() {
+    assert_eq!(
+        send(&state(), download_request("linux", "x86_64")).await.0,
+        StatusCode::NOT_FOUND
+    );
 }

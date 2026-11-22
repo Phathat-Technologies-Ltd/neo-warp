@@ -299,7 +299,7 @@ while (( "$#" )); do
       OPEN_AFTER_BUNDLE=true
       shift
       ;;
-    # Specify the release channel (local, dev, preview, stable, oss)
+    # Specify the release channel (local, dev, preview, stable, oss, neo-warp)
     -c|--channel)
       if [ -n "$2" ] && [ "${2:0:1}" != "-" ]; then
         RELEASE_CHANNEL=$2
@@ -435,7 +435,18 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
     # The OSS channel does not ship Sentry, so drop the cocoa_sentry feature
     # (which would otherwise pull in the Sentry framework dependency).
     FEATURES="release_bundle,extern_plist"
+elif [[ $RELEASE_CHANNEL = "neo-warp" ]]; then
+    # The OSS client for organizations: an OSS-channel build under its own name, bundle id,
+    # and data profile.
+    WARP_BIN="neo-warp"
+    BUNDLE_ID="dev.neowarp.NeoWarp"
+    WARP_APP_NAME="neo-warp"
+    WARP_SCHEME_NAME="neowarp"
+    FEATURES="release_bundle,extern_plist"
+    ASSET_CHANNEL="oss"
 fi
+# Bundled resources and icons come from this channel's assets.
+ASSET_CHANNEL="${ASSET_CHANNEL:-$RELEASE_CHANNEL}"
 
 OUT_DIR="target/$TARGET_PROFILE_DIR/bundle/osx"
 DOCK_TILE_PLUGIN_DIR="target/$TARGET_PROFILE_DIR/WarpDockTilePlugin.docktileplugin"
@@ -707,9 +718,9 @@ if [[ "$ARTIFACT" == "app" ]]; then
       export SETTINGS_SCHEMA_EXECUTABLE="$BUNDLE_DIR/$WARP_APP_NAME.app/Contents/MacOS/$WARP_BIN"
     fi
   fi
-  "$WORKSPACE_ROOT_DIR/script/prepare_bundled_resources" "$BUNDLED_RESOURCES_DIR" "$RELEASE_CHANNEL"
+  "$WORKSPACE_ROOT_DIR/script/prepare_bundled_resources" "$BUNDLED_RESOURCES_DIR" "$ASSET_CHANNEL"
 
-  "$WORKSPACE_ROOT_DIR/script/compile_icon" "$RELEASE_CHANNEL" "$BUNDLE_DIR/$WARP_APP_NAME.app"
+  "$WORKSPACE_ROOT_DIR/script/compile_icon" "$ASSET_CHANNEL" "$BUNDLE_DIR/$WARP_APP_NAME.app"
 
   HELPERS_DIR="$BUNDLE_DIR/$WARP_APP_NAME.app/Contents/Helpers"
   if [[ ",$FEATURES," =~ ",heap_usage_tracking," ]]; then
@@ -723,6 +734,8 @@ if [[ "$ARTIFACT" == "app" ]]; then
     CLI_SCRIPT_PATH="$BUNDLED_RESOURCES_DIR/bin/oz"
   elif [[ $RELEASE_CHANNEL = "oss" ]]; then
     CLI_SCRIPT_PATH="$BUNDLED_RESOURCES_DIR/bin/warp-oss"
+  elif [[ $RELEASE_CHANNEL = "neo-warp" ]]; then
+    CLI_SCRIPT_PATH="$BUNDLED_RESOURCES_DIR/bin/neo-warp"
   else
     CLI_SCRIPT_PATH="$BUNDLED_RESOURCES_DIR/bin/oz-$RELEASE_CHANNEL"
   fi
@@ -818,7 +831,7 @@ elif [[ "$ARTIFACT" == "cli" || "$ARTIFACT" == "warpctrl" ]]; then
       export SETTINGS_SCHEMA_EXECUTABLE="$OUT_DIR/$WARP_BIN"
     fi
   fi
-  "$WORKSPACE_ROOT_DIR/script/prepare_bundled_resources" "$BUNDLED_RESOURCES_DIR" "$RELEASE_CHANNEL"
+  "$WORKSPACE_ROOT_DIR/script/prepare_bundled_resources" "$BUNDLED_RESOURCES_DIR" "$ASSET_CHANNEL"
 
 
   # Set the primary binary path to output.
@@ -852,7 +865,7 @@ elif [[ "$ARTIFACT" == "tui" ]]; then
     echo "Error: TUI bundles require SETTINGS_SCHEMA_SOURCE or SETTINGS_SCHEMA_EXECUTABLE." >&2
     exit 1
   fi
-  "$WORKSPACE_ROOT_DIR/script/prepare_bundled_resources" "$BUNDLED_RESOURCES_DIR" "$RELEASE_CHANNEL"
+  "$WORKSPACE_ROOT_DIR/script/prepare_bundled_resources" "$BUNDLED_RESOURCES_DIR" "$ASSET_CHANNEL"
 
   BINARY_PATH="$OUT_DIR/$WARP_BIN"
 else

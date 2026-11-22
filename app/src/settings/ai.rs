@@ -2455,7 +2455,11 @@ impl AISettings {
     /// False when the user/org has disabled it, cloud conversations are off,
     /// or AI is globally off.
     pub fn is_cloud_handoff_enabled(&self, app: &warpui::AppContext) -> bool {
-        if !self.is_any_ai_enabled(app) || *self.should_force_disable_cloud_handoff {
+        // Cloud agents run on Warp's service.
+        if !self.is_any_ai_enabled(app)
+            || *self.should_force_disable_cloud_handoff
+            || crate::auth::is_organization_sign_in()
+        {
             return false;
         }
         if !FeatureFlag::OzHandoff.is_enabled()

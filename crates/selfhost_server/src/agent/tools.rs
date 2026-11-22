@@ -319,7 +319,37 @@ fn with_top_level_patterns(patterns: Vec<String>) -> Vec<String> {
 }
 
 /// Renders a client tool result as text for the model, and whether it reports a failure.
+/// The most tool output passed to the model at once; larger output keeps its start and end.
+const MAX_RESULT_BYTES: usize = 100 * 1024;
+
+/// The text the model sees for a tool's result, and whether the tool failed.
 pub fn result_text(result: &api::message::tool_call_result::Result) -> (String, bool) {
+    let (text, failed) = full_result_text(result);
+    (truncate_middle(text, MAX_RESULT_BYTES), failed)
+}
+
+fn truncate_middle(text: String, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let half = max_bytes / 2;
+    let mut head_end = half;
+    while !text.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = text.len() - half;
+    while !text.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!(
+        "{}\n\n[... {} bytes of output omitted ...]\n\n{}",
+        &text[..head_end],
+        tail_start - head_end,
+        &text[tail_start..]
+    )
+}
+
+fn full_result_text(result: &api::message::tool_call_result::Result) -> (String, bool) {
     use api::message::tool_call_result::Result as R;
     match result {
         R::RunShellCommand(result) => shell_result_text(result),

@@ -18,6 +18,8 @@
 # Environment variables:
 #   SKIP_ANT_CLI:         Set to "1" to leave out Anthropic's ant CLI (see fetch_ant_cli, which
 #                         also honors ANT_CLI_OPTIONAL).
+#   REMOTE_SERVER_BUILDS_DIR: A directory of remote-server-linux-<arch>.tar.gz builds (from
+#                         script/neo-warp/build-remote-server) to bundle for the SSH extension.
 #   SKIP_SETTINGS_SCHEMA: Set to "1" to skip generating the JSON settings
 #                         schema. By default the schema is always generated
 #                         so that production bundles never accidentally omit it.
@@ -159,6 +161,12 @@ fi
 # Anthropic's ant CLI, for Claude Console sign-in. Set SKIP_ANT_CLI=1 to leave it out.
 if [ "${SKIP_ANT_CLI:-}" != "1" ]; then
   "$SCRIPT_DIR/fetch_ant_cli" "$DEST_DIR"
+fi
+
+# Linux builds of the app that its SSH extension installs on remote hosts.
+if [ -n "${REMOTE_SERVER_BUILDS_DIR:-}" ]; then
+  mkdir -p "$DEST_DIR/remote-server"
+  cp "$REMOTE_SERVER_BUILDS_DIR"/remote-server-linux-*.tar.gz "$DEST_DIR/remote-server/"
 fi
 
 echo "Successfully prepared bundled resources in $DEST_DIR"

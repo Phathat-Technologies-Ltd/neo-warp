@@ -1,9 +1,8 @@
 //! Stateful `/api-keys` inline menu backed by the shared TUI input editor.
 
 use ai::LLMProvider;
-use ai::anthropic_subscription::ant_cli;
 use ai::anthropic_subscription::oauth::AnthropicOAuthFlow;
-use ai::api_keys::{AnthropicTokenSource, ApiKeyManager, ApiKeyManagerEvent, CustomEndpointId};
+use ai::api_keys::{ApiKeyManager, ApiKeyManagerEvent, CustomEndpointId};
 use ai::grok_subscription::oauth::OauthAttempt;
 use warp::TuiLoginModel;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
@@ -420,19 +419,9 @@ impl TuiApiKeysMenuModel {
             TuiApiKeysRowKind::Provider(LLMProvider::Anthropic)
                 if ApiKeyManager::as_ref(ctx).has_anthropic_subscription() =>
             {
-                let from_ant_cli = ApiKeyManager::as_ref(ctx)
-                    .anthropic_tokens()
-                    .is_some_and(|tokens| tokens.source == AnthropicTokenSource::AntCli);
                 ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {
-                    manager.set_anthropic_tokens(None, ctx);
+                    manager.disconnect_anthropic_subscription(ctx);
                 });
-                if from_ant_cli && let Some(ant) = ant_cli::get() {
-                    ctx.spawn(async move { ant.logout().await }, |_, result, _| {
-                        if let Err(error) = result {
-                            log::warn!("Couldn't sign the ant CLI out: {error:#}");
-                        }
-                    });
-                }
                 Ok(())
             }
             TuiApiKeysRowKind::Provider(provider) => ApiKeyManager::handle(ctx)

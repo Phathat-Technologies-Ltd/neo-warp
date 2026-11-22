@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -13,6 +13,10 @@ pub struct ServerConfig {
     pub oidc: OidcConfig,
     #[serde(default)]
     pub session: SessionConfig,
+    /// Directory of the Linux builds the app installs on SSH hosts
+    /// (`remote-server-linux-<arch>.tar.gz`).
+    #[serde(default)]
+    pub remote_server_artifacts: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

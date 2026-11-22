@@ -1994,6 +1994,7 @@ pub(crate) fn initialize_app(
     // inside `Warp.app`, so without this it would rewrite a bundle it does not
     // own. See APP-2946.
     if FeatureFlag::Autoupdate.is_enabled()
+        && ChannelState::has_autoupdate_source()
         && AppExecutionMode::as_ref(ctx).can_autoupdate()
         && let Err(e) = autoupdate::remove_old_executable()
     {

@@ -29,7 +29,10 @@ fn main() -> Result<()> {
     }
     // neo-warp ships from this binary. Organization sign-in stays inert unless an
     // admin-deployed organization.toml configures it.
-    state = state.with_additional_features(&[warp_core::features::FeatureFlag::OrganizationSignIn]);
+    state = state
+        .with_additional_features(&[warp_core::features::FeatureFlag::OrganizationSignIn])
+        // Keeps neo-warp's settings, sessions, and credentials apart from Warp OSS builds.
+        .with_data_profile("neo-warp");
     ChannelState::set(state);
 
     warp_tui::run()

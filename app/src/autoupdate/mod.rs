@@ -138,7 +138,10 @@ impl AutoupdateState {
         if self.polling_started {
             return;
         }
-        if FeatureFlag::Autoupdate.is_enabled() && AppExecutionMode::as_ref(ctx).can_autoupdate() {
+        if FeatureFlag::Autoupdate.is_enabled()
+            && ChannelState::has_autoupdate_source()
+            && AppExecutionMode::as_ref(ctx).can_autoupdate()
+        {
             log::info!("Starting autoupdate polling loop");
             self.polling_started = true;
             // Initiate the polling loop.

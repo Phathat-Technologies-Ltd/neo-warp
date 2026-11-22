@@ -1615,9 +1615,11 @@ impl AgentInputFooter {
                 if is_conversation_transcript_context {
                     return None;
                 }
+                // Session sharing relays through Warp's service.
                 let enabled = FeatureFlag::CreatingSharedSessions.is_enabled()
                     && FeatureFlag::HOARemoteControl.is_enabled()
-                    && ContextFlag::CreateSharedSession.is_enabled();
+                    && ContextFlag::CreateSharedSession.is_enabled()
+                    && !crate::auth::is_organization_sign_in();
                 if !enabled {
                     return None;
                 }
@@ -2439,9 +2441,11 @@ impl AgentInputFooter {
                 if is_conversation_transcript_context {
                     return None;
                 }
+                // Session sharing relays through Warp's service.
                 let enabled = FeatureFlag::CreatingSharedSessions.is_enabled()
                     && FeatureFlag::HOARemoteControl.is_enabled()
-                    && ContextFlag::CreateSharedSession.is_enabled();
+                    && ContextFlag::CreateSharedSession.is_enabled()
+                    && !crate::auth::is_organization_sign_in();
                 if !enabled {
                     return None;
                 }

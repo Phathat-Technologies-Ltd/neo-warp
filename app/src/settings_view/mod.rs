@@ -365,6 +365,35 @@ impl Display for SettingsSection {
 }
 
 impl SettingsSection {
+    /// Whether the section only works with Warp's own service, which organization builds don't
+    /// use.
+    fn needs_warp_service(self) -> bool {
+        match self {
+            Self::BillingAndUsage
+            | Self::Referrals
+            | Self::SharedBlocks
+            | Self::Teams
+            | Self::WarpDrive
+            | Self::CloudEnvironments
+            | Self::WarpCloudAgentAPIKeys => true,
+            Self::About
+            | Self::Account
+            | Self::Appearance
+            | Self::Features
+            | Self::Keybindings
+            | Self::Privacy
+            | Self::Scripting
+            | Self::Warpify
+            | Self::WarpAgent
+            | Self::AgentProfiles
+            | Self::AgentMCPServers
+            | Self::Knowledge
+            | Self::ThirdPartyCLIAgents
+            | Self::CodeIndexing
+            | Self::EditorAndCodeReview => false,
+        }
+    }
+
     /// Stable identifier for this section, used everywhere the section leaves
     /// the process: the SQLite session-restore key and the
     /// `surface.settings.open --page` warpctrl vocabulary.
@@ -1456,6 +1485,30 @@ impl SettingsView {
                 shared_blocks_index,
                 SettingsNavItem::Page(SettingsSection::Scripting),
             );
+        }
+
+        if crate::auth::is_organization_sign_in() {
+            nav_items = nav_items
+                .into_iter()
+                .filter_map(|item| match item {
+                    SettingsNavItem::Page(section) => {
+                        (!section.needs_warp_service()).then_some(item)
+                    }
+                    SettingsNavItem::Umbrella(umbrella) => {
+                        let subpages = umbrella
+                            .subpages
+                            .into_iter()
+                            .filter(|section| !section.needs_warp_service())
+                            .collect::<Vec<_>>();
+                        (!subpages.is_empty()).then(|| {
+                            SettingsNavItem::Umbrella(SettingsUmbrella::new(
+                                umbrella.label,
+                                subpages,
+                            ))
+                        })
+                    }
+                })
+                .collect();
         }
 
         let initial_page = match page {

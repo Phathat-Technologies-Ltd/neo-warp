@@ -28,7 +28,6 @@ use crate::ai::mcp::FileBasedMCPManager;
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::auth::auth_state::AuthState;
 use crate::auth::{self, AuthStateProvider};
-use crate::server::server_api::auth::UserAuthenticationError;
 use crate::tui_onboarding_markers::TuiOnboardingMarkers;
 
 /// Login state of the headless TUI, observed by the `warp_tui` root view to
@@ -88,7 +87,7 @@ impl TuiLoginModel {
     /// The product name shown to users.
     pub fn product_name() -> &'static str {
         if Self::is_organization_sign_in() {
-            ORGANIZATION_PRODUCT_NAME
+            auth::organization::PRODUCT_NAME
         } else {
             "Warp"
         }
@@ -97,7 +96,7 @@ impl TuiLoginModel {
     /// The name of this terminal front end shown to users.
     pub fn cli_name() -> &'static str {
         if Self::is_organization_sign_in() {
-            ORGANIZATION_PRODUCT_NAME
+            auth::organization::PRODUCT_NAME
         } else {
             "Warp Agent CLI"
         }
@@ -339,7 +338,7 @@ fn handle_auth_manager_event(event: &AuthManagerEvent, ctx: &mut AppContext) {
             auth::log_out(ctx);
             return_to_organization_sign_in(
                 TuiLoginPhase::Failed {
-                    message: SIGN_IN_EXPIRED_MESSAGE.to_owned(),
+                    message: auth::organization::SIGN_IN_EXPIRED_MESSAGE.to_owned(),
                 },
                 ctx,
             );
@@ -376,7 +375,7 @@ fn handle_auth_manager_event(event: &AuthManagerEvent, ctx: &mut AppContext) {
             set_login_phase(
                 ctx,
                 TuiLoginPhase::Failed {
-                    message: login_failure_message(err),
+                    message: auth::organization::login_failure_message(err),
                 },
             );
         }
@@ -465,27 +464,6 @@ pub fn log_out_tui(ctx: &mut AppContext) {
     authorize_device(ctx);
 }
 
-const ORGANIZATION_PRODUCT_NAME: &str = "neo-warp";
-const SIGN_IN_EXPIRED_MESSAGE: &str = "Your sign-in expired. Sign in again to continue.";
-
-fn login_failure_message(err: &UserAuthenticationError) -> String {
-    match err {
-        // A refused refresh means the organization session ended, not a broken login.
-        UserAuthenticationError::DeniedAccessToken(_)
-        | UserAuthenticationError::UserAccountDisabled(_)
-            if organization_sign_in().is_some() =>
-        {
-            SIGN_IN_EXPIRED_MESSAGE.to_owned()
-        }
-        UserAuthenticationError::DeniedAccessToken(_)
-        | UserAuthenticationError::UserAccountDisabled(_)
-        | UserAuthenticationError::InvalidStateParameter
-        | UserAuthenticationError::MissingStateParameter
-        | UserAuthenticationError::DeviceCodeRequestTimedOut { .. }
-        | UserAuthenticationError::OrganizationAccessDenied(_)
-        | UserAuthenticationError::Unexpected(_) => format!("{err:#}"),
-    }
-}
 
 /// Returns an organization-signed-in TUI to its sign-in screen. Organization sign-in has no web
 /// logout to run: the identity provider session belongs to the organization.

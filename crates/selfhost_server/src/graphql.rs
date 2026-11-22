@@ -132,6 +132,10 @@ pub enum Operation {
     GetAvailableHarnesses,
     GetChatGPTConnection,
     TuiOnboardingMarkers,
+    GetAICreditAvailability,
+    GetDiscoverableTeams,
+    GetConversationUsage,
+    GetCloudEnvironmentsQuery,
 }
 
 impl Operation {
@@ -146,6 +150,10 @@ impl Operation {
             "GetAvailableHarnesses" => Self::GetAvailableHarnesses,
             "GetChatGPTConnection" => Self::GetChatGPTConnection,
             "TuiOnboardingMarkers" => Self::TuiOnboardingMarkers,
+            "GetAICreditAvailability" => Self::GetAICreditAvailability,
+            "GetDiscoverableTeams" => Self::GetDiscoverableTeams,
+            "GetConversationUsage" => Self::GetConversationUsage,
+            "GetCloudEnvironmentsQuery" => Self::GetCloudEnvironmentsQuery,
             _ => return None,
         })
     }
@@ -161,8 +169,47 @@ impl Operation {
             Self::GetAvailableHarnesses => get_available_harnesses_response(),
             Self::GetChatGPTConnection => get_chatgpt_connection_response(),
             Self::TuiOnboardingMarkers => tui_onboarding_markers_response(),
+            Self::GetAICreditAvailability => user_output(json!({
+                "aiCreditAvailability": ai_credit_availability(),
+            })),
+            Self::GetDiscoverableTeams => user_output(json!({
+                "discoverableTeams": [],
+                "discoverableWorkspaces": [],
+            })),
+            // Usage history lives with the model provider, not this server.
+            Self::GetConversationUsage => user_output(json!({ "conversationUsage": [] })),
+            Self::GetCloudEnvironmentsQuery => json!({
+                "data": {
+                    "getCloudEnvironments": {
+                        "__typename": "GetCloudEnvironmentsOutput",
+                        "cloudEnvironments": [],
+                        "responseContext": { "serverVersion": null },
+                    },
+                },
+            }),
         }
     }
+}
+
+/// A `user` query answer whose user carries `fields`.
+fn user_output(fields: Value) -> Value {
+    json!({
+        "data": {
+            "user": {
+                "__typename": "UserOutput",
+                "user": fields,
+            },
+        },
+    })
+}
+
+/// Organization users bring their own credentials, so AI is never out of credits.
+fn ai_credit_availability() -> Value {
+    json!({
+        "available": true,
+        "denialReason": "NONE",
+        "creditSource": null,
+    })
 }
 
 /// A null `settings` leaves the client's local settings in charge.
@@ -220,11 +267,7 @@ fn get_workspaces_metadata_response(user: &User) -> Value {
                 "__typename": "UserOutput",
                 "user": {
                     "profile": { "uid": user.uid },
-                    "aiCreditAvailability": {
-                        "available": true,
-                        "denialReason": "NONE",
-                        "creditSource": null,
-                    },
+                    "aiCreditAvailability": ai_credit_availability(),
                     "billingMetadata": null,
                     "workspaces": [],
                     "experiments": [],

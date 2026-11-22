@@ -346,6 +346,11 @@ pub fn remote_server_dir() -> String {
         Channel::Preview => ".warp-preview",
         Channel::Dev | Channel::Integration => ".warp-dev",
         Channel::Local => ".warp-local",
+        // OSS builds with their own data profile (such as neo-warp) also keep their remote
+        // installs apart from Warp's.
+        Channel::Oss if ChannelState::data_profile().is_some() => {
+            return format!("~/{}/remote-server", warp_core::paths::warp_home_config_dir_name());
+        }
         Channel::Oss => {
             // TODO(alokedesai): need to figure out how remote server works with warp-oss
             // For now, return what Dev returns.

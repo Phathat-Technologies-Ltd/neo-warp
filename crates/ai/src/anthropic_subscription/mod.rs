@@ -65,6 +65,21 @@ impl ApiKeyManager {
         apply_anthropic_tokens(self, r, AnthropicTokenSource::AntCli, ctx);
     }
 
+    /// Forgets the Claude login, also signing the `ant` CLI out when the login came from it.
+    pub fn disconnect_anthropic_subscription(&mut self, ctx: &mut ModelContext<Self>) {
+        let from_ant_cli = self
+            .anthropic_tokens()
+            .is_some_and(|tokens| tokens.source == AnthropicTokenSource::AntCli);
+        self.set_anthropic_tokens(None, ctx);
+        if from_ant_cli && let Some(ant) = ant_cli::get() {
+            ctx.spawn(async move { ant.logout().await }, |_, result, _| {
+                if let Err(error) = result {
+                    log::warn!("Couldn't sign the ant CLI out: {error:#}");
+                }
+            });
+        }
+    }
+
     pub fn set_anthropic_refresh_allowed(&mut self, allowed: bool, ctx: &mut ModelContext<Self>) {
         if self.anthropic_refresh_allowed == allowed {
             return;

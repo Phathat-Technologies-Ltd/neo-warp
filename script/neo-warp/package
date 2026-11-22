@@ -54,8 +54,8 @@ cp docs/self-hosted/*.md "$stage/docs/"
 cp LICENSE-AGPL LICENSE-MIT "$stage/"
 
 if [ "$os" = "macos" ] && [ -n "${CODESIGN_IDENTITY:-}" ]; then
-  codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$stage/resources/bin/ant"
-  codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$stage/neo-warp"
+  codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$stage/resources/bin/ant"
+  codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$stage/neo-warp"
 fi
 
 archive="$REPO_ROOT/target/neo-warp/$name.tar.gz"

@@ -40,5 +40,6 @@ toml = "0.8.13"
 
 [dev-dependencies]
 cynic.workspace = true
+tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 warp_graphql.workspace = true
