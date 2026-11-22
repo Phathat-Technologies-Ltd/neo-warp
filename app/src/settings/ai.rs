@@ -1443,6 +1443,16 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.hands_free_voice_commands",
         description: "Whether saying \"send\", \"cancel\", or \"new line\" at the end of an utterance acts as a command in hands-free voice input.",
     },
+    voice_context_correction: VoiceContextCorrection {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.context_correction",
+        description: "Whether voice transcripts are corrected towards file names, branches, and commands visible in the pane.",
+    },
     // The engine that speaks agent replies in voice conversation mode: "kokoro" or "tiny_voca".
     conversation_speech_engine: ConversationSpeechEngine {
         type: String,

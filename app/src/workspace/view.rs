@@ -24930,6 +24930,16 @@ impl TypedActionView for Workspace {
                         .update(ctx, |model, ctx| model.download(window_id, ctx));
                 }
             }
+            RevertVoiceCorrection(id) => {
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                {
+                    let id = *id;
+                    crate::voice::context_correction::VoiceCorrections::handle(ctx)
+                        .update(ctx, |corrections, ctx| corrections.revert(id, ctx));
+                }
+                #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
+                let _ = id;
+            }
             ToggleHandsFreeVoice => {
                 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
                 {
