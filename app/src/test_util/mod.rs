@@ -29,3 +29,35 @@ macro_rules! assert_eventually {
     }};
 }
 pub(crate) use assert_eventually;
+
+/// Registers the voice models views read at construction, as the app does at startup. Skips any
+/// a test already registered.
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+pub fn register_voice_models_for_tests(app: &mut warpui::App) {
+    use crate::voice;
+    use warpui::SingletonEntity as _;
+    app.update(|ctx| {
+        if !ctx.has_singleton_model::<voice::local_model::LocalVoiceModel>() {
+            ctx.add_singleton_model(|_| voice::local_model::LocalVoiceModel::new());
+        }
+        if !ctx.has_singleton_model::<voice::hands_free::HandsFreeSession>() {
+            ctx.add_singleton_model(|_| voice::hands_free::HandsFreeSession::default());
+        }
+        if !ctx.has_singleton_model::<voice::context_correction::VoiceCorrections>() {
+            ctx.add_singleton_model(voice::context_correction::VoiceCorrections::new);
+        }
+        if !ctx.has_singleton_model::<voice::local_model::SpeechOutputModel>() {
+            ctx.add_singleton_model(|ctx| {
+                let engine = voice::local_model::SpeechOutputEngine::from_setting(
+                    &crate::settings::AISettings::as_ref(ctx).conversation_speech_engine,
+                );
+                voice::local_model::SpeechOutputModel::new(engine)
+            });
+        }
+        if ctx.has_singleton_model::<crate::ai::blocklist::BlocklistAIHistoryModel>()
+            && !ctx.has_singleton_model::<voice::conversation::ConversationSession>()
+        {
+            ctx.add_singleton_model(voice::conversation::ConversationSession::new);
+        }
+    });
+}

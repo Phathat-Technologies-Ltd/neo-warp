@@ -266,6 +266,8 @@ pub(crate) fn initialize_app_with_team_client(app: &mut App, team_client: Arc<dy
 
     // Make sure to initialize the keybindings so that they are available for subviews
     app.update(workspace::init);
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    crate::test_util::register_voice_models_for_tests(app);
 }
 
 pub(crate) fn mock_workspace(app: &mut App) -> ViewHandle<Workspace> {
