@@ -451,7 +451,11 @@ fn provider_errors_map_to_reasons_the_user_can_act_on() {
         }
     ));
     assert!(matches!(
-        classify_message_error("Status: 529 Overloaded. Response: overloaded_error", "m", &anthropic()),
+        classify_message_error(
+            "Status: 529 Overloaded. Response: overloaded_error",
+            "m",
+            &anthropic()
+        ),
         TurnError::Unavailable
     ));
 }
@@ -463,7 +467,11 @@ fn custom_provider_errors_name_the_provider_host() {
         TurnError::Internal(message) if message == "api.cerebras.ai refused the request: model not found"
     ));
     assert!(matches!(
-        classify_message_error("Status: 401 Unauthorized. Response: bad key", "llama-4", &cerebras()),
+        classify_message_error(
+            "Status: 401 Unauthorized. Response: bad key",
+            "llama-4",
+            &cerebras()
+        ),
         TurnError::InvalidApiKey {
             provider: api::LlmProvider::Unknown,
             ..
@@ -537,19 +545,18 @@ fn a_custom_model_without_a_key_asks_for_one() {
 #[test]
 fn an_unknown_model_is_refused() {
     let settings = settings_with_custom_provider("gpt-9", "csk-test");
-    assert!(matches!(resolve_model(Some(&settings)), Err(TurnError::Internal(_))));
+    assert!(matches!(
+        resolve_model(Some(&settings)),
+        Err(TurnError::Internal(_))
+    ));
 }
 
 #[test]
 fn custom_schemas_the_server_cannot_call_are_refused() {
     use api::request::settings::custom_model_providers::CustomEndpointSchema;
     let mut settings = settings_with_custom_provider("cerebras:qwen-3-coder", "csk-test");
-    settings
-        .custom_model_providers
-        .as_mut()
-        .unwrap()
-        .providers[0]
-        .schema = CustomEndpointSchema::OpenaiResponses as i32;
+    settings.custom_model_providers.as_mut().unwrap().providers[0].schema =
+        CustomEndpointSchema::OpenaiResponses as i32;
     assert!(matches!(
         resolve_model(Some(&settings)),
         Err(TurnError::Internal(message)) if message.contains("OPENAI_RESPONSES")

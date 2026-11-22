@@ -5176,8 +5176,11 @@ impl ApiKeysWidget {
         let provider_api_key_editors = LLMProvider::API_KEY_PROVIDERS
             .into_iter()
             .filter(|provider| provider.supports_pasted_api_key())
-            // Organization builds' agent only calls Anthropic.
-            .filter(|provider| !is_organization || *provider == LLMProvider::Anthropic)
+            // Organization builds' agent calls Anthropic and Cerebras only.
+            .filter(|provider| {
+                !is_organization
+                    || matches!(provider, LLMProvider::Anthropic | LLMProvider::Cerebras)
+            })
             .map(|provider| {
                 let key = provider
                     .api_key(ApiKeyManager::as_ref(ctx).keys())

@@ -967,13 +967,17 @@ fn custom_endpoint_connected(id: &CustomEndpointId, ctx: &AppContext) -> bool {
 }
 
 fn all_rows(ctx: &AppContext) -> Vec<TuiApiKeysRow> {
-    // Organization builds' agent only calls Anthropic and has no Warp credits to fall back on.
+    // Organization builds' agent calls Anthropic and Cerebras only and has no Warp credits to
+    // fall back on.
     if TuiLoginModel::is_organization_sign_in() {
-        return vec![TuiApiKeysRow {
-            kind: TuiApiKeysRowKind::Provider(LLMProvider::Anthropic),
-            title: "Anthropic API key".to_owned(),
-            is_selectable: true,
-        }];
+        return vec![
+            TuiApiKeysRow {
+                kind: TuiApiKeysRowKind::Provider(LLMProvider::Anthropic),
+                title: "Anthropic API key".to_owned(),
+                is_selectable: true,
+            },
+            cerebras_row(),
+        ];
     }
     let mut rows = vec![
         TuiApiKeysRow {
@@ -996,6 +1000,7 @@ fn all_rows(ctx: &AppContext) -> Vec<TuiApiKeysRow> {
             title: "X premium or SuperGrok subscription".to_owned(),
             is_selectable: true,
         },
+        cerebras_row(),
     ];
     let manager = ApiKeyManager::as_ref(ctx);
     if !manager.custom_endpoint_settings_valid() {
@@ -1025,6 +1030,14 @@ fn all_rows(ctx: &AppContext) -> Vec<TuiApiKeysRow> {
     });
     rows
 }
+fn cerebras_row() -> TuiApiKeysRow {
+    TuiApiKeysRow {
+        kind: TuiApiKeysRowKind::Provider(LLMProvider::Cerebras),
+        title: "Cerebras API key".to_owned(),
+        is_selectable: true,
+    }
+}
+
 fn provider_row_index(rows: &[TuiApiKeysRow], provider: LLMProvider) -> Option<usize> {
     rows.iter()
         .position(|row| row.kind == TuiApiKeysRowKind::Provider(provider))

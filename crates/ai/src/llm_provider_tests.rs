@@ -19,7 +19,10 @@ fn only_pasted_key_providers_report_pasted_key_support() {
             provider.supports_pasted_api_key(),
             matches!(
                 provider,
-                LLMProvider::OpenAI | LLMProvider::Anthropic | LLMProvider::Google
+                LLMProvider::OpenAI
+                    | LLMProvider::Anthropic
+                    | LLMProvider::Google
+                    | LLMProvider::Cerebras
             )
         );
     }

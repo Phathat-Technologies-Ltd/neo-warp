@@ -18,6 +18,7 @@ use warpui_extras::secure_storage::{self, AppContextExt};
 
 use crate::LLMProvider;
 pub use crate::aws_credentials::{AwsCredentials, AwsCredentialsState};
+use crate::cerebras;
 #[cfg(not(target_family = "wasm"))]
 pub use crate::geap_credentials::GeapRefreshOutcome;
 pub use crate::geap_credentials::{
@@ -92,6 +93,7 @@ pub struct ApiKeys {
     pub anthropic: Option<String>,
     pub openai: Option<String>,
     pub open_router: Option<String>,
+    pub cerebras: Option<String>,
     pub custom_endpoints: Vec<CustomEndpoint>,
 }
 
@@ -438,6 +440,7 @@ impl ApiKeys {
             || self.anthropic.is_some()
             || self.google.is_some()
             || self.open_router.is_some()
+            || self.cerebras.is_some()
             || self
                 .custom_endpoints
                 .iter()
@@ -445,7 +448,7 @@ impl ApiKeys {
     }
 
     /// Number of single-provider API keys currently configured (OpenAI,
-    /// Anthropic, Google, OpenRouter). Custom endpoints are counted separately
+    /// Anthropic, Google, OpenRouter, Cerebras). Custom endpoints are counted separately
     /// via `custom_endpoints`.
     pub fn provider_key_count(&self) -> usize {
         [
@@ -453,6 +456,7 @@ impl ApiKeys {
             &self.anthropic,
             &self.google,
             &self.open_router,
+            &self.cerebras,
         ]
         .into_iter()
         .filter(|key| key.as_deref().is_some_and(|v| !v.trim().is_empty()))
@@ -615,6 +619,10 @@ struct CustomEndpointState {
 pub struct ApiKeyManager {
     keys: ApiKeys,
     custom_endpoints: CustomEndpointState,
+    /// The models the stored Cerebras key may use, as Cerebras last listed them.
+    cerebras_models: Vec<String>,
+    /// Counts Cerebras model-list fetches so only the latest one's answer is kept.
+    cerebras_models_generation: u64,
     /// OAuth tokens for a connected xAI/Grok subscription, if any. Persisted
     /// separately from `keys` under [`GROK_SECURE_STORAGE_KEY`];
     /// `crate::grok_subscription` keeps these fresh.
@@ -688,7 +696,7 @@ fn provider_telemetry_provider(
         LLMProvider::Anthropic => Some(ProviderCredentialTelemetryProvider::Anthropic),
         LLMProvider::Google => Some(ProviderCredentialTelemetryProvider::Google),
         LLMProvider::Xai => Some(ProviderCredentialTelemetryProvider::Xai),
-        LLMProvider::Unknown => None,
+        LLMProvider::Cerebras | LLMProvider::Unknown => None,
     }
 }
 
@@ -718,7 +726,7 @@ impl ApiKeyManager {
         let resolved_custom_endpoints = keys.custom_endpoints.clone();
         let grok_tokens = Self::load_grok_tokens_from_secure_storage(ctx);
         let anthropic_tokens = Self::load_anthropic_tokens_from_secure_storage(ctx);
-        Self {
+        let mut manager = Self {
             keys,
             custom_endpoints: CustomEndpointState {
                 definitions: None,
@@ -726,6 +734,8 @@ impl ApiKeyManager {
                 keys: custom_endpoint_keys,
                 resolved: resolved_custom_endpoints,
             },
+            cerebras_models: Vec::new(),
+            cerebras_models_generation: 0,
             grok_tokens,
             anthropic_tokens,
             send_anthropic_oauth_as_api_key: false,
@@ -749,15 +759,70 @@ impl ApiKeyManager {
             secure_storage_write_version: 0,
             grok_secure_storage_write_version: 0,
             anthropic_secure_storage_write_version: 0,
-        }
+        };
+        manager.refresh_cerebras_models(ctx);
+        manager
     }
 
     pub fn keys(&self) -> &ApiKeys {
         &self.keys
     }
 
+    /// The user's own custom endpoints, as configured in settings.
     pub fn custom_endpoints(&self) -> &[CustomEndpoint] {
         &self.custom_endpoints.resolved
+    }
+
+    /// Every endpoint whose models the user can pick: their custom endpoints, then Cerebras when
+    /// its key is stored and Cerebras has listed the models it may use.
+    pub fn model_endpoints(&self) -> Vec<CustomEndpoint> {
+        let mut endpoints = self.custom_endpoints.resolved.clone();
+        if let Some(key) = self.keys.cerebras.as_deref()
+            && !self.cerebras_models.is_empty()
+        {
+            endpoints.push(cerebras::endpoint(key, &self.cerebras_models));
+        }
+        endpoints
+    }
+
+    /// Lists the models the stored Cerebras key may use, replacing the previous list when
+    /// Cerebras answers. Clears the list when no key is stored.
+    pub fn refresh_cerebras_models(&mut self, ctx: &mut ModelContext<Self>) {
+        self.cerebras_models_generation += 1;
+        let Some(key) = self.keys.cerebras.clone() else {
+            if !self.cerebras_models.is_empty() {
+                self.cerebras_models.clear();
+                ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+            }
+            return;
+        };
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let generation = self.cerebras_models_generation;
+            ctx.spawn(cerebras::fetch_models(key), move |me, result, ctx| {
+                if me.cerebras_models_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(models) => {
+                        log::info!("Cerebras lists {} models for this key", models.len());
+                        if me.cerebras_models != models {
+                            me.cerebras_models = models;
+                            ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("Couldn't list Cerebras models: {error:#}");
+                        if !me.cerebras_models.is_empty() {
+                            me.cerebras_models.clear();
+                            ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+                        }
+                    }
+                }
+            });
+        }
+        #[cfg(target_family = "wasm")]
+        let _ = key;
     }
 
     pub fn custom_endpoint_definitions(&self) -> Option<&CustomEndpointDefinitions> {
@@ -853,10 +918,14 @@ impl ApiKeyManager {
         if self.keys == keys && self.custom_endpoints.keys == custom_endpoint_keys {
             return;
         }
+        let cerebras_key_changed = self.keys.cerebras != keys.cerebras;
         self.keys = keys;
         self.custom_endpoints.keys = custom_endpoint_keys;
         self.rebuild_custom_endpoints();
         ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        if cerebras_key_changed {
+            self.refresh_cerebras_models(ctx);
+        }
     }
 
     /// Persists a provider API key before publishing the updated in-memory value.
@@ -885,6 +954,9 @@ impl ApiKeyManager {
             let is_present = provider.api_key(&keys).is_some();
             self.keys = keys;
             ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+            if provider == LLMProvider::Cerebras {
+                self.refresh_cerebras_models(ctx);
+            }
             if was_present != is_present {
                 send_provider_credential_telemetry(
                     provider,
@@ -1078,11 +1150,17 @@ impl ApiKeyManager {
         ctx: &mut ModelContext<Self>,
     ) {
         let was_present = provider.api_key(&self.keys).is_some();
+        let previous_key = provider.api_key(&self.keys).map(str::to_owned);
         if !provider.set_api_key(&mut self.keys, key) {
             return;
         }
         ctx.emit(ApiKeyManagerEvent::KeysUpdated);
         self.write_keys_to_secure_storage(ctx);
+        if provider == LLMProvider::Cerebras
+            && previous_key.as_deref() != provider.api_key(&self.keys)
+        {
+            self.refresh_cerebras_models(ctx);
+        }
         let is_present = provider.api_key(&self.keys).is_some();
         if was_present != is_present {
             send_provider_credential_telemetry(
@@ -1238,8 +1316,7 @@ impl ApiKeyManager {
         }
 
         let providers: Vec<_> = self
-            .custom_endpoints
-            .resolved
+            .model_endpoints()
             .iter()
             .filter(|endpoint| !endpoint.url.trim().is_empty() && !endpoint.api_key.is_empty())
             .map(

@@ -26,13 +26,13 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use warp_multi_agent_api as api;
-use warp_multi_agent_api::request::settings::custom_model_providers::CustomEndpointSchema;
 use warp_multi_agent_api::client_action::{
     self, AddMessagesToTask, AppendToMessageContent, CreateTask, UpdateTaskServerData,
 };
 use warp_multi_agent_api::message::{
     AgentOutput, Message as Kind, ToolCall, ToolCallResult, UserQuery,
 };
+use warp_multi_agent_api::request::settings::custom_model_providers::CustomEndpointSchema;
 
 use super::{prompt, tools};
 
@@ -54,9 +54,14 @@ enum TurnError {
 /// Where the selected model runs, with the user's credential for it.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ModelEndpoint {
-    Anthropic { credential: String },
+    Anthropic {
+        credential: String,
+    },
     /// A user-configured endpoint that speaks OpenAI Chat Completions.
-    OpenAiChatCompletions { base_url: String, api_key: String },
+    OpenAiChatCompletions {
+        base_url: String,
+        api_key: String,
+    },
 }
 
 impl ModelEndpoint {
@@ -80,8 +85,7 @@ impl ModelEndpoint {
 }
 
 /// Builds the model provider for an endpoint.
-pub type ProviderFactory =
-    Arc<dyn Fn(&ModelEndpoint) -> Result<Arc<dyn Provider>> + Send + Sync>;
+pub type ProviderFactory = Arc<dyn Fn(&ModelEndpoint) -> Result<Arc<dyn Provider>> + Send + Sync>;
 
 /// Runs one turn and sends its events to `out`. Always ends with `StreamFinished`.
 pub async fn run(request: api::Request, out: mpsc::UnboundedSender<api::ResponseEvent>) {
@@ -284,8 +288,7 @@ impl Stream {
         );
         let system_prompt = prompt::system_prompt(input.context.as_ref());
 
-        let provider =
-            make_provider(&endpoint).map_err(|error| internal(format!("{error:#}")))?;
+        let provider = make_provider(&endpoint).map_err(|error| internal(format!("{error:#}")))?;
         let messages = self
             .run_agent(messages, &model, &endpoint, provider, tools, system_prompt)
             .await?;

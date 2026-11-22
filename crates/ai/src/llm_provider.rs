@@ -10,13 +10,19 @@ pub enum LLMProvider {
     Anthropic,
     Google,
     Xai,
+    Cerebras,
     Unknown,
 }
 
 impl LLMProvider {
-    pub const API_KEY_PROVIDERS: [Self; 4] =
-        [Self::OpenAI, Self::Anthropic, Self::Google, Self::Xai];
-    pub const API_KEY_PROVIDER_VALUE_NAME: &'static str = "openai|anthropic|google|grok";
+    pub const API_KEY_PROVIDERS: [Self; 5] = [
+        Self::OpenAI,
+        Self::Anthropic,
+        Self::Google,
+        Self::Xai,
+        Self::Cerebras,
+    ];
+    pub const API_KEY_PROVIDER_VALUE_NAME: &'static str = "openai|anthropic|google|grok|cerebras";
 
     pub fn icon(self) -> Option<Icon> {
         match self {
@@ -24,11 +30,14 @@ impl LLMProvider {
             Self::Anthropic => Some(Icon::ClaudeLogo),
             Self::Google => Some(Icon::GeminiLogo),
             Self::Xai => Some(Icon::GrokLogo),
-            Self::Unknown => None,
+            Self::Cerebras | Self::Unknown => None,
         }
     }
     pub fn supports_pasted_api_key(self) -> bool {
-        matches!(self, Self::OpenAI | Self::Anthropic | Self::Google)
+        matches!(
+            self,
+            Self::OpenAI | Self::Anthropic | Self::Google | Self::Cerebras
+        )
     }
 
     pub fn api_key_placeholder(self) -> Option<&'static str> {
@@ -36,6 +45,7 @@ impl LLMProvider {
             Self::OpenAI => Some("sk-..."),
             Self::Anthropic => Some("sk-ant-..."),
             Self::Google => Some("AIzaSy..."),
+            Self::Cerebras => Some("csk-..."),
             Self::Xai | Self::Unknown => None,
         }
     }
@@ -46,6 +56,7 @@ impl LLMProvider {
             Self::Anthropic => "Anthropic",
             Self::Google => "Google",
             Self::Xai => "xAI",
+            Self::Cerebras => crate::cerebras::DISPLAY_NAME,
             Self::Unknown => "this provider",
         }
     }
@@ -56,6 +67,7 @@ impl LLMProvider {
             Self::Anthropic => Some("anthropic"),
             Self::Google => Some("google"),
             Self::Xai => Some("grok"),
+            Self::Cerebras => Some("cerebras"),
             Self::Unknown => None,
         }
     }
@@ -66,7 +78,10 @@ impl LLMProvider {
             "anthropic" => Ok(Self::Anthropic),
             "google" => Ok(Self::Google),
             "grok" | "xai" | "x-ai" => Ok(Self::Xai),
-            _ => Err("provider must be one of: anthropic, openai, google, grok".to_owned()),
+            "cerebras" => Ok(Self::Cerebras),
+            _ => {
+                Err("provider must be one of: anthropic, openai, google, grok, cerebras".to_owned())
+            }
         }
     }
 
@@ -75,6 +90,7 @@ impl LLMProvider {
             Self::OpenAI => keys.openai.as_deref(),
             Self::Anthropic => keys.anthropic.as_deref(),
             Self::Google => keys.google.as_deref(),
+            Self::Cerebras => keys.cerebras.as_deref(),
             Self::Xai | Self::Unknown => None,
         }
     }
@@ -84,6 +100,7 @@ impl LLMProvider {
             Self::OpenAI => keys.openai = key,
             Self::Anthropic => keys.anthropic = key,
             Self::Google => keys.google = key,
+            Self::Cerebras => keys.cerebras = key,
             Self::Xai | Self::Unknown => return false,
         }
         true

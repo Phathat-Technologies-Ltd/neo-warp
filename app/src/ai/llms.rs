@@ -4,6 +4,7 @@ use std::sync::{Arc, OnceLock};
 use ai::api_keys::{
     ApiKeyManager, ApiKeyManagerEvent, ChatGPTConnectionStatus, CustomEndpoint, CustomEndpointModel,
 };
+use ai::cerebras;
 pub use ai::{LLMId, LLMProvider};
 use parking_lot::FairMutex;
 use serde::{Deserialize, Serialize, de};
@@ -59,6 +60,7 @@ pub fn is_using_api_key_for_provider_in_conversation(
         }
         LLMProvider::Google => manager.keys().google.is_some(),
         LLMProvider::Xai => manager.grok_tokens().is_some(),
+        LLMProvider::Cerebras => manager.keys().cerebras.is_some(),
         LLMProvider::Unknown => false,
     }
 }
@@ -949,7 +951,7 @@ impl LLMPreferences {
         }
 
         let base_llm_for_terminal_view = HashMap::new();
-        let custom_llms = build_custom_llm_infos(ApiKeyManager::as_ref(ctx).custom_endpoints());
+        let custom_llms = build_custom_llm_infos(&ApiKeyManager::as_ref(ctx).model_endpoints());
 
         let mut me = Self {
             agent_mode_models_unavailable: HashMap::new(),
@@ -1725,7 +1727,7 @@ impl LLMPreferences {
     /// with synthetic `LLMInfo`s. Called on every `ApiKeyManagerEvent::KeysUpdated`, so adds,
     /// edits, and removals all propagate immediately.
     fn rebuild_custom_llms(&mut self, app: &AppContext) {
-        self.custom_llms = build_custom_llm_infos(ApiKeyManager::as_ref(app).custom_endpoints());
+        self.custom_llms = build_custom_llm_infos(&ApiKeyManager::as_ref(app).model_endpoints());
     }
 
     fn sanitize_disabled_custom_model_preferences(&mut self, ctx: &mut ModelContext<Self>) {
@@ -2545,6 +2547,21 @@ fn build_custom_llm_infos(endpoints: &[CustomEndpoint]) -> Vec<LLMInfo> {
 
 fn custom_llm_info_from(endpoint: &CustomEndpoint, model: &CustomEndpointModel) -> LLMInfo {
     let label = model.display_label().to_owned();
+    // Not every Cerebras model accepts images, and its model list doesn't say which do.
+    let (description, provider, vision_supported) =
+        if cerebras::is_cerebras_config_key(&model.config_key) {
+            (
+                cerebras::DISPLAY_NAME.to_owned(),
+                LLMProvider::Cerebras,
+                false,
+            )
+        } else {
+            (
+                format!("Custom · {}", endpoint.name),
+                LLMProvider::Unknown,
+                true,
+            )
+        };
     LLMInfo {
         display_name: label.clone(),
         base_model_name: label,
@@ -2554,11 +2571,11 @@ fn custom_llm_info_from(endpoint: &CustomEndpoint, model: &CustomEndpointModel) 
             request_multiplier: 1,
             credit_multiplier: None,
         },
-        description: Some(format!("Custom · {}", endpoint.name)),
+        description: Some(description),
         disable_reason: None,
-        vision_supported: true,
+        vision_supported,
         spec: None,
-        provider: LLMProvider::Unknown,
+        provider,
         host_configs: HashMap::new(),
         discount_percentage: None,
         context_window: LLMContextWindow::default(),

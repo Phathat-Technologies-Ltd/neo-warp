@@ -140,7 +140,7 @@ fn persisted_provider_api_key_can_be_cleared() {
 fn llm_provider_rejects_unsupported_api_key_provider() {
     assert_eq!(
         LLMProvider::from_api_key_slug("openrouter"),
-        Err("provider must be one of: anthropic, openai, google, grok".to_owned())
+        Err("provider must be one of: anthropic, openai, google, grok, cerebras".to_owned())
     );
 }
 
@@ -168,6 +168,58 @@ fn custom_model_providers_preserves_configured_schema() {
     );
 }
 
+#[test]
+fn cerebras_models_are_sent_as_a_chat_completions_provider_after_custom_endpoints() {
+    let mut mgr = make_manager(ApiKeys {
+        cerebras: Some("csk-test".into()),
+        custom_endpoints: vec![endpoint_with_keys(
+            "Mine",
+            "https://custom.io",
+            "ep-key",
+            &[("my-model", None, "uuid-1")],
+        )],
+        ..Default::default()
+    });
+    assert_eq!(
+        mgr.custom_model_providers_for_request(true)
+            .expect("the custom endpoint should be sent")
+            .providers
+            .len(),
+        1,
+        "Cerebras is offered only once it has listed its models"
+    );
+
+    mgr.cerebras_models = vec!["qwen-3-coder-480b".to_owned()];
+    let providers = mgr
+        .custom_model_providers_for_request(true)
+        .expect("both endpoints should be sent")
+        .providers;
+    assert_eq!(providers.len(), 2);
+    let cerebras = &providers[1];
+    assert_eq!(cerebras.base_url, crate::cerebras::BASE_URL);
+    assert_eq!(cerebras.api_key, "csk-test");
+    assert_eq!(
+        cerebras.schema,
+        CustomEndpointSchema::OpenaiChatCompletions as i32
+    );
+    assert_eq!(cerebras.models[0].slug, "qwen-3-coder-480b");
+    assert!(crate::cerebras::is_cerebras_config_key(
+        &cerebras.models[0].config_key
+    ));
+    assert_eq!(
+        mgr.custom_endpoints().len(),
+        1,
+        "settings list only the user's endpoints"
+    );
+}
+
+#[test]
+fn cerebras_models_are_not_sent_without_a_key() {
+    let mut mgr = make_manager(ApiKeys::default());
+    mgr.cerebras_models = vec!["qwen-3-coder-480b".to_owned()];
+    assert!(mgr.custom_model_providers_for_request(true).is_none());
+}
+
 fn make_manager_with_grok(keys: ApiKeys, grok_tokens: Option<GrokTokens>) -> ApiKeyManager {
     let custom_endpoints = keys.custom_endpoints.clone();
     ApiKeyManager {
@@ -178,6 +230,8 @@ fn make_manager_with_grok(keys: ApiKeys, grok_tokens: Option<GrokTokens>) -> Api
             keys: HashMap::new(),
             resolved: custom_endpoints,
         },
+        cerebras_models: Vec::new(),
+        cerebras_models_generation: 0,
         grok_tokens,
         anthropic_tokens: None,
         send_anthropic_oauth_as_api_key: false,
@@ -478,6 +532,7 @@ fn serde_round_trip_with_provider_keys() {
         anthropic: Some("sk-ant-abc".into()),
         google: Some("AIzaSy123".into()),
         open_router: Some("sk-or-xxx".into()),
+        cerebras: Some("csk-xxx".into()),
         custom_endpoints: vec![],
     };
     let json = serde_json::to_string(&keys).unwrap();
@@ -492,6 +547,7 @@ fn serde_round_trip_with_custom_endpoints() {
         anthropic: None,
         google: None,
         open_router: None,
+        cerebras: None,
         custom_endpoints: vec![
             endpoint("ep1", "https://a.io/v1", "key1", &[("gpt-4", Some("fast"))]),
             endpoint(
@@ -571,6 +627,7 @@ fn provider_key_count_counts_each_provider_key() {
         anthropic: Some("sk-a".into()),
         google: Some("AIza".into()),
         open_router: Some("sk-or".into()),
+        cerebras: None,
         custom_endpoints: vec![],
     };
     assert_eq!(keys.provider_key_count(), 4);
@@ -583,6 +640,7 @@ fn provider_key_count_ignores_blank_keys_and_endpoints() {
         anthropic: Some("   ".into()),
         google: None,
         open_router: None,
+        cerebras: None,
         custom_endpoints: vec![endpoint("ep", "https://a.io", "k", &[("m", None)])],
     };
     // Only the non-blank OpenAI key counts; the whitespace Anthropic key and the
