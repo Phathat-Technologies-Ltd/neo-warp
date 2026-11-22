@@ -34,3 +34,20 @@ fn search_runs_zg_in_the_workspace() {
     zg.index(dir.path()).unwrap();
     assert_eq!(zg.search(dir.path(), "query", 5).unwrap(), [A]);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_hung_zg_is_killed_after_its_timeout() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("zg");
+    std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let timeout = Duration::from_millis(200);
+    let zg = ZvecGrep::with_timeouts(script.into_os_string(), timeout, timeout);
+    let started = Instant::now();
+    assert!(zg.index(dir.path()).is_err());
+    assert!(zg.search(dir.path(), "query", 5).is_err());
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
