@@ -40,7 +40,7 @@ neo-warp often don't want.
 2. If the model isn't downloaded, recording doesn't start. A toast says: "Voice input is
    transcribed on this computer by Parakeet TDT 0.6B v3. Download the model (671 MB)? Nothing is
    downloaded until you choose to." with a **Download** link.
-3. Clicking **Download** starts the download. Dismissing the toast downloads nothing; the next
+3. Clicking **Download** starts the download and closes the toast. Dismissing the toast downloads nothing; the next
    recording attempt asks again.
 4. While the model downloads, a recording attempt shows "The speech model is still downloading
    (NN%)." and doesn't record.
@@ -72,11 +72,13 @@ model and any partial download.
 
 ## Gating
 
-All of the above is behind the `NeoVoiceInput` feature flag (on in neo-warp builds and dogfood)
-and only applies when the embedded server is running (organization config without
-`server_url`). When the flag is off, or the app uses a remote server, the Speech Model row and the
-download prompt never appear and the app calls nothing new. Voice input itself stays under the
-existing voice setting and `voice_input` build feature.
+Local transcription only applies when the embedded server is running (organization config
+without `server_url`) and the organization's `voice_input` flag is on. When an organization turns
+`voice_input` off, voice input disappears entirely: no mic button, no Voice section in Settings
+(so no Speech Model row), no download prompt, no voice keybinding or palette entry, and the app
+never calls `/ai/transcribe` or downloads the model. With a remote server, the Speech Model row
+and the download prompt never appear. Voice input itself also stays under the existing voice
+setting and `voice_input` build feature.
 
 ## Languages
 

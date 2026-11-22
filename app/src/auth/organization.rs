@@ -35,6 +35,11 @@ pub(crate) fn init() {
     } else {
         OrganizationConfig::default()
     };
+    if config.sign_in.is_some() {
+        // Before the embedded server starts, since the voice input flag decides whether it
+        // transcribes locally.
+        apply_org_flags(&OrgFlags::load(ChannelState::enable_debug_features()));
+    }
     let server_url = match (&config.server_url, &config.sign_in) {
         (Some(server_url), _) => Some(server_url.trim_end_matches('/').to_owned()),
         (None, Some(sign_in)) => start_embedded_server(sign_in),
@@ -52,9 +57,6 @@ pub(crate) fn init() {
         // The SSH extension installs a Linux build of the app on the remote host, downloaded from
         // the server; only the embedded server, from builds bundled with the app, offers them.
         FeatureFlag::SshRemoteServer.set_enabled(false);
-    }
-    if config.sign_in.is_some() {
-        apply_org_flags(&OrgFlags::load(ChannelState::enable_debug_features()));
     }
     let _ = ORGANIZATION_CONFIG.set(config);
 }
@@ -173,7 +175,7 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
 
 /// The on-device speech engine for `/ai/transcribe`, when local voice input is on.
 fn local_transcriber() -> Option<std::sync::Arc<dyn local_transcription::Transcriber>> {
-    if !FeatureFlag::NeoVoiceInput.is_enabled() {
+    if !FeatureFlag::VoiceInput.is_enabled() {
         return None;
     }
     crate::voice::local_model::mark_served_locally();

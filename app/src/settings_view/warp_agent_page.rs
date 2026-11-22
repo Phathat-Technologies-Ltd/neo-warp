@@ -2502,6 +2502,7 @@ impl WarpAgentPageView {
         ));
 
         let voice_supported = cfg!(feature = "voice_input")
+            && FeatureFlag::VoiceInput.is_enabled()
             && ai_settings
                 .voice_input_enabled_internal
                 .is_supported_on_current_platform();
@@ -4445,7 +4446,7 @@ impl VoiceWidget {
         let model = LocalVoiceModel::as_ref(app);
         let size = format_megabytes(model.download_size());
         let (description, button_label, action) = match state {
-            ModelState::NotInstalled | ModelState::AwaitingConsent | ModelState::Declined => (
+            ModelState::NotInstalled | ModelState::AwaitingConsent => (
                 format!(
                     "{} runs on this computer. Not downloaded ({size}).",
                     model.display_name()
@@ -4506,7 +4507,9 @@ impl SettingsWidget for VoiceWidget {
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
-        cfg!(feature = "voice_input") && UserWorkspaces::as_ref(app).is_voice_enabled()
+        cfg!(feature = "voice_input")
+            && FeatureFlag::VoiceInput.is_enabled()
+            && UserWorkspaces::as_ref(app).is_voice_enabled()
     }
 
     fn render(
