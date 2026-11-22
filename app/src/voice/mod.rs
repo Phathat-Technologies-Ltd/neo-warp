@@ -3,6 +3,8 @@ pub mod conversation;
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 mod conversation_text;
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+pub mod footer_controls;
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 pub mod hands_free;
 #[cfg(not(target_family = "wasm"))]
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
