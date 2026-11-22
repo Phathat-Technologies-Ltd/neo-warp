@@ -109,6 +109,37 @@ redact_patterns = ["corp-[0-9]{6}"]
 
 Turn the feature off with the `session_recording` flag; see [feature-flags.md](feature-flags.md).
 
+### MCP server sign-in (OAuth)
+
+When an MCP server (or an MCP gateway such as Runlayer) asks for OAuth, neo-warp registers
+itself with the server's authorization server through dynamic client registration as
+**`neo-warp`**, a public client using PKCE, and redirects the browser back to a loopback address
+on the user's computer (RFC 8252):
+
+```
+http://127.0.0.1:<port>/callback
+```
+
+By default the port is chosen by the operating system for each sign-in, and the exact redirect
+URI is registered each time. If your gateway approves redirect URIs by policy:
+
+- Allow loopback redirects `http://127.0.0.1:*/callback` (RFC 8252 §7.3 says authorization
+  servers should accept any port on a loopback redirect), and the client name `neo-warp`.
+- If it can only approve one exact URI, pin the port (and optionally the host) in
+  `organization.toml` and approve that URI, e.g. `http://127.0.0.1:53682/callback`:
+
+  ```toml
+  [mcp_oauth]
+  redirect_port = 53682
+  # redirect_host = "localhost"   # default "127.0.0.1"
+  ```
+
+  With a pinned port, only one MCP sign-in can run at a time.
+
+If the loopback listener can't bind (the port is in use), the desktop app falls back to its URL
+scheme redirect (`warposs://mcp/oauth2callback`), which a loopback-only gateway will reject; free
+the port and retry.
+
 ## Security model
 
 - Sign-in tokens are validated against your identity provider's signing keys (issuer, audience,

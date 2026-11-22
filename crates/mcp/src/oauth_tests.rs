@@ -51,8 +51,7 @@ async fn send_loopback_callback(redirect_uri: &str, query: &str) -> String {
 
 #[tokio::test]
 async fn loopback_callback_accepts_matching_state() {
-    let receiver = loopback::LoopbackOAuthReceiver::bind()
-        .await
+    let receiver = loopback::LoopbackOAuthReceiver::bind(LoopbackSettings::default())
         .expect("loopback receiver should bind");
     let redirect_uri = receiver.redirect_uri().to_string();
     let callback = tokio::spawn(async move {
@@ -82,8 +81,7 @@ async fn loopback_callback_accepts_matching_state() {
 
 #[tokio::test]
 async fn loopback_callback_rejects_mismatched_state() {
-    let receiver = loopback::LoopbackOAuthReceiver::bind()
-        .await
+    let receiver = loopback::LoopbackOAuthReceiver::bind(LoopbackSettings::default())
         .expect("loopback receiver should bind");
     let redirect_uri = receiver.redirect_uri().to_string();
     let callback = tokio::spawn(async move {
@@ -103,10 +101,77 @@ async fn loopback_callback_rejects_mismatched_state() {
     );
 }
 
+#[test]
+fn loopback_redirect_uri_uses_the_ipv4_literal_by_default() {
+    let receiver = loopback::LoopbackOAuthReceiver::bind(LoopbackSettings::default())
+        .expect("loopback receiver should bind");
+    let url = Url::parse(receiver.redirect_uri()).expect("redirect should parse");
+    assert_eq!(url.scheme(), "http");
+    assert_eq!(url.host_str(), Some("127.0.0.1"));
+    assert_ne!(url.port(), Some(0));
+    assert_eq!(url.path(), "/callback");
+}
+
+#[test]
+fn loopback_redirect_uri_honors_a_configured_host_and_port() {
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|listener| listener.local_addr())
+        .expect("should find a free port")
+        .port();
+    let receiver = loopback::LoopbackOAuthReceiver::bind(LoopbackSettings {
+        port: Some(port),
+        host: LoopbackRedirectHost::Localhost,
+    })
+    .expect("loopback receiver should bind");
+    assert_eq!(
+        receiver.redirect_uri(),
+        format!("http://localhost:{port}/callback")
+    );
+}
+
+#[test]
+fn loopback_falls_back_to_the_custom_scheme_when_the_port_is_taken() {
+    let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("should bind a port");
+    let port = taken.local_addr().expect("should read the port").port();
+    let (_tx, result_rx) = async_channel::unbounded();
+    let settings = LoopbackSettings {
+        port: Some(port),
+        host: LoopbackRedirectHost::Ipv4Literal,
+    };
+    let prepared = OAuthCallbackMode::Loopback {
+        settings,
+        fallback: Some(CustomSchemeCallback {
+            redirect_uri: "warposs://mcp/oauth2callback".to_owned(),
+            result_rx,
+        }),
+    }
+    .prepare()
+    .unwrap_or_else(|_| panic!("fallback should be used"));
+    assert!(!prepared.uses_loopback());
+    assert_eq!(prepared.redirect_uri, "warposs://mcp/oauth2callback");
+
+    assert!(
+        OAuthCallbackMode::Loopback {
+            settings,
+            fallback: None
+        }
+        .prepare()
+        .is_err()
+    );
+}
+
+#[test]
+fn dcr_request_registers_neo_warp_with_the_redirect_uri() {
+    let request = dcr_request("http://127.0.0.1:4567/callback");
+    assert_eq!(request.client_name.as_deref(), Some("neo-warp"));
+    assert_eq!(request.redirect_uri, "http://127.0.0.1:4567/callback");
+}
+
 #[derive(Clone, Default)]
 struct FakeOAuthState {
     origin: String,
     registered_redirect_uri: Arc<Mutex<Option<String>>>,
+    registered_client_name: Arc<Mutex<Option<String>>>,
 }
 
 async fn protected_resource_metadata(
@@ -144,6 +209,11 @@ async fn register_client(
         .expect("DCR request should contain a redirect URI")
         .to_string();
     *state
+        .registered_client_name
+        .lock()
+        .expect("client name state should lock") =
+        request["client_name"].as_str().map(str::to_owned);
+    *state
         .registered_redirect_uri
         .lock()
         .expect("redirect state should lock") = Some(redirect_uri.clone());
@@ -179,6 +249,7 @@ async fn loopback_oauth_completes_dcr_and_code_exchange() {
         ..Default::default()
     };
     let registered_redirect_uri = state.registered_redirect_uri.clone();
+    let registered_client_name = state.registered_client_name.clone();
     let app = Router::new()
         .route(
             "/.well-known/oauth-protected-resource/mcp",
@@ -202,8 +273,12 @@ async fn loopback_oauth_completes_dcr_and_code_exchange() {
     });
 
     let (persisted_tx, persisted_rx) = async_channel::bounded(1);
+    let origin_for_callback = origin.clone();
     let context = AuthContext {
-        callback_mode: OAuthCallbackMode::Loopback,
+        callback_mode: OAuthCallbackMode::Loopback {
+            settings: LoopbackSettings::default(),
+            fallback: None,
+        },
         uuid: Uuid::new_v4(),
         persisted_credentials: None,
         is_headless: false,
@@ -218,6 +293,7 @@ async fn loopback_oauth_completes_dcr_and_code_exchange() {
             })
         }),
         requires_authentication: Box::new(move |_, state, auth_url| {
+            let origin_for_callback = origin_for_callback.clone();
             Box::pin(async move {
                 let auth_url = Url::parse(&auth_url)?;
                 let params: HashMap<_, _> = auth_url.query_pairs().into_owned().collect();
@@ -227,7 +303,11 @@ async fn loopback_oauth_completes_dcr_and_code_exchange() {
                     .ok_or_else(|| anyhow::anyhow!("authorization URL missing redirect_uri"))?;
                 assert!(redirect_uri.starts_with("http://127.0.0.1:"));
                 tokio::spawn(async move {
-                    let callback_url = format!("{redirect_uri}?code=test-code&state={state}");
+                    let callback_url = format!(
+                        "{redirect_uri}?code=test-code&state={state}&iss={}",
+                        url::form_urlencoded::byte_serialize(origin_for_callback.as_bytes())
+                            .collect::<String>()
+                    );
                     reqwest::get(callback_url)
                         .await
                         .expect("loopback callback should complete");
@@ -262,7 +342,14 @@ async fn loopback_oauth_completes_dcr_and_code_exchange() {
         .clone()
         .expect("DCR redirect should be recorded");
     assert!(redirect_uri.starts_with("http://127.0.0.1:"));
-    assert!(redirect_uri.ends_with("/mcp/oauth2callback"));
+    assert!(redirect_uri.ends_with("/callback"));
+    assert_eq!(
+        registered_client_name
+            .lock()
+            .expect("client name state should lock")
+            .as_deref(),
+        Some("neo-warp")
+    );
 
     server.abort();
 }

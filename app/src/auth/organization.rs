@@ -7,7 +7,11 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+#[cfg(not(target_family = "wasm"))]
+use mcp::oauth::{LoopbackRedirectHost, LoopbackSettings};
 use org_flags::{OrgFlags, ProductArea};
+#[cfg(not(target_family = "wasm"))]
+use org_sign_in::McpOAuthRedirectHost;
 use org_sign_in::{OrganizationConfig, OrganizationSignInConfig};
 use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
@@ -317,6 +321,22 @@ pub fn recording_redact_patterns() -> &'static [String] {
         .get()
         .map(|config| config.recording.redact_patterns.as_slice())
         .unwrap_or_default()
+}
+
+/// Admin-configured MCP OAuth loopback redirect; defaults when there's no organization config.
+#[cfg(not(target_family = "wasm"))]
+pub fn mcp_oauth_loopback_settings() -> LoopbackSettings {
+    let config = ORGANIZATION_CONFIG
+        .get()
+        .map(|config| config.mcp_oauth.clone())
+        .unwrap_or_default();
+    LoopbackSettings {
+        port: config.redirect_port,
+        host: match config.redirect_host {
+            McpOAuthRedirectHost::Ipv4Literal => LoopbackRedirectHost::Ipv4Literal,
+            McpOAuthRedirectHost::Localhost => LoopbackRedirectHost::Localhost,
+        },
+    }
 }
 
 pub fn sign_in_config() -> Option<&'static OrganizationSignInConfig> {

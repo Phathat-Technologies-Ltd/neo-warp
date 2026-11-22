@@ -158,3 +158,28 @@ model.
 - `classify_tool` runs the word heuristic over `"{name} {description}"` instead of the name first.
 - Tests: `session_selection_tests.rs` adds the snapshot, disabled-server, level, override, and
   unclassified/unadvertised call checks; `tool_risk_tests.rs` adds description-over-name cases.
+
+## OAuth sign-in
+
+- `crates/oauth_loopback` (shared with organization sign-in) gained
+  `LoopbackListener::wait_for_callback`, which also returns the RFC 9207 `iss` parameter (rmcp
+  validates it), and now checks `state` inside the connection handler so a mismatched callback
+  gets the failure page and a 400 instead of the success page.
+- `crates/mcp/src/oauth/loopback.rs` wraps that listener (`/callback` path, `127.0.0.1` or
+  `localhost`, 300 s timeout). Dropping the receive future cancels the listener thread, so an
+  abandoned flow frees the port. OAuth `error` redirects become `CallbackResult::Error`.
+- `OAuthCallbackMode::Loopback { settings, fallback }` replaces the TUI-only loopback mode;
+  `CustomScheme(CustomSchemeCallback)` remains. `prepare` falls back to the custom scheme when
+  the bind fails, and `make_authenticated_client` switches to it for a static provider without a
+  `loopback_client`. PKCE (S256) and the `state` check are unchanged in rmcp.
+- `dcr_request` sends `client_name = DCR_CLIENT_NAME` (`"neo-warp"`) and the single exact
+  redirect URI (rmcp's `AuthorizationRequest` carries one).
+- `org_sign_in::OrganizationConfig::mcp_oauth` (`McpOAuthConfig { redirect_port,
+  redirect_host }`) is read by `auth::organization::mcp_oauth_loopback_settings`, which
+  `TemplatableMCPServerManager` passes into every MCP spawn.
+- The desktop manager always records the `state -> server` mapping so a fallback deep link still
+  routes through `handle_oauth_callback`.
+- Tests: redirect construction (default and pinned host/port), bind-failure fallback, the DCR
+  request, an end-to-end DCR + loopback + code exchange that asserts the registered client name,
+  redirect path, and `iss` pass-through, the `iss` field in `oauth_loopback`, mismatched-state
+  400, and `organization.toml` parsing of `[mcp_oauth]`.

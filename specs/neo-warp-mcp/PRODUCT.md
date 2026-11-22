@@ -162,3 +162,31 @@ names from the request, so this is defense in depth); levels for the flat MCP fo
 - **Heuristic is more conservative.** The heuristic reads the tool's name and description
   together and picks the riskiest class any word signals, so `get_branch` described as "can
   delete stale branches" is destructive.
+
+## OAuth sign-in
+
+Reported problem: connecting an OAuth-protected MCP server through an organization MCP gateway
+(Runlayer, for Atlassian) showed "Redirects to warposs://mcp/oauth2callback" and
+"Application: Warp". The gateway only approves loopback redirect URIs, so the user couldn't
+connect.
+
+### Behavior
+
+- MCP OAuth redirects to `http://127.0.0.1:<port>/callback` (RFC 8252 loopback) in every build,
+  desktop and terminal. The port is OS-assigned per sign-in unless the organization pins it.
+- Dynamic client registration names the client `neo-warp`, so the gateway's consent and approval
+  screens show "neo-warp", and registers the exact loopback redirect URI.
+- Admins can pin the redirect in `organization.toml` for gateways that approve one exact URI:
+  `[mcp_oauth] redirect_port = 53682`, optionally `redirect_host = "localhost"` (default
+  `127.0.0.1`).
+- The browser tab shows a success page on a matching callback and a failure page when the
+  provider reports an error or the `state` doesn't match.
+- Desktop only: if the loopback port can't be bound, or a built-in provider's pre-registered
+  client has no loopback redirect, sign-in falls back to the `warposs://mcp/oauth2callback`
+  scheme redirect. The terminal app has no fallback and reports the bind error.
+
+### Out of scope
+
+- Registering both `127.0.0.1` and `localhost` variants: rmcp registers a single redirect URI.
+- A stable per-server port without admin configuration. Each fresh sign-in re-registers, so an
+  ephemeral port is sufficient unless the gateway requires an exact pre-approved URI.

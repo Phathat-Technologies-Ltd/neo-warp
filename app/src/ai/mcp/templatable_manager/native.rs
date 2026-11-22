@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_compat::CompatExt as _;
 use futures::channel::oneshot;
 use mcp::oauth::{
-    self, AuthContext, CallbackResult, FILE_BASED_MCP_CREDENTIALS_KEY,
+    self, AuthContext, CallbackResult, CustomSchemeCallback, FILE_BASED_MCP_CREDENTIALS_KEY,
     FileBasedPersistedCredentialsMap, OAuthCallbackMode, PersistedCredentials,
     PersistedCredentialsMap, TEMPLATABLE_MCP_CREDENTIALS_KEY, load_credentials_from_secure_storage,
     write_to_secure_storage,
@@ -41,6 +41,7 @@ use crate::ai::mcp::{
 };
 use crate::auth::AuthStateProvider;
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
+use crate::auth::organization;
 use crate::cloud_object::model::persistence::{CloudModel, CloudModelEvent};
 use crate::cloud_object::{
     CloudObject, CloudObjectLocation, CloudObjectLookup as _, CloudObjectMetadataExt,
@@ -1090,16 +1091,15 @@ impl TemplatableMCPServerManager {
             let persist_spawner = ctx.spawner();
             let requires_authentication_spawner = ctx.spawner();
             let authenticated_spawner = ctx.spawner();
-            let callback_mode = if use_tui_loopback {
-                OAuthCallbackMode::Loopback
-            } else {
-                OAuthCallbackMode::CustomScheme {
-                    redirect_uri: format!(
-                        "{}://mcp/oauth2callback",
-                        ChannelState::url_scheme()
-                    ),
-                    result_rx: oauth_result_rx,
-                }
+            // Loopback redirects work with gateways that only approve RFC 8252 loopback URIs.
+            // The TUI has no URL-scheme handler, so it has no fallback.
+            let fallback = (!use_tui_loopback).then(|| CustomSchemeCallback {
+                redirect_uri: format!("{}://mcp/oauth2callback", ChannelState::url_scheme()),
+                result_rx: oauth_result_rx,
+            });
+            let callback_mode = OAuthCallbackMode::Loopback {
+                settings: organization::mcp_oauth_loopback_settings(),
+                fallback,
             };
 
             AuthContext {
@@ -1133,7 +1133,7 @@ impl TemplatableMCPServerManager {
                     Box::pin(async move {
                         spawner
                             .spawn(move |manager, ctx| {
-                                if !use_tui_loopback && !csrf_state.is_empty() {
+                                if !csrf_state.is_empty() {
                                     manager.pending_oauth_csrf.insert(csrf_state, uuid);
                                 }
                                 manager.authorization_urls.insert(uuid, auth_url.clone());

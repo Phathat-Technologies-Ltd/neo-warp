@@ -60,6 +60,29 @@ pub struct OrganizationConfig {
     pub model_specs: Option<ModelSpecsConfig>,
     #[serde(default)]
     pub recording: RecordingConfig,
+    #[serde(default)]
+    pub mcp_oauth: McpOAuthConfig,
+}
+
+/// How MCP servers' OAuth sign-in redirects back to the app.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct McpOAuthConfig {
+    /// Fixed loopback port, for gateways that only approve an exact redirect URI. Unset means
+    /// an OS-assigned port per sign-in.
+    #[serde(default)]
+    pub redirect_port: Option<u16>,
+    /// Host in the loopback redirect URI.
+    #[serde(default)]
+    pub redirect_host: McpOAuthRedirectHost,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub enum McpOAuthRedirectHost {
+    #[default]
+    #[serde(rename = "127.0.0.1")]
+    Ipv4Literal,
+    #[serde(rename = "localhost")]
+    Localhost,
 }
 
 /// Session recording policy.
@@ -147,6 +170,7 @@ impl OrganizationConfig {
                     aliases: HashMap::new(),
                 }),
             recording: RecordingConfig::default(),
+            mcp_oauth: McpOAuthConfig::default(),
         })
     }
 }

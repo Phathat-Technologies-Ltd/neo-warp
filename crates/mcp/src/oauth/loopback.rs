@@ -1,33 +1,78 @@
-use std::net::IpAddr;
 use std::time::Duration;
 
+use oauth_loopback::{AuthorizationDenied, CancellationHandle, LoopbackConfig, LoopbackListener};
 use rmcp::transport::AuthError;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::TcpListener;
-use url::Url;
 
 use super::CallbackResult;
 
-const CALLBACK_PATH: &str = "/mcp/oauth2callback";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
-const MAX_REQUEST_BYTES: usize = 16 * 1024;
+const SUCCESS_HTML: &str = "<!doctype html><html><body><p>Authentication complete. You can close \
+     this tab and return to neo-warp.</p></body></html>";
+const FAILURE_HTML: &str = "<!doctype html><html><body><p>Authentication failed. Return to \
+     neo-warp for details.</p></body></html>";
+
+/// Host written into the loopback redirect URI (`http://<host>:<port>/callback`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoopbackRedirectHost {
+    /// `127.0.0.1`, the RFC 8252 §7.3 recommendation.
+    #[default]
+    Ipv4Literal,
+    /// `localhost`, for gateways that only allow that spelling.
+    Localhost,
+}
+
+impl LoopbackRedirectHost {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ipv4Literal => "127.0.0.1",
+            Self::Localhost => "localhost",
+        }
+    }
+}
+
+/// Where the loopback callback listener binds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoopbackSettings {
+    /// Fixed port, or `None` for an OS-assigned one.
+    pub port: Option<u16>,
+    pub host: LoopbackRedirectHost,
+}
+
+impl LoopbackSettings {
+    fn config(self) -> LoopbackConfig {
+        LoopbackConfig {
+            label: "MCP",
+            port: self.port.unwrap_or(0),
+            redirect_host: self.host.as_str(),
+            timeout: CALLBACK_TIMEOUT,
+            cors_allowed_origins: &[],
+            success_html: SUCCESS_HTML,
+            failure_html: FAILURE_HTML,
+        }
+    }
+}
 
 pub struct LoopbackOAuthReceiver {
-    listener: TcpListener,
+    listener: LoopbackListener,
     redirect_uri: String,
 }
 
+/// Stops the callback thread (and frees the port) when the OAuth flow is abandoned.
+struct CancelOnDrop(CancellationHandle);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 impl LoopbackOAuthReceiver {
-    pub async fn bind() -> Result<Self, AuthError> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .map_err(|err| AuthError::InternalError(err.to_string()))?;
-        let address = listener
-            .local_addr()
-            .map_err(|err| AuthError::InternalError(err.to_string()))?;
+    pub fn bind(settings: LoopbackSettings) -> anyhow::Result<Self> {
+        let listener = LoopbackListener::bind(settings.config())?;
+        let redirect_uri = listener.redirect_uri();
         Ok(Self {
             listener,
-            redirect_uri: format!("http://127.0.0.1:{}{CALLBACK_PATH}", address.port()),
+            redirect_uri,
         })
     }
 
@@ -36,108 +81,22 @@ impl LoopbackOAuthReceiver {
     }
 
     pub async fn receive(self, expected_state: &str) -> Result<CallbackResult, AuthError> {
-        tokio::time::timeout(CALLBACK_TIMEOUT, self.receive_inner(expected_state))
-            .await
-            .map_err(|_| {
-                AuthError::AuthorizationFailed("MCP OAuth callback timed out".to_string())
-            })?
-    }
-
-    async fn receive_inner(self, expected_state: &str) -> Result<CallbackResult, AuthError> {
-        let (mut stream, peer) = self
+        let cancellation = CancelOnDrop(CancellationHandle::new());
+        let (_release, callback) = self
             .listener
-            .accept()
-            .await
-            .map_err(|err| AuthError::InternalError(err.to_string()))?;
-        if !matches!(peer.ip(), IpAddr::V4(ip) if ip.is_loopback()) {
-            return Err(AuthError::AuthorizationFailed(
-                "Rejected non-loopback MCP OAuth callback".to_string(),
-            ));
+            .wait_for_callback(expected_state.to_owned(), cancellation.0.clone());
+        match callback.await {
+            Ok(callback) => Ok(CallbackResult::Success {
+                code: callback.code,
+                csrf_token: expected_state.to_owned(),
+                issuer: callback.issuer,
+            }),
+            Err(err) => match err.downcast::<AuthorizationDenied>() {
+                Ok(denied) => Ok(CallbackResult::Error {
+                    error: Some(denied.description.unwrap_or(denied.error)),
+                }),
+                Err(err) => Err(AuthError::AuthorizationFailed(format!("{err:#}"))),
+            },
         }
-
-        let mut request = Vec::new();
-        loop {
-            let mut chunk = [0; 1024];
-            let bytes_read = stream
-                .read(&mut chunk)
-                .await
-                .map_err(|err| AuthError::InternalError(err.to_string()))?;
-            if bytes_read == 0 {
-                break;
-            }
-            request.extend_from_slice(&chunk[..bytes_read]);
-            if request.len() > MAX_REQUEST_BYTES {
-                return Err(AuthError::AuthorizationFailed(
-                    "MCP OAuth callback request was too large".to_string(),
-                ));
-            }
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        let request = std::str::from_utf8(&request).map_err(|_| {
-            AuthError::AuthorizationFailed("Invalid MCP OAuth callback request".to_string())
-        })?;
-        let request_target = request
-            .lines()
-            .next()
-            .and_then(|line| {
-                let mut parts = line.split_whitespace();
-                (parts.next() == Some("GET"))
-                    .then(|| parts.next())
-                    .flatten()
-            })
-            .ok_or_else(|| {
-                AuthError::AuthorizationFailed("Invalid MCP OAuth callback request".to_string())
-            })?;
-        let callback_url =
-            Url::parse(&format!("http://127.0.0.1{request_target}")).map_err(|_| {
-                AuthError::AuthorizationFailed("Invalid MCP OAuth callback URL".to_string())
-            })?;
-
-        let result = if callback_url.path() != CALLBACK_PATH {
-            Err(AuthError::AuthorizationFailed(
-                "Invalid MCP OAuth callback path".to_string(),
-            ))
-        } else {
-            let query: std::collections::HashMap<_, _> =
-                callback_url.query_pairs().into_owned().collect();
-            let state = query.get("state").ok_or_else(|| {
-                AuthError::AuthorizationFailed(
-                    "MCP OAuth callback did not include state".to_string(),
-                )
-            })?;
-            if state != expected_state {
-                Err(AuthError::AuthorizationFailed(
-                    "MCP OAuth callback state did not match".to_string(),
-                ))
-            } else if let Some(code) = query.get("code") {
-                Ok(CallbackResult::Success {
-                    code: code.clone(),
-                    csrf_token: state.clone(),
-                    issuer: query.get("iss").cloned(),
-                })
-            } else {
-                Ok(CallbackResult::Error {
-                    error: query.get("error").cloned(),
-                })
-            }
-        };
-
-        let (status, message) = if result.is_ok() {
-            ("200 OK", "Authentication complete. You can return to Warp.")
-        } else {
-            (
-                "400 Bad Request",
-                "Authentication failed. Return to Warp for details.",
-            )
-        };
-        let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{message}",
-            message.len()
-        );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.shutdown().await;
-        result
     }
 }

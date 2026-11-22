@@ -16,6 +16,12 @@ use warp_errors::report_error;
 use warpui_extras::secure_storage::AppContextExt as _;
 mod loopback;
 
+pub use loopback::{LoopbackRedirectHost, LoopbackSettings};
+
+/// `client_name` sent in dynamic client registration; gateways show it on their consent and
+/// approval screens.
+pub const DCR_CLIENT_NAME: &str = "neo-warp";
+
 pub const TEMPLATABLE_MCP_CREDENTIALS_KEY: &str = "TemplatableMcpCredentials";
 pub const FILE_BASED_MCP_CREDENTIALS_KEY: &str = "FileBasedMcpCredentials";
 
@@ -56,12 +62,21 @@ pub type RequiresAuthenticationCallback =
 pub type AuthenticatedCallback =
     Box<dyn Fn(String) -> BoxFuture<'static, anyhow::Result<()>> + Send>;
 
+/// A redirect to the app's URL scheme, delivered through the app's deep-link handler.
+pub struct CustomSchemeCallback {
+    pub redirect_uri: String,
+    pub result_rx: async_channel::Receiver<CallbackResult>,
+}
+
 pub enum OAuthCallbackMode {
-    CustomScheme {
-        redirect_uri: String,
-        result_rx: async_channel::Receiver<CallbackResult>,
+    CustomScheme(CustomSchemeCallback),
+    /// An RFC 8252 loopback redirect to `http://127.0.0.1:<port>/callback`.
+    Loopback {
+        settings: LoopbackSettings,
+        /// Used when the loopback listener can't bind, or a pre-registered provider client has
+        /// no loopback redirect.
+        fallback: Option<CustomSchemeCallback>,
     },
-    Loopback,
 }
 
 enum OAuthCallbackReceiver {
@@ -72,27 +87,45 @@ enum OAuthCallbackReceiver {
 struct PreparedOAuthCallback {
     redirect_uri: String,
     receiver: OAuthCallbackReceiver,
-    uses_loopback: bool,
+    fallback: Option<CustomSchemeCallback>,
+}
+
+impl PreparedOAuthCallback {
+    fn custom_scheme(callback: CustomSchemeCallback) -> Self {
+        Self {
+            redirect_uri: callback.redirect_uri,
+            receiver: OAuthCallbackReceiver::CustomScheme(callback.result_rx),
+            fallback: None,
+        }
+    }
+
+    fn uses_loopback(&self) -> bool {
+        matches!(self.receiver, OAuthCallbackReceiver::Loopback(_))
+    }
 }
 
 impl OAuthCallbackMode {
-    async fn prepare(self) -> Result<PreparedOAuthCallback, AuthError> {
+    fn prepare(self) -> Result<PreparedOAuthCallback, AuthError> {
         match self {
-            Self::CustomScheme {
-                redirect_uri,
-                result_rx,
-            } => Ok(PreparedOAuthCallback {
-                redirect_uri,
-                receiver: OAuthCallbackReceiver::CustomScheme(result_rx),
-                uses_loopback: false,
-            }),
-            Self::Loopback => {
-                let receiver = loopback::LoopbackOAuthReceiver::bind().await?;
-                Ok(PreparedOAuthCallback {
-                    redirect_uri: receiver.redirect_uri().to_string(),
-                    receiver: OAuthCallbackReceiver::Loopback(receiver),
-                    uses_loopback: true,
-                })
+            Self::CustomScheme(callback) => Ok(PreparedOAuthCallback::custom_scheme(callback)),
+            Self::Loopback { settings, fallback } => {
+                match loopback::LoopbackOAuthReceiver::bind(settings) {
+                    Ok(receiver) => Ok(PreparedOAuthCallback {
+                        redirect_uri: receiver.redirect_uri().to_string(),
+                        receiver: OAuthCallbackReceiver::Loopback(receiver),
+                        fallback,
+                    }),
+                    Err(err) => match fallback {
+                        Some(fallback) => {
+                            log::warn!(
+                                "MCP OAuth loopback listener failed to bind ({err:#}); falling \
+                                 back to the app URL scheme redirect"
+                            );
+                            Ok(PreparedOAuthCallback::custom_scheme(fallback))
+                        }
+                        None => Err(AuthError::InternalError(format!("{err:#}"))),
+                    },
+                }
             }
         }
     }
@@ -262,6 +295,11 @@ pub enum CallbackResult {
 /// This takes in the URL of the resource to authenticate for, and uses that
 /// to determine the authorization server.
 ///
+/// The dynamic client registration request for `redirect_uri`.
+fn dcr_request(redirect_uri: &str) -> AuthorizationRequest {
+    AuthorizationRequest::new(redirect_uri).with_client_name(DCR_CLIENT_NAME)
+}
+
 /// Upon success, returns the client and a boolean indicating whether the user was required to
 /// re-authenticate (e.g. re-log in).
 pub async fn make_authenticated_client(
@@ -280,11 +318,7 @@ pub async fn make_authenticated_client(
         ..
     } = auth_context;
 
-    let PreparedOAuthCallback {
-        redirect_uri,
-        receiver: callback_receiver,
-        uses_loopback,
-    } = callback_mode.prepare().await?;
+    let mut callback = callback_mode.prepare()?;
 
     // Create the auth manager and initialize it with a backing credential store that persists
     // new credentials to secure storage.
@@ -310,7 +344,7 @@ pub async fn make_authenticated_client(
     {
         if let (Some(client_id), Some(client_secret)) = (client_id, client_secret) {
             auth_manager.configure_client(
-                OAuthClientConfig::new(client_id, redirect_uri.clone())
+                OAuthClientConfig::new(client_id, callback.redirect_uri.clone())
                     .with_client_secret(client_secret),
             )?;
         }
@@ -349,7 +383,13 @@ pub async fn make_authenticated_client(
         .as_deref()
         .and_then(ChannelState::mcp_oauth_provider_by_issuer)
     {
-        let (client_id, client_secret) = if uses_loopback {
+        if callback.uses_loopback()
+            && provider.loopback_client.is_none()
+            && let Some(fallback) = callback.fallback.take()
+        {
+            callback = PreparedOAuthCallback::custom_scheme(fallback);
+        }
+        let (client_id, client_secret) = if callback.uses_loopback() {
             let loopback_client = provider.loopback_client.ok_or_else(|| {
                 AuthError::AuthorizationFailed(
                     "This OAuth provider uses a pre-registered client that is not configured for \
@@ -375,7 +415,7 @@ pub async fn make_authenticated_client(
             vec![]
         };
         let mut client_config =
-            OAuthClientConfig::new(client_id, redirect_uri.clone()).with_scopes(scopes);
+            OAuthClientConfig::new(client_id, callback.redirect_uri.clone()).with_scopes(scopes);
         if let Some(client_secret) = client_secret {
             client_config = client_config.with_client_secret(client_secret);
         }
@@ -387,13 +427,13 @@ pub async fn make_authenticated_client(
         OAuthState::Session(AuthorizationSession::for_scope_upgrade(
             auth_manager,
             auth_url,
-            &redirect_uri,
+            &callback.redirect_uri,
         ))
     } else {
         // Try dynamic client registration.
         let mut oauth_state = OAuthState::Unauthorized(auth_manager);
         oauth_state
-            .start_authorization(AuthorizationRequest::new(&redirect_uri).with_client_name("Warp"))
+            .start_authorization(dcr_request(&callback.redirect_uri))
             .await?;
         oauth_state
     };
@@ -418,7 +458,7 @@ pub async fn make_authenticated_client(
     }
 
     // Wait for the authorization code from the OAuth callback channel.
-    let oauth_result = callback_receiver.receive(&csrf_state).await?;
+    let oauth_result = callback.receiver.receive(&csrf_state).await?;
 
     let (code, csrf_token, issuer) = match &oauth_result {
         CallbackResult::Success {

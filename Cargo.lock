@@ -8578,6 +8578,7 @@ dependencies = [
  "instant",
  "log",
  "oauth2",
+ "oauth_loopback",
  "pin-project-lite",
  "reqwest",
  "rmcp",
