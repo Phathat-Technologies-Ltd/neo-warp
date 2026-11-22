@@ -18581,18 +18581,20 @@ impl TerminalView {
         ]);
 
         if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
-            items.push(
-                MenuItemFields::new("AI command search")
-                    .with_on_select_action(TerminalAction::InputContextMenuItem(
-                        InputContextMenuAction::ShowAICommandSearch,
-                    ))
-                    .with_key_shortcut_label(keybinding_name_to_display_string(
-                        "input:toggle_natural_language_command_search",
-                        ctx,
-                    ))
-                    .with_disabled(is_editor_disabled)
-                    .into_item(),
-            );
+            if FeatureFlag::AiCommandSearch.is_enabled() {
+                items.push(
+                    MenuItemFields::new("AI command search")
+                        .with_on_select_action(TerminalAction::InputContextMenuItem(
+                            InputContextMenuAction::ShowAICommandSearch,
+                        ))
+                        .with_key_shortcut_label(keybinding_name_to_display_string(
+                            "input:toggle_natural_language_command_search",
+                            ctx,
+                        ))
+                        .with_disabled(is_editor_disabled)
+                        .into_item(),
+                );
+            }
 
             if !selected_input_text.is_empty() && !FeatureFlag::AgentMode.is_enabled() {
                 items.push(
