@@ -12,10 +12,11 @@ use oi_kit_agent::events::AgentEvent;
 use oi_kit_agent::inference::{InferenceEffect, InferenceRunner};
 use oi_kit_agent::machine::{EffectHandler, MachineSession, SessionLoader, StateMachine, Step};
 use oi_kit_agent::operation::{Emitter, MachineEffect, Operation, OperationResult, not_applicable};
-use oi_kit_provider_types::base::Provider;
+use oi_kit_provider_types::base::{MessageStream, Provider};
 use oi_kit_provider_types::conversation::Conversation;
 use oi_kit_provider_types::conversation::message::{Message, MessageContentBlock};
 use oi_kit_provider_types::conversation::token_usage::ProviderUsage;
+use oi_kit_provider_types::errors::ProviderError;
 use oi_kit_provider_types::model::ModelConfig;
 use oi_kit_providers::anthropic::AnthropicProviderBuilder;
 use oi_kit_providers::api_client::{ApiClient, AuthMethod};
@@ -686,16 +687,67 @@ fn provider_for(endpoint: &ModelEndpoint) -> Result<Arc<dyn Provider>> {
                 AuthMethod::BearerToken(api_key.clone()),
                 None,
             )?;
-            Ok(Arc::new(OpenAiCompatibleProvider::new(
+            let provider: Arc<dyn Provider> = Arc::new(OpenAiCompatibleProvider::new(
                 endpoint.display_name(),
                 api_client,
                 String::new(),
-            )))
+            ));
+            Ok(if rejects_replayed_reasoning(base_url) {
+                Arc::new(WithoutReplayedReasoning(provider))
+            } else {
+                provider
+            })
         }
         ModelEndpoint::OpenAiResponses { base_url, api_key } => Ok(Arc::new(
             ResponsesProvider::new(endpoint.display_name(), base_url, api_key)?,
         )),
     }
+}
+
+/// Whether an endpoint rejects the model's earlier reasoning when it comes back in the history,
+/// as Cerebras does with `reasoning_content`. Others, such as DeepSeek and Kimi, require it.
+fn rejects_replayed_reasoning(base_url: &str) -> bool {
+    url::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host == "api.cerebras.ai"))
+        .unwrap_or(false)
+}
+
+/// Sends the conversation without the model's earlier reasoning.
+struct WithoutReplayedReasoning(Arc<dyn Provider>);
+
+#[async_trait]
+impl Provider for WithoutReplayedReasoning {
+    fn get_name(&self) -> &str {
+        self.0.get_name()
+    }
+
+    async fn stream(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let messages = without_reasoning(messages);
+        self.0.stream(model_config, system, &messages, tools).await
+    }
+}
+
+fn without_reasoning(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .filter_map(|message| {
+            let mut message = message.clone();
+            message.content.retain(|block| {
+                !matches!(
+                    block,
+                    MessageContentBlock::Thinking(_) | MessageContentBlock::RedactedThinking(_)
+                )
+            });
+            (!message.content.is_empty()).then_some(message)
+        })
+        .collect()
 }
 
 fn anthropic_provider(credential: &str) -> Result<Arc<dyn Provider>> {

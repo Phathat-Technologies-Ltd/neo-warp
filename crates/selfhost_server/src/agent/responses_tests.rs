@@ -45,7 +45,10 @@ fn moves_the_system_prompt_to_instructions_and_drops_rejected_fields() {
     assert_eq!(payload["stream"], true);
     assert!(payload.get("temperature").is_none());
     assert!(payload.get("max_output_tokens").is_none());
-    assert!(payload.get("reasoning").is_none(), "only the Codex backend gets reasoning defaults");
+    assert!(
+        payload.get("reasoning").is_none(),
+        "only the Codex backend gets reasoning defaults"
+    );
 }
 
 #[test]

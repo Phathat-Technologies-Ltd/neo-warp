@@ -583,3 +583,24 @@ fn responses_providers_run_on_the_responses_api() {
     assert_eq!(model, "qwen-3-coder");
     assert_eq!(endpoint.display_name(), "ChatGPT");
 }
+
+#[test]
+fn cerebras_gets_the_history_without_earlier_reasoning() {
+    assert!(rejects_replayed_reasoning("https://api.cerebras.ai/v1"));
+    assert!(!rejects_replayed_reasoning("https://api.deepseek.com/v1"));
+
+    let history = vec![
+        Message::user().with_text("what is this folder?"),
+        Message::assistant().with_thinking("I should list it.", "sig"),
+        Message::assistant()
+            .with_redacted_thinking("opaque")
+            .with_text("Let me check."),
+    ];
+    let stripped = without_reasoning(&history);
+    assert_eq!(stripped.len(), 2, "a reasoning-only message is dropped");
+    assert_eq!(stripped[1].content.len(), 1);
+    assert!(matches!(
+        stripped[1].content[0],
+        MessageContentBlock::Text(_)
+    ));
+}

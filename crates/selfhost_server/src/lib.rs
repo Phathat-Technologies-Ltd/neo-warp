@@ -145,16 +145,26 @@ async fn download_remote_server(
     Query(query): Query<DownloadQuery>,
 ) -> Response {
     let Some(dir) = &state.remote_server_artifacts else {
-        return (StatusCode::NOT_FOUND, "This server has no remote-server builds").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "This server has no remote-server builds",
+        )
+            .into_response();
     };
     let Some(file_name) = remote_server_artifact_name(&query.os, &query.arch) else {
-        return (StatusCode::NOT_FOUND, "No remote-server build for this platform").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "No remote-server build for this platform",
+        )
+            .into_response();
     };
     match tokio::fs::read(dir.join(file_name)).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "application/gzip")], bytes).into_response(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            (StatusCode::NOT_FOUND, "No remote-server build for this platform").into_response()
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            "No remote-server build for this platform",
+        )
+            .into_response(),
         Err(error) => {
             log::error!("Couldn't read the remote-server build {file_name}: {error}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

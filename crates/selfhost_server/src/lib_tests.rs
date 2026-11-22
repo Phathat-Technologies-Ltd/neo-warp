@@ -591,9 +591,11 @@ async fn model_catalog_lists_claude_models_with_opus_as_the_default() {
 }
 
 fn download_request(os: &str, arch: &str) -> Request<Body> {
-    Request::get(format!("/download/cli?package=tar&os={os}&arch={arch}&channel=dev"))
-        .body(Body::empty())
-        .unwrap()
+    Request::get(format!(
+        "/download/cli?package=tar&os={os}&arch={arch}&channel=dev"
+    ))
+    .body(Body::empty())
+    .unwrap()
 }
 
 #[tokio::test]
@@ -614,7 +616,11 @@ async fn serves_remote_server_builds_for_linux() {
     assert_eq!(body, Value::String("arm64 build".to_owned()));
 
     // Missing builds and unknown platforms, including path-like values, are not found.
-    for (os, arch) in [("linux", "x86_64"), ("darwin", "aarch64"), ("linux", "..%2F..%2Fetc")] {
+    for (os, arch) in [
+        ("linux", "x86_64"),
+        ("darwin", "aarch64"),
+        ("linux", "..%2F..%2Fetc"),
+    ] {
         assert_eq!(
             send(&state, download_request(os, arch)).await.0,
             StatusCode::NOT_FOUND
