@@ -1090,6 +1090,7 @@ fn input_escape_context_is_present_only_while_escape_is_handled() {
         plan_toggle_available: true,
         keyboard_enhancement_supported: true,
         shell_completion_available: true,
+        inline_menu_has_tabs: true,
         inline_menu_can_clear_selected: true,
     });
     assert!(open.set.contains("TuiInputView"));

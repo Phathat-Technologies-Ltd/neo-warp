@@ -5,9 +5,9 @@ use warp::appearance::Appearance;
 use warp::editor::CodeEditorModel;
 use warp::settings::AISettingsChangedEvent;
 use warp::tui_export::{
-    BlocklistAIInputModel, ConversationSelectionEvent, History, HistoryEvent, InputConfig,
-    InputModePolicy, InputType, PolicyConfigUpdate, TuiUpArrowHistoryItemKind,
-    add_tui_history_test_models, append_tui_history_test_command,
+    BlocklistAIInputModel, ConversationSelectionEvent, History, HistoryEvent, HistoryScope,
+    InputConfig, InputModePolicy, InputSettings, InputType, PolicyConfigUpdate,
+    TuiUpArrowHistoryItemKind, add_tui_history_test_models, append_tui_history_test_command,
     blocklist_ai_history_model_with_queries, register_tui_input_mode_test_settings,
 };
 use warp_core::features::FeatureFlag;
@@ -472,18 +472,20 @@ fn command_prefix_matches_the_row_text_style() {
             let expected = builder.shell_command_prefix_style();
 
             assert!(rendered.contains("History"));
+            assert!(rendered.contains("Global"));
+            // Row 0 is the title and row 1 the scope tabs.
             assert!(rendered.contains("! older"));
             assert!(rendered.contains("! newer"));
             // Unselected commands retain the transcript's bright-green prefix.
             assert_eq!(
-                frame.buffer[(0, 1)].fg,
+                frame.buffer[(0, 2)].fg,
                 expected.fg.expect("prefix has a color")
             );
-            assert!(frame.buffer[(0, 1)].modifier.contains(Modifier::BOLD));
-            assert_ne!(frame.buffer[(0, 1)].bg, builder.shell_command_background());
+            assert!(frame.buffer[(0, 2)].modifier.contains(Modifier::BOLD));
+            assert_ne!(frame.buffer[(0, 2)].bg, builder.shell_command_background());
             // The selected prefix uses the same inverted colors as its row text.
-            assert_eq!(frame.buffer[(0, 2)].fg, frame.buffer[(2, 2)].fg);
-            assert_eq!(frame.buffer[(0, 2)].bg, frame.buffer[(2, 2)].bg);
+            assert_eq!(frame.buffer[(0, 3)].fg, frame.buffer[(2, 3)].fg);
+            assert_eq!(frame.buffer[(0, 3)].bg, frame.buffer[(2, 3)].bg);
         });
     });
 }
@@ -523,4 +525,54 @@ fn reconciled_selection_preserves_full_row_identity() {
         reconciled_selection_index(&[], Some(&prompt), Some(0)),
         None
     );
+}
+
+#[test]
+fn cycling_scope_refilters_rows_and_updates_header_tabs() {
+    agent_mode_test(|mut app| async move {
+        let setup = initialized_setup(&mut app, &[], &["from-histfile"], InputType::Shell).await;
+        app.update(|ctx| {
+            append_tui_history_test_command(setup.session_id, "in-session".to_owned(), ctx);
+            setup.menu.update(ctx, |menu, ctx| menu.open(ctx));
+            assert_eq!(
+                row_titles(&setup.menu, ctx),
+                vec!["from-histfile", "in-session"]
+            );
+            let selected_tab = |ctx: &AppContext| {
+                setup
+                    .menu
+                    .as_ref(ctx)
+                    .snapshot(ctx)
+                    .and_then(|snapshot| snapshot.header)
+                    .and_then(|header| {
+                        header
+                            .tabs
+                            .into_iter()
+                            .find(|tab| tab.is_selected)
+                            .map(|tab| tab.label)
+                    })
+            };
+            assert_eq!(selected_tab(ctx).as_deref(), Some("Host"));
+
+            setup.menu.update(ctx, |menu, ctx| menu.cycle_scope(ctx));
+            assert_eq!(row_titles(&setup.menu, ctx), vec!["in-session"]);
+            assert_eq!(selected_tab(ctx).as_deref(), Some("Session"));
+            assert_eq!(
+                *InputSettings::as_ref(ctx).history_scope,
+                HistoryScope::Session
+            );
+
+            // The test session reports no working directory, so Directory is empty.
+            setup.menu.update(ctx, |menu, ctx| menu.cycle_scope(ctx));
+            assert!(row_titles(&setup.menu, ctx).is_empty());
+            assert_eq!(selected_tab(ctx).as_deref(), Some("Directory"));
+
+            setup.menu.update(ctx, |menu, ctx| menu.cycle_scope(ctx));
+            assert_eq!(
+                row_titles(&setup.menu, ctx),
+                vec!["from-histfile", "in-session"]
+            );
+            assert_eq!(selected_tab(ctx).as_deref(), Some("Global"));
+        });
+    });
 }

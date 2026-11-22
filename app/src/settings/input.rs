@@ -6,6 +6,7 @@ use settings::Setting as _;
 use settings::{RespectUserSyncSetting, SupportedPlatforms, SyncToCloud, define_settings_group};
 use warpui::{AppContext, SingletonEntity};
 
+use crate::terminal::HistoryScope;
 use crate::terminal::input::inline_menu::InlineMenuType;
 use crate::terminal::session_settings::SessionSettings;
 
@@ -219,6 +220,16 @@ define_settings_group!(InputSettings,
             private: false,
             toml_path: "terminal.input.show_terminal_input_message_bar",
             description: "Whether the terminal input message bar is shown.",
+        },
+        history_scope: HistoryScopeSetting {
+            type: HistoryScope,
+            default: HistoryScope::Host,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Never,
+            surface: settings::SettingSurfaces::ALL,
+            private: false,
+            toml_path: "terminal.input.history_scope",
+            description: "Which commands the history menu shows: global, host, session, or directory.",
         },
         // Per-menu custom content heights set by drag-to-resize. Not user-visible.
         inline_menu_custom_content_heights: InlineMenuCustomContentHeights {

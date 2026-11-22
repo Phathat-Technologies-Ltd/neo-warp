@@ -24,12 +24,19 @@ pub enum TuiUpArrowHistoryItemKind {
 pub fn tui_up_arrow_history(
     terminal_surface_id: EntityId,
     session_id: Option<SessionId>,
+    current_pwd: Option<&str>,
     config: UpArrowHistoryConfig,
     app: &AppContext,
 ) -> Vec<TuiUpArrowHistoryItem> {
     History::handle(app)
         .as_ref(app)
-        .up_arrow_suggestions_for_terminal_surface(terminal_surface_id, session_id, config, app)
+        .up_arrow_suggestions_for_terminal_surface(
+            terminal_surface_id,
+            session_id,
+            current_pwd,
+            config,
+            app,
+        )
         .into_iter()
         .map(|suggestion| {
             let text = suggestion.normalized_text().to_owned();

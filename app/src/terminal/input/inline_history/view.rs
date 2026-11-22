@@ -2,19 +2,25 @@
 use std::collections::HashSet;
 
 use pathfinder_color::ColorU;
+use settings::Setting as _;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::Fill;
 use warp_core::ui::theme::color::internal_colors;
+use warp_errors::report_if_error;
 use warpui::elements::ChildView;
-use warpui::{AppContext, Element, Entity, EntityId, ModelHandle, View, ViewContext, ViewHandle};
+use warpui::{
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, View, ViewContext,
+    ViewHandle,
+};
 
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::agent_view::{AgentViewController, AgentViewControllerEvent};
 use crate::features::FeatureFlag;
 use crate::search::data_source::{Query, QueryFilter};
 use crate::search::mixer::{SearchMixer, SearchMixerEvent};
+use crate::settings::InputSettings;
 use crate::settings_view::SettingsSection;
-use crate::terminal::history::LinkedWorkflowData;
+use crate::terminal::history::{HistoryScope, LinkedWorkflowData};
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
 use crate::terminal::input::inline_history::data_source::{
     AcceptHistoryItem, InlineHistoryMenuDataSource,
@@ -125,15 +131,21 @@ pub enum HistoryTab {
     All,
     Commands,
     Prompts,
+    Scope(HistoryScope),
 }
 
+/// Outside the agent view, the history menu's tabs select the [`HistoryScope`]. Inside it, the
+/// tabs select the item type and the scope comes from the persisted setting.
 fn build_tab_configs(is_agent_view: bool) -> Vec<InlineMenuTabConfig<HistoryTab>> {
     if !is_agent_view {
-        return vec![InlineMenuTabConfig {
-            id: HistoryTab::All,
-            label: "All".to_string(),
-            filters: HashSet::new(),
-        }];
+        return HistoryScope::ALL
+            .into_iter()
+            .map(|scope| InlineMenuTabConfig {
+                id: HistoryTab::Scope(scope),
+                label: scope.label().to_string(),
+                filters: HashSet::new(),
+            })
+            .collect();
     }
 
     vec![
@@ -235,8 +247,11 @@ impl InlineHistoryMenuView {
             )
         });
 
+        let initial_tab = HistoryTab::Scope(*InputSettings::as_ref(ctx).history_scope);
         let initial_filters = tab_configs
-            .first()
+            .iter()
+            .find(|config| config.id == initial_tab)
+            .or(tab_configs.first())
             .map(|config| config.filters.clone())
             .unwrap_or_default();
 
@@ -285,7 +300,7 @@ impl InlineHistoryMenuView {
                     input_suggestions_model,
                     agent_view_controller.clone(),
                     tab_configs,
-                    None,
+                    Some(initial_tab),
                     ctx,
                 )
                 .with_header_config(header_config)
@@ -298,7 +313,7 @@ impl InlineHistoryMenuView {
                     input_suggestions_model,
                     agent_view_controller.clone(),
                     tab_configs,
-                    None,
+                    Some(initial_tab),
                     ctx,
                 )
             })
@@ -343,8 +358,11 @@ impl InlineHistoryMenuView {
                     if !me.caller_supplied_tabs {
                         let is_agent_view = controller.as_ref(ctx).is_active();
                         let new_configs = build_tab_configs(is_agent_view);
+                        let scope_tab =
+                            HistoryTab::Scope(*InputSettings::as_ref(ctx).history_scope);
                         me.model.update(ctx, |model, _| {
                             model.set_tab_configs(new_configs);
+                            model.set_active_tab_id(&scope_tab);
                         });
                         if suggestions_mode_model.as_ref(ctx).is_inline_history_menu() {
                             me.pending_tab_switch_selection = me
@@ -411,6 +429,9 @@ impl InlineHistoryMenuView {
                 ctx.emit(InlineHistoryMenuEvent::NoResults);
             }
             InlineMenuEvent::TabChanged => {
+                if let Some(HistoryTab::Scope(scope)) = me.model.as_ref(ctx).active_tab_id() {
+                    persist_history_scope(scope, ctx);
+                }
                 me.pending_tab_switch_selection = me
                     .model
                     .as_ref(ctx)
@@ -497,6 +518,10 @@ impl InlineHistoryMenuView {
     }
 
     fn open_with_current_buffer(&mut self, ctx: &mut ViewContext<Self>) {
+        // Another terminal's menu may have changed the persisted scope since this menu last opened.
+        let scope_tab = HistoryTab::Scope(*InputSettings::as_ref(ctx).history_scope);
+        self.model
+            .update(ctx, |model, _| model.set_active_tab_id(&scope_tab));
         let query_text = self.buffer_model.as_ref(ctx).current_value().to_owned();
         let filters = self.model.as_ref(ctx).active_tab_filters();
         self.mixer.update(ctx, |mixer, ctx| {
@@ -537,6 +562,14 @@ impl InlineHistoryMenuView {
     }
 }
 
+fn persist_history_scope(scope: HistoryScope, ctx: &mut AppContext) {
+    InputSettings::handle(ctx).update(ctx, |settings, ctx| {
+        if *settings.history_scope != scope {
+            report_if_error!(settings.history_scope.set_value(scope, ctx));
+        }
+    });
+}
+
 impl View for InlineHistoryMenuView {
     fn ui_name() -> &'static str {
         "InlineHistoryMenuView"
@@ -550,3 +583,7 @@ impl View for InlineHistoryMenuView {
 impl Entity for InlineHistoryMenuView {
     type Event = InlineHistoryMenuEvent;
 }
+
+#[cfg(test)]
+#[path = "view_tests.rs"]
+mod tests;
