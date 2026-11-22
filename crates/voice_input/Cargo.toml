@@ -26,6 +26,15 @@ objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["
 objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"], optional = true }
 objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std"], optional = true }
 
+# Used by the `system_aec_probe` spike only.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.6"
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary", "CFString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSUUID", "NSValue", "NSObject"] }
+sonora = "0.3"
+
 [features]
 # Echo-cancelled full-duplex audio through Apple's voice-processing I/O unit (macOS only).
 voice_processing = [
