@@ -2,6 +2,8 @@ use chrono::{Local, TimeZone as _};
 
 use super::{MenuEntry, MenuItem, interleave_conversations};
 use crate::input_suggestions::HistoryOrder;
+use crate::terminal::history::HistoryScope;
+use crate::terminal::input::message_bar::MessageItem;
 
 #[test]
 fn interleave_conversations_only_inserts_into_current_session_segment() {
@@ -21,6 +23,7 @@ fn interleave_conversations_only_inserts_into_current_session_segment() {
                 display_timestamp: t10,
                 linked_workflow_data: None,
                 prefix_match_len: 0,
+                run: None,
             },
         },
         MenuEntry {
@@ -31,6 +34,7 @@ fn interleave_conversations_only_inserts_into_current_session_segment() {
                 display_timestamp: t20,
                 linked_workflow_data: None,
                 prefix_match_len: 0,
+                run: None,
             },
         },
         MenuEntry {
@@ -41,6 +45,7 @@ fn interleave_conversations_only_inserts_into_current_session_segment() {
                 display_timestamp: t100,
                 linked_workflow_data: None,
                 prefix_match_len: 0,
+                run: None,
             },
         },
         MenuEntry {
@@ -51,6 +56,7 @@ fn interleave_conversations_only_inserts_into_current_session_segment() {
                 display_timestamp: t200,
                 linked_workflow_data: None,
                 prefix_match_len: 0,
+                run: None,
             },
         },
     ];
@@ -64,6 +70,7 @@ fn interleave_conversations_only_inserts_into_current_session_segment() {
                 display_timestamp: t150,
                 linked_workflow_data: None,
                 prefix_match_len: 0,
+                run: None,
             },
         },
         MenuEntry {
@@ -74,6 +81,7 @@ fn interleave_conversations_only_inserts_into_current_session_segment() {
                 display_timestamp: t50,
                 linked_workflow_data: None,
                 prefix_match_len: 0,
+                run: None,
             },
         },
     ];
@@ -93,4 +101,21 @@ fn interleave_conversations_only_inserts_into_current_session_segment() {
         commands,
         vec!["d10", "d20", "conv50", "c100", "conv150", "c200"]
     );
+}
+
+#[test]
+fn scope_hint_shows_keystroke_and_current_scope() {
+    let items = super::scope_hint_items(HistoryScope::Session);
+    assert_eq!(items.len(), 2);
+    match &items[0] {
+        MessageItem::Keystroke { keystroke, .. } => {
+            assert!(keystroke.ctrl);
+            assert_eq!(keystroke.key, "s");
+        }
+        _ => panic!("expected the ctrl-s keystroke first"),
+    }
+    match &items[1] {
+        MessageItem::Text { content, .. } => assert_eq!(content, " to cycle scope (Session)"),
+        _ => panic!("expected the scope hint text"),
+    }
 }

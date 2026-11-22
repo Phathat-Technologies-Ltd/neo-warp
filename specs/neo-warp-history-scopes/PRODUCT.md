@@ -46,8 +46,20 @@ exists: a command run on another machine or in another shell cannot be recalled 
 - Click a tab, or press Shift-Tab to move to the next tab, as with other inline-menu tabs. The
   existing tab hint in the message bar is shown because the menu now has several tabs.
 - When the selected command is still in the new list after a switch, it stays selected.
-- Inside the agent view the menu keeps its `All | Commands | Prompts` tabs; commands in it use the
-  saved scope.
+- Inside the agent view the menu keeps its `All | Commands | Prompts` tabs. The header shows a
+  scope selector (`Scope: Host`) to the left of `Configure`. Clicking it, or pressing Ctrl-S while
+  the menu is open, moves to the next scope (Global, Host, Session, Directory, then Global again).
+  The footer adds `ctrl-s to cycle scope (Host)` before the dismiss hint. The scope filters the
+  Commands tab and the commands within All; Prompts and conversations are unaffected.
+- Ctrl-S also cycles scope in the classic menu, where it moves the active scope tab. Ctrl-S is
+  only bound while the history menu is open, so terminal flow control is unaffected otherwise.
+
+### Rows
+
+- Each command row shows how long it ran, green when it exited 0 and red otherwise, then the
+  command (truncated with an ellipsis), then the relative time (`4m ago`). Entries read from the
+  shell history file have no duration or exit code, so the duration column is blank.
+- Typing filters the rows within the current scope; the newest match stays closest to the input.
 
 ### TUI
 
@@ -61,6 +73,14 @@ exists: a command run on another machine or in another shell cannot be recalled 
 - The chosen scope is saved as the `terminal.input.history_scope` setting
   (`global`, `host`, `session`, `directory`). It is local only and is not synced to the cloud.
 - The scope is shared by all panes and both front-ends; every menu opens on the saved scope.
+
+## Inspired by atuin
+
+The menu borrows from atuin's search UI, adapted to Warp's visual style: a visible scope next to the
+query that a key cycles through, rows with a colored duration and a relative time, and filtering
+that combines the typed query with the scope. Not adopted yet: cycling scope by pressing the menu's
+open key again (Up opens the menu and then navigates it, and Ctrl-R opens command search), applying
+the scope to Ctrl-R command search, and atuin's alt-1..9 quick-select of the nearest rows.
 
 ## Out of scope
 

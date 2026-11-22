@@ -7,7 +7,7 @@ use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::Fill;
 use warp_core::ui::theme::color::internal_colors;
 use warp_errors::report_if_error;
-use warpui::elements::ChildView;
+use warpui::elements::{ChildView, Flex, ParentElement};
 use warpui::{
     AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, View, ViewContext,
     ViewHandle,
@@ -18,9 +18,10 @@ use crate::ai::blocklist::agent_view::{AgentViewController, AgentViewControllerE
 use crate::features::FeatureFlag;
 use crate::search::data_source::{Query, QueryFilter};
 use crate::search::mixer::{SearchMixer, SearchMixerEvent};
-use crate::settings::InputSettings;
+use crate::settings::{InputSettings, InputSettingsChangedEvent};
 use crate::settings_view::SettingsSection;
 use crate::terminal::history::{HistoryScope, LinkedWorkflowData};
+use crate::terminal::input::InputAction;
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
 use crate::terminal::input::inline_history::data_source::{
     AcceptHistoryItem, InlineHistoryMenuDataSource,
@@ -167,6 +168,18 @@ fn build_tab_configs(is_agent_view: bool) -> Vec<InlineMenuTabConfig<HistoryTab>
     ]
 }
 
+/// Label of the header's scope selector, which names the persisted scope.
+pub(super) fn scope_selector_label(scope: HistoryScope) -> String {
+    format!("Scope: {}", scope.label())
+}
+
+/// Whether the tabs select the item type, so scope needs its own selector in the header.
+pub(super) fn tabs_select_item_type(tab_configs: &[InlineMenuTabConfig<HistoryTab>]) -> bool {
+    !tab_configs
+        .iter()
+        .any(|config| matches!(config.id, HistoryTab::Scope(_)))
+}
+
 pub struct InlineHistoryMenuView {
     menu_view: ViewHandle<InlineMenuView<AcceptHistoryItem, HistoryTab>>,
     mixer: ModelHandle<SearchMixer<AcceptHistoryItem>>,
@@ -175,6 +188,7 @@ pub struct InlineHistoryMenuView {
     pending_tab_switch_selection: Option<HistoryItemIdentity>,
     caller_supplied_tabs: bool,
     pending_initial_buffer_sync: bool,
+    scope_selector: Option<ViewHandle<ActionButton>>,
 }
 
 impl InlineHistoryMenuView {
@@ -275,7 +289,24 @@ impl InlineHistoryMenuView {
             mixer
         });
 
+        let mut scope_selector = None;
         let menu_view = if FeatureFlag::InlineMenuHeaders.is_enabled() {
+            let selector = ctx.add_view(|ctx| {
+                ActionButton::new(
+                    scope_selector_label(*InputSettings::as_ref(ctx).history_scope),
+                    ConfigureButtonTheme,
+                )
+                .with_size(ButtonSize::Small)
+                .with_menu(true)
+                .with_tooltip("Cycle history scope (ctrl-s)")
+                .on_click(|ctx| ctx.dispatch_typed_action(InputAction::CycleHistoryScope))
+            });
+            scope_selector = Some(selector.clone());
+            let header_model = std::cell::OnceCell::<
+                ModelHandle<InlineMenuModel<AcceptHistoryItem, HistoryTab>>,
+            >::new();
+            let header_model = std::rc::Rc::new(header_model);
+            let header_model_for_render = header_model.clone();
             let configure_button = ctx.add_view(|_| {
                 ActionButton::new("Configure", ConfigureButtonTheme)
                     .with_icon(Icon::Settings)
@@ -289,11 +320,21 @@ impl InlineHistoryMenuView {
             });
             let header_config = InlineMenuHeaderConfig {
                 label: "History".to_string(),
-                trailing_element: Some(Box::new(move |_app: &AppContext| {
-                    ChildView::new(&configure_button).finish()
+                trailing_element: Some(Box::new(move |app: &AppContext| {
+                    let configure = ChildView::new(&configure_button).finish();
+                    let shows_selector = header_model_for_render.get().is_some_and(|model| {
+                        tabs_select_item_type(model.as_ref(app).tab_configs())
+                    });
+                    if !shows_selector {
+                        return configure;
+                    }
+                    Flex::row()
+                        .with_child(ChildView::new(&selector).finish())
+                        .with_child(configure)
+                        .finish()
                 })),
             };
-            ctx.add_typed_action_view(|ctx| {
+            let menu_view = ctx.add_typed_action_view(|ctx| {
                 InlineMenuView::new_with_tabs(
                     mixer.clone(),
                     positioner.clone(),
@@ -304,7 +345,9 @@ impl InlineHistoryMenuView {
                     ctx,
                 )
                 .with_header_config(header_config)
-            })
+            });
+            let _ = header_model.set(menu_view.as_ref(ctx).model().clone());
+            menu_view
         } else {
             ctx.add_typed_action_view(|ctx| {
                 InlineMenuView::new_with_tabs(
@@ -441,6 +484,12 @@ impl InlineHistoryMenuView {
             }
         });
 
+        ctx.subscribe_to_model(&InputSettings::handle(ctx), |me, _, event, ctx| {
+            if matches!(event, InputSettingsChangedEvent::HistoryScopeSetting { .. }) {
+                me.sync_scope_selector_label(ctx);
+            }
+        });
+
         let suggestions_mode_model = input_suggestions_model.clone();
         ctx.subscribe_to_model(&mixer, move |me, _, event, ctx| {
             let SearchMixerEvent::ResultsChanged = event;
@@ -466,7 +515,34 @@ impl InlineHistoryMenuView {
             pending_tab_switch_selection: None,
             caller_supplied_tabs,
             pending_initial_buffer_sync: false,
+            scope_selector,
         }
+    }
+
+    /// Advances the persisted [`HistoryScope`] and reruns the query so the command rows reflect
+    /// it. Prompt and conversation rows are not scoped.
+    pub fn cycle_scope(&mut self, ctx: &mut ViewContext<Self>) {
+        let scope = InputSettings::as_ref(ctx).history_scope.next();
+        persist_history_scope(scope, ctx);
+        let scope_tab = HistoryTab::Scope(scope);
+        self.model
+            .update(ctx, |model, _| model.set_active_tab_id(&scope_tab));
+        self.sync_scope_selector_label(ctx);
+        self.pending_tab_switch_selection = self
+            .model
+            .as_ref(ctx)
+            .selected_item()
+            .map(HistoryItemIdentity::from_item);
+        self.rerun_query(ctx);
+        self.menu_view.update(ctx, |_, ctx| ctx.notify());
+    }
+
+    fn sync_scope_selector_label(&self, ctx: &mut ViewContext<Self>) {
+        let Some(selector) = &self.scope_selector else {
+            return;
+        };
+        let label = scope_selector_label(*InputSettings::as_ref(ctx).history_scope);
+        selector.update(ctx, |button, ctx| button.set_label(label, ctx));
     }
 
     /// Returns the model handle for external use (e.g., by message bars).

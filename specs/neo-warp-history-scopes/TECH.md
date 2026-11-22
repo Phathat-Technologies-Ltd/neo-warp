@@ -74,6 +74,19 @@ menu queries.
 - On `InlineMenuEvent::TabChanged` with a scope tab, the view writes the setting, then reruns the
   query; the existing selection-restore logic keeps the selected command when present.
 
+- In the agent view (tabs carry type filters, `tabs_select_item_type`), the header's trailing
+  element renders a scope `ActionButton` before `Configure`. Its label is kept in sync with the
+  setting through an `InputSettingsChangedEvent::HistoryScopeSetting` subscription, so another
+  pane's change shows up too.
+- `InputAction::CycleHistoryScope` is bound to `ctrl-s` (`HISTORY_SCOPE_CYCLE_KEYSTROKE`) under the
+  `InlineHistoryMenuOpen` Input context flag; the selector's click dispatches the same action.
+  `InlineHistoryMenuView::cycle_scope` persists `next()`, moves a scope tab if there is one, and
+  reruns the query with selection restore. The data source already reads the setting per query.
+- `AcceptHistoryItem::produce_inline_menu_message` appends the scope hint when the tabs carry type
+  filters.
+- Rows: `CommandRun::from_entry` derives duration and success from `start_ts`, `completed_ts`, and
+  `exit_code`; `InlineHistoryItem` renders it in a fixed-width column before the command.
+
 ### TUI
 
 - The menu snapshot header lists the four scopes as `TuiInlineMenuTab`s; the row budget accounts
@@ -91,7 +104,11 @@ menu queries.
   separators, `next()` cycle.
 - `history_tests.rs::test_commands_in_scope`: two hosts and two sessions on one host; checks Host,
   Session, Directory (per session), and Global.
-- `inline_history/view_tests.rs`: scope tabs outside the agent view, type tabs inside it.
+- `inline_history/view_tests.rs`: scope tabs outside the agent view, type tabs inside it, selector
+  visibility, selector label, cycle order.
+- `inline_history/data_source_tests.rs`: footer scope hint keystroke and text.
+- `inline_history/search_item_tests.rs`: duration formatting and `CommandRun` from entries with and
+  without metadata.
 - `warp_tui` `prompt_and_command_history_menu_tests.rs`: cycling refilters rows, moves the selected
   header tab, and persists the setting.
 
@@ -101,4 +118,4 @@ menu queries.
   command string, so a command run in several directories matches only the directory of the kept
   row. A precise version would load all `(command, pwd)` pairs for the host from `commands`.
 - Apply the setting to Ctrl-R command search.
-- Optionally show the scope in the GUI menu when the agent view hides the scope tabs.
+- Cycle scope by pressing the menu's open key again; alt-1..9 quick-select (atuin-style).

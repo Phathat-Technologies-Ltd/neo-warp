@@ -7,4 +7,7 @@ mod search_item;
 mod view;
 
 pub use data_source::{AcceptHistoryItem, InlineHistoryMenuDataSource};
+/// Cycles the history scope while the history menu is open.
+pub const HISTORY_SCOPE_CYCLE_KEYSTROKE: &str = "ctrl-s";
+
 pub use view::{HistoryTab, InlineHistoryMenuEvent, InlineHistoryMenuView};
