@@ -43,7 +43,7 @@ const AGENT_OUTPUT_TEXT_PATH: &str = "agent_output.text";
 const CANCELLED_TOOL_RESULT: &str = "The user cancelled this tool call before it ran.";
 
 /// Why a turn ended without an answer, as the client's `StreamFinished` reasons.
-enum TurnError {
+pub(super) enum TurnError {
     InvalidApiKey {
         provider: api::LlmProvider,
         model: String,
@@ -86,7 +86,7 @@ impl ModelEndpoint {
         }
     }
 
-    fn llm_provider(&self) -> api::LlmProvider {
+    pub(super) fn llm_provider(&self) -> api::LlmProvider {
         match self {
             Self::Anthropic { .. } => api::LlmProvider::Anthropic,
             Self::OpenAiChatCompletions { .. } | Self::OpenAiResponses { .. } => {
@@ -100,10 +100,6 @@ impl ModelEndpoint {
 pub type ProviderFactory = Arc<dyn Fn(&ModelEndpoint) -> Result<Arc<dyn Provider>> + Send + Sync>;
 
 /// Runs one turn and sends its events to `out`. Always ends with `StreamFinished`.
-pub async fn run(request: api::Request, out: mpsc::UnboundedSender<api::ResponseEvent>) {
-    run_with_provider(request, out, Arc::new(provider_for)).await;
-}
-
 pub(crate) async fn run_with_provider(
     request: api::Request,
     out: mpsc::UnboundedSender<api::ResponseEvent>,
@@ -609,7 +605,7 @@ fn input_type_name(input: Option<&api::request::input::Type>) -> String {
 
 /// Finds where the request's selected model runs: a custom provider that lists it, or else
 /// Anthropic.
-fn resolve_model(
+pub(super) fn resolve_model(
     settings: Option<&api::request::Settings>,
 ) -> Result<(ModelEndpoint, String), TurnError> {
     let selected = settings
@@ -677,7 +673,7 @@ fn resolve_model(
     Ok((ModelEndpoint::Anthropic { credential }, selected))
 }
 
-fn provider_for(endpoint: &ModelEndpoint) -> Result<Arc<dyn Provider>> {
+pub(super) fn provider_for(endpoint: &ModelEndpoint) -> Result<Arc<dyn Provider>> {
     match endpoint {
         ModelEndpoint::Anthropic { credential } => anthropic_provider(credential),
         ModelEndpoint::OpenAiChatCompletions { base_url, api_key } => {
@@ -729,7 +725,11 @@ fn trailing_error(messages: &[Message]) -> Option<String> {
     })
 }
 
-fn classify_message_error(error: &str, model: &str, endpoint: &ModelEndpoint) -> TurnError {
+pub(super) fn classify_message_error(
+    error: &str,
+    model: &str,
+    endpoint: &ModelEndpoint,
+) -> TurnError {
     let lowered = error.to_lowercase();
     if lowered.contains("status: 401") || lowered.contains("invalid x-api-key") {
         TurnError::InvalidApiKey {

@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use bytes::Bytes;
 
 use axum::extract::{DefaultBodyLimit, Form, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -35,6 +36,9 @@ pub struct AppState {
     pub required_group: Option<String>,
     /// Directory of the Linux builds the app installs on SSH hosts, if this server offers them.
     pub remote_server_artifacts: Option<PathBuf>,
+    /// Model settings for AI helper requests that carry no credentials of their own.
+    pub ai_settings: agent::ModelSettingsCache,
+    pub make_provider: agent::ProviderFactory,
 }
 
 impl AppState {
@@ -47,6 +51,8 @@ impl AppState {
             ),
             required_group: config.oidc.required_group.clone(),
             remote_server_artifacts: config.remote_server_artifacts.clone(),
+            ai_settings: Default::default(),
+            make_provider: agent::default_provider_factory(),
         }
     }
 }
@@ -78,6 +84,8 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         sessions: SessionStore::new(Some(&config.signing_secret), config.session_max_age),
         required_group: None,
         remote_server_artifacts: config.remote_server_artifacts,
+        ai_settings: Default::default(),
+        make_provider: agent::default_provider_factory(),
     });
     std::thread::Builder::new()
         .name("embedded-selfhost-server".to_owned())
@@ -125,6 +133,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/graphql/v2", post(graphql))
         .route("/ai/multi-agent", post(agent::multi_agent))
         .route("/ai/passive-suggestions", post(agent::passive_suggestions))
+        .route(
+            "/ai/generate_am_query_suggestions",
+            post(agent::suggestions::generate_am_query_suggestions),
+        )
         .route("/download/cli", get(download_remote_server))
         // Agent requests carry the whole conversation, tool output included, so they outgrow
         // axum's 2 MB default.
@@ -145,16 +157,26 @@ async fn download_remote_server(
     Query(query): Query<DownloadQuery>,
 ) -> Response {
     let Some(dir) = &state.remote_server_artifacts else {
-        return (StatusCode::NOT_FOUND, "This server has no remote-server builds").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "This server has no remote-server builds",
+        )
+            .into_response();
     };
     let Some(file_name) = remote_server_artifact_name(&query.os, &query.arch) else {
-        return (StatusCode::NOT_FOUND, "No remote-server build for this platform").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "No remote-server build for this platform",
+        )
+            .into_response();
     };
     match tokio::fs::read(dir.join(file_name)).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "application/gzip")], bytes).into_response(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            (StatusCode::NOT_FOUND, "No remote-server build for this platform").into_response()
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            "No remote-server build for this platform",
+        )
+            .into_response(),
         Err(error) => {
             log::error!("Couldn't read the remote-server build {file_name}: {error}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -276,12 +298,22 @@ async fn graphql(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GraphqlQuery>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
     let operation = query.op.unwrap_or_default();
     let user = match bearer_token(&headers) {
         Some(token) => state.sessions.user_for_id_token(token),
         None => None,
     };
+    if operation == "GenerateCommands" {
+        return match user {
+            Some(user) => {
+                Json(agent::command_search::generate_commands(&state, &user, &body).await)
+                    .into_response()
+            }
+            None => (StatusCode::UNAUTHORIZED, "sign in required").into_response(),
+        };
+    }
     match (Operation::from_name(&operation), user) {
         (Some(operation), Some(user)) => Json(operation.response(&user)).into_response(),
         (Some(_), None) => (StatusCode::UNAUTHORIZED, "sign in required").into_response(),

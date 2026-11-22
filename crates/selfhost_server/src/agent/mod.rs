@@ -3,8 +3,13 @@
 //! `data` lines are padded URL-safe base64 protobuf `ResponseEvent`s. See
 //! `specs/self-hosted-sso/AGENT_PROTOCOL.md`.
 
+pub mod command_search;
+mod helpers;
 mod prompt;
 mod responses;
+#[cfg(test)]
+pub(crate) mod scripted;
+pub mod suggestions;
 mod tools;
 mod turn;
 
@@ -23,7 +28,15 @@ use prost::Message as _;
 use tokio::sync::mpsc;
 use warp_multi_agent_api as api;
 
+pub use helpers::ModelSettingsCache;
+pub use turn::{ModelEndpoint, ProviderFactory};
+
 use crate::{AppState, bearer_token};
+
+/// Builds providers for the user's real model endpoints.
+pub fn default_provider_factory() -> ProviderFactory {
+    Arc::new(turn::provider_for)
+}
 
 pub async fn multi_agent(
     State(state): State<Arc<AppState>>,
@@ -45,32 +58,44 @@ pub async fn multi_agent(
         "Agent turn for {}",
         user.email.as_deref().unwrap_or("<no email>")
     );
+    state
+        .ai_settings
+        .record(&user.uid, request.settings.as_ref());
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(turn::run(request, tx));
+    tokio::spawn(turn::run_with_provider(
+        request,
+        tx,
+        state.make_provider.clone(),
+    ));
     event_stream(rx)
 }
 
-/// Passive suggestions aren't offered; answer with an empty, successful stream.
-pub async fn passive_suggestions() -> Response {
+/// `POST /ai/passive-suggestions`: a prompt suggestion from the user's model, if it has one.
+pub async fn passive_suggestions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(user) =
+        bearer_token(&headers).and_then(|token| state.sessions.user_for_id_token(token))
+    else {
+        return (StatusCode::UNAUTHORIZED, "sign in required").into_response();
+    };
+    let request = match api::Request::decode(body) {
+        Ok(request) => request,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, format!("invalid request: {error}")).into_response();
+        }
+    };
+    state
+        .ai_settings
+        .record(&user.uid, request.settings.as_ref());
     let (tx, rx) = mpsc::unbounded_channel();
-    for event in [
-        api::response_event::Type::Init(api::response_event::StreamInit {
-            conversation_id: uuid::Uuid::new_v4().to_string(),
-            request_id: uuid::Uuid::new_v4().to_string(),
-            ..Default::default()
-        }),
-        api::response_event::Type::Finished(api::response_event::StreamFinished {
-            reason: Some(api::response_event::stream_finished::Reason::Done(
-                Default::default(),
-            )),
-            ..Default::default()
-        }),
-    ] {
-        let _ = tx.send(api::ResponseEvent {
-            r#type: Some(event),
-        });
-    }
-    drop(tx);
+    tokio::spawn(suggestions::suggest(
+        request,
+        tx,
+        state.make_provider.clone(),
+    ));
     event_stream(rx)
 }
 
