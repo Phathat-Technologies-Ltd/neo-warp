@@ -1,5 +1,35 @@
 use super::*;
 
+#[test]
+fn progress_lines_group_by_kind_and_count() {
+    use ProgressKind::*;
+    assert_eq!(progress_line(&[]), None);
+    assert_eq!(
+        progress_line(&[(Read, 1), (Read, 2)]).as_deref(),
+        Some("Looking at three files.")
+    );
+    assert_eq!(
+        progress_line(&[(Read, 1)]).as_deref(),
+        Some("Looking at a file.")
+    );
+    assert_eq!(
+        progress_line(&[(Search, 1), (Search, 1)]).as_deref(),
+        Some("Searching the project.")
+    );
+    assert_eq!(
+        progress_line(&[(Command, 1), (Command, 1)]).as_deref(),
+        Some("Running two commands.")
+    );
+    assert_eq!(
+        progress_line(&[(Edit, 12)]).as_deref(),
+        Some("Editing several files.")
+    );
+    assert_eq!(
+        progress_line(&[(Read, 1), (Command, 1)]).as_deref(),
+        Some("Checking a few things.")
+    );
+}
+
 const FIND: &str = "find . -type d -not -path '*/.git*' -not -path '*/node_modules*' -maxdepth 3";
 const RISKY: [&str; 4] = [
     FIND,

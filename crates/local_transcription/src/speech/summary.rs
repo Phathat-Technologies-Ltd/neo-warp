@@ -196,6 +196,48 @@ pub fn plural(count: usize, noun: &str) -> String {
     }
 }
 
+/// A kind of tool call, for grouped progress lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressKind {
+    Read,
+    Search,
+    Command,
+    Edit,
+    Other,
+}
+
+/// One spoken line for a batch of tool calls, each with how many items it covers, such as
+/// "Looking at three files." A batch of mixed kinds gets a generic line.
+pub fn progress_line(batch: &[(ProgressKind, usize)]) -> Option<String> {
+    let (first, _) = batch.first()?;
+    if batch.iter().any(|(kind, _)| kind != first) {
+        return Some("Checking a few things.".to_owned());
+    }
+    let count = batch.iter().map(|(_, count)| count).sum::<usize>();
+    let line = match first {
+        ProgressKind::Read => format!("Looking at {}.", counted(count, "file")),
+        ProgressKind::Search => "Searching the project.".to_owned(),
+        ProgressKind::Command => format!("Running {}.", counted(count, "command")),
+        ProgressKind::Edit => format!("Editing {}.", counted(count, "file")),
+        ProgressKind::Other => "Working on it.".to_owned(),
+    };
+    Some(line)
+}
+
+/// "a file", "three files", "several files".
+fn counted(count: usize, noun: &str) -> String {
+    const WORDS: [&str; 9] = [
+        "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ];
+    match count {
+        0 | 1 => format!("a {noun}"),
+        count => match WORDS.get(count - 2) {
+            Some(word) => format!("{word} {noun}s"),
+            None => format!("several {noun}s"),
+        },
+    }
+}
+
 #[cfg(test)]
 #[path = "summary_tests.rs"]
 mod tests;
