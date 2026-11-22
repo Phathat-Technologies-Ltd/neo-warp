@@ -76,6 +76,17 @@ impl<P: BackingView> PaneHeader<P> {
     }
 
     pub fn is_sharing_dialog_enabled<C: warpui::ViewAsRef>(&self, ctx: &C) -> bool {
+        let is_conversation = matches!(
+            self.sharing_dialog().as_ref(ctx).target(),
+            Some(ShareableObject::AIConversation(_))
+        );
+        if !sharing_entry_points_enabled(
+            is_conversation,
+            FeatureFlag::SharingAndTeams.is_enabled(),
+            FeatureFlag::ConversationCloudSync.is_enabled(),
+        ) {
+            return false;
+        }
         let sharing_enabled = self.has_shareable_object(ctx);
         if self.has_shareable_shared_session(ctx) {
             sharing_enabled && FeatureFlag::SessionSharingAcls.is_enabled()
@@ -308,3 +319,17 @@ impl<P: BackingView> PaneHeader<P> {
         }
     }
 }
+
+/// Whether pane-header sharing entry points may be shown. Organization builds hide all sharing
+/// when `SharingAndTeams` is off, and conversation sharing when `ConversationCloudSync` is off.
+fn sharing_entry_points_enabled(
+    is_conversation: bool,
+    sharing_and_teams: bool,
+    conversation_cloud_sync: bool,
+) -> bool {
+    sharing_and_teams && (!is_conversation || conversation_cloud_sync)
+}
+
+#[cfg(test)]
+#[path = "sharing_tests.rs"]
+mod tests;

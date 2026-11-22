@@ -56,12 +56,17 @@ cannot turn them back on.
 - `cloud_agents`: cloud mode, ambient and scheduled agents, handoff, cloud environments, runners,
   and their settings pages.
 - `warp_hosted_mcp`: Warp-hosted MCP servers in the MCP gallery.
-- `sharing_and_teams`: session sharing, block sharing from the terminal, and the shared blocks and
-  teams settings pages.
+- `sharing_and_teams`: session sharing, block sharing from the terminal, the shared blocks and
+  teams settings pages, and the pane header share button with its "Share pane" command palette
+  entry and keybinding (Drive objects, sessions, and conversations).
 - `billing_and_referrals`: billing, usage, and referrals settings pages, the workspace upgrade
   prompts gated on the flag, and the resource center "Invite a friend" button.
 - `block_titles`: shared block title generation requests.
-- `conversation_cloud_sync`: cloud conversation storage and its privacy setting.
+- `conversation_cloud_sync`: cloud conversation storage, its privacy setting toggle, and every
+  conversation share entry point: the pane header share button and its "not stored in the cloud"
+  tooltip, the AI block "Copy share link" and "Share conversation" menu items, and the
+  conversation list "Share conversation" item. Conversation sharing also requires
+  `sharing_and_teams`.
 - `codebase_indexing`: client indexing and embedding (`FullSourceCodeEmbedding`,
   `CodebaseIndexPersistence`, `CodebaseIndexSpeedbump`, `CrossRepoContext`,
   `RemoteCodebaseIndexing`) and the embedded server's codebase index.
@@ -73,6 +78,6 @@ server instead of disappearing:
 
 - `warp_drive`: workflow, notebook, and env var collection entry points outside the Drive panel
   (command palette, slash commands, block context menus).
-- `sharing_and_teams`: object/Drive sharing and guest dialogs, and team invite flows outside
-  settings.
+- `sharing_and_teams`: Drive panel object sharing menus and guest dialogs outside the pane header,
+  and team invite flows outside settings.
 - `billing_and_referrals`: upgrade modals raised by quota or plan errors outside the workspace view.

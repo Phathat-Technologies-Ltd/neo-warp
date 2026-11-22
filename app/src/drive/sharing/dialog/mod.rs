@@ -443,6 +443,10 @@ impl SharingDialog {
 
     /// Returns `true` if the target is an AI conversation that cannot be shared.
     /// This happens when the conversation hasn't been synced to the cloud.
+    pub fn target(&self) -> Option<&ShareableObject> {
+        self.target.as_ref()
+    }
+
     pub fn is_unsharable_conversation(&self, app: &AppContext) -> bool {
         if let Some(ShareableObject::AIConversation(id)) = &self.target {
             !BlocklistAIHistoryModel::as_ref(app).can_conversation_be_shared(id)
