@@ -37,9 +37,20 @@ impl ConversationState {
 /// headphones, so a cough or a click does not interrupt it.
 pub const BARGE_IN_AFTER: Duration = Duration::from_millis(120);
 
-/// The same on loudspeakers, where the microphone also hears the assistant: without echo
-/// cancellation only sustained speech is trusted to be the user's.
-pub const BARGE_IN_AFTER_ON_SPEAKERS: Duration = Duration::from_millis(600);
+/// The same on loudspeakers with acoustic echo cancellation, which removes the assistant from the
+/// microphone signal. Loudspeakers without it are half-duplex: speech never barges in, and only a
+/// stop phrase interrupts the assistant.
+pub const BARGE_IN_AFTER_WITH_ECHO_CANCELLATION: Duration = Duration::from_millis(200);
+
+/// How long after the assistant last spoke a transcript that repeats its words is dropped as echo.
+pub const RECENT_SPEECH_WINDOW: Duration = Duration::from_secs(10);
+
+/// How many of the assistant's latest sentences a transcript is compared with.
+const RECENT_SENTENCES: usize = 8;
+
+/// The share of a transcript's words that must appear in the assistant's recent speech for it to
+/// be treated as echo.
+const ECHO_WORD_OVERLAP: f32 = 0.8;
 
 /// How often the owner re-checks barge-in while the user keeps talking.
 pub const BARGE_IN_POLL: Duration = Duration::from_millis(40);
@@ -129,6 +140,10 @@ pub struct ConversationController<A, Id> {
     approvals: ApprovalFlow<Id>,
     /// Conversation mode stays on but nothing is read aloud.
     muted: bool,
+    /// The microphone signal has the assistant's voice removed by acoustic echo cancellation.
+    echo_cancelled: bool,
+    /// The words of the assistant's latest sentences, oldest first.
+    recent_speech: VecDeque<Vec<String>>,
 }
 
 impl<A, Id> Default for ConversationController<A, Id> {
@@ -153,6 +168,8 @@ impl<A, Id> Default for ConversationController<A, Id> {
             approval_prompt_seq: None,
             approvals: ApprovalFlow::default(),
             muted: false,
+            echo_cancelled: false,
+            recent_speech: VecDeque::new(),
         }
     }
 }
@@ -183,6 +200,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             reply: self.reply + 1,
             headphones: self.headphones,
             muted: self.muted,
+            echo_cancelled: self.echo_cancelled,
             ..Self::default()
         };
     }
@@ -201,6 +219,23 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.headphones = headphones;
     }
 
+    /// Whether the microphone signal has acoustic echo cancellation, so speech over the assistant
+    /// on loudspeakers can be trusted once it lasts [`BARGE_IN_AFTER_WITH_ECHO_CANCELLATION`].
+    pub fn set_echo_cancelled(&mut self, echo_cancelled: bool) {
+        self.echo_cancelled = echo_cancelled;
+    }
+
+    /// Whether the microphone hears the assistant unfiltered, so nothing heard over it is used.
+    fn is_half_duplex(&self) -> bool {
+        !self.headphones && !self.echo_cancelled
+    }
+
+    /// Whether transcripts heard at `now` are dropped because the microphone may be hearing the
+    /// assistant; the owner keeps partials off screen and holds auto-send meanwhile.
+    pub fn is_echo_window(&self, now: Instant) -> bool {
+        self.is_on() && self.is_half_duplex() && self.is_audible(now)
+    }
+
     fn is_on(&self) -> bool {
         self.state != ConversationState::Off
     }
@@ -215,11 +250,47 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.playing.is_some() || self.synthesizing.is_some() || !self.ready.is_empty()
     }
 
-    fn barge_in_after(&self) -> Duration {
+    fn barge_in_after(&self) -> Option<Duration> {
         if self.headphones {
-            BARGE_IN_AFTER
+            Some(BARGE_IN_AFTER)
+        } else if self.echo_cancelled {
+            Some(BARGE_IN_AFTER_WITH_ECHO_CANCELLATION)
         } else {
-            BARGE_IN_AFTER_ON_SPEAKERS
+            None
+        }
+    }
+
+    /// Whether `text` mostly repeats what the assistant said recently.
+    fn repeats_recent_speech(&self, text: &str, now: Instant) -> bool {
+        let spoke_recently = self.playing.is_some()
+            || self
+                .played_until
+                .is_some_and(|until| now < until + RECENT_SPEECH_WINDOW);
+        if !spoke_recently {
+            return false;
+        }
+        let heard = speech_words(text);
+        if heard.len() < 2 {
+            return false;
+        }
+        let matched = heard
+            .iter()
+            .filter(|word| {
+                self.recent_speech
+                    .iter()
+                    .any(|sentence| sentence.contains(word))
+            })
+            .count();
+        matched as f32 >= heard.len() as f32 * ECHO_WORD_OVERLAP
+    }
+
+    /// Records that the assistant is now audible, so speech already under way counts as
+    /// overlapping it.
+    fn became_audible(&mut self) {
+        if self.talking
+            && let Some(utterance) = &mut self.utterance
+        {
+            utterance.overlapped = true;
         }
     }
 
@@ -408,6 +479,10 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             return Vec::new();
         };
         self.synthesizing = Some(seq);
+        if self.recent_speech.len() == RECENT_SENTENCES {
+            self.recent_speech.pop_front();
+        }
+        self.recent_speech.push_back(speech_words(&text));
         vec![PlaybackAction::Synthesize {
             reply: self.reply,
             seq,
@@ -448,6 +523,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
                 self.playing = Some(seq);
                 self.playing_since = Some(now);
                 self.state = ConversationState::Speaking;
+                self.became_audible();
                 actions.push(PlaybackAction::Play { reply, seq, audio });
             }
             Some(audio) => self.ready.push_back((seq, audio)),
@@ -473,6 +549,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         let mut actions = Vec::new();
         if let Some((seq, audio)) = self.ready.pop_front() {
             self.playing = Some(seq);
+            self.became_audible();
             actions.push(PlaybackAction::Play { reply, seq, audio });
         } else {
             self.playing_since = None;
@@ -510,11 +587,14 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         let Some(utterance) = self.utterance else {
             return Vec::new();
         };
+        let Some(barge_in_after) = self.barge_in_after() else {
+            return Vec::new();
+        };
         let overlap_start = match self.playing_since {
             Some(since) => since.max(utterance.started_at),
             None => utterance.started_at,
         };
-        if now.saturating_duration_since(overlap_start) < self.barge_in_after() {
+        if now.saturating_duration_since(overlap_start) < barge_in_after {
             return Vec::new();
         }
         let reply = self.reply;
@@ -542,7 +622,10 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             return (FinalOutcome::NotConsumed, Vec::new());
         }
         let barged_in = utterance.is_some_and(|utterance| utterance.barged_in);
-        let overlapped = utterance.is_some_and(|utterance| utterance.overlapped);
+        // A final can arrive without a speech start (the VAD missed it), and a long segment can
+        // end inside the echo tail, so being audible now counts as overlap too.
+        let overlapped =
+            utterance.is_some_and(|utterance| utterance.overlapped) || self.is_audible(now);
         let assistant_busy = matches!(
             self.state,
             ConversationState::Speaking | ConversationState::Thinking
@@ -556,16 +639,34 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             self.state = ConversationState::Listening;
             return (FinalOutcome::Stopped, actions);
         }
-        if overlapped && !barged_in && !self.headphones {
+        if overlapped && !self.headphones && (self.is_half_duplex() || !barged_in) {
             return (FinalOutcome::Echo, Vec::new());
         }
         let started_at = utterance.map(|utterance| utterance.started_at);
+        // Approval answers come first: they reuse the prompt's own words ("say run it, or no").
         match self.approvals.on_utterance(text, started_at, now) {
-            ApprovalVerdict::NotAnAnswer => (FinalOutcome::NotConsumed, Vec::new()),
-            ApprovalVerdict::Ignored => (FinalOutcome::Ignored, Vec::new()),
-            ApprovalVerdict::Answered(id, reply) => (FinalOutcome::Answered(id, reply), Vec::new()),
+            ApprovalVerdict::NotAnAnswer => {}
+            ApprovalVerdict::Ignored => return (FinalOutcome::Ignored, Vec::new()),
+            ApprovalVerdict::Answered(id, reply) => {
+                return (FinalOutcome::Answered(id, reply), Vec::new());
+            }
         }
+        if self.repeats_recent_speech(text, now) {
+            return (FinalOutcome::Echo, Vec::new());
+        }
+        (FinalOutcome::NotConsumed, Vec::new())
     }
+}
+
+/// The lowercase words of `text`, without punctuation.
+fn speech_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
+                .to_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
 }
 
 #[cfg(test)]

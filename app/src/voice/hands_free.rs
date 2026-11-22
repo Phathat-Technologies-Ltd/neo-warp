@@ -5,6 +5,7 @@
 use instant::Instant;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::{SinkExt as _, StreamExt as _};
@@ -24,6 +25,9 @@ use crate::server::server_api::ServerApiProvider;
 use crate::settings::AISettings;
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
+
+/// How often a held auto-send re-checks whether the reply has gone quiet.
+const ECHO_RECHECK: Duration = Duration::from_millis(200);
 
 pub enum HandsFreeEvent {
     /// The state changed; every input refreshes its indicator.
@@ -133,7 +137,15 @@ impl HandsFreeSession {
                     text: if consumed { String::new() } else { text },
                 }
             }
-            message @ (ServerMessage::Partial { .. } | ServerMessage::Error { .. }) => message,
+            ServerMessage::Partial { utterance, text } => ServerMessage::Partial {
+                utterance,
+                text: if conversation.as_ref(ctx).is_echo_window() {
+                    String::new()
+                } else {
+                    text
+                },
+            },
+            message @ ServerMessage::Error { .. } => message,
         }
     }
 
@@ -145,6 +157,11 @@ impl HandsFreeSession {
         let delay = at.saturating_duration_since(Instant::now());
         ctx.spawn(Timer::after(delay), move |me, _, ctx| {
             if me.generation != generation {
+                return;
+            }
+            if ConversationSession::as_ref(ctx).is_echo_window() {
+                me.controller.defer_auto_send(Instant::now() + ECHO_RECHECK);
+                me.schedule_auto_send(ctx);
                 return;
             }
             if let Some(effect) = me.controller.tick(Instant::now()) {

@@ -152,7 +152,7 @@ off.
   - Accepted phrases are whole utterances: yes, approve(d), run it, yes run it, go ahead; or no,
     nope, skip (it), cancel, reject, don't, do not. "Yeah" and "yep" are not accepted.
   - The answer window opens when the prompt sentence finishes playing (or its synthesis fails)
-    plus `ECHO_TAIL` (400 ms), and only an utterance whose VAD `speech_start` is inside the window
+    plus `ECHO_TAIL` (700 ms), and only an utterance whose VAD `speech_start` is inside the window
     counts. A prompt that never finished playing (stopped, barged in, replaced) never opens it.
   - After `APPROVAL_LISTEN_FOR` (20 s) the window closes, the assistant says "I'll wait for you to
     approve it on screen", and only the buttons answer.
@@ -163,19 +163,42 @@ off.
   - Output kind: `SpeechOutput` reports cpal's device type (Headphones, Headset, Earpiece,
     HearingAid) and name; `is_headphone_device_name` also matches names such as "AirPods",
     "Headphones", "Buds". When neither says headphones, the output is treated as loudspeakers.
-  - Barge-in needs `BARGE_IN_AFTER` (120 ms) of overlap on headphones and
-    `BARGE_IN_AFTER_ON_SPEAKERS` (600 ms) on loudspeakers. Overlap is measured from the later of
-    the user's speech start and the start of playback; every speech start is recorded, and the
-    session re-checks every `BARGE_IN_POLL` (40 ms) while the user keeps talking.
-  - On loudspeakers, a final whose speech started while audio played (or within `ECHO_TAIL` after
-    it) and never barged in is dropped as echo (`FinalOutcome::Echo`). On headphones it is used.
+  - Loudspeakers without echo cancellation are strictly half-duplex. A sustained echo of the reply
+    used to pass the old 600 ms speaker barge-in, stop playback, and be sent as the next prompt, so
+    the agent talked to itself. Now:
+    - Speech never barges in (`check_barge_in` does nothing); only a stop phrase interrupts.
+    - A final is echo (`FinalOutcome::Echo`, never reaching the input) when its utterance started
+      while audio played or within `ECHO_TAIL` (700 ms) after it, when playback started while it
+      was under way, or when it arrives inside that window without a speech start.
+    - During that window (`ConversationController::is_echo_window`) hands-free shows empty
+      partials and holds any pending auto-send, re-checking every 200 ms, so echo can neither show
+      text nor send a follow-up turn.
+  - With echo cancellation (`set_echo_cancelled(true)`), barge-in needs
+    `BARGE_IN_AFTER_WITH_ECHO_CANCELLATION` (200 ms) and a barged-in final is used; overlapping
+    speech that never barged in is still echo. On headphones, barge-in needs `BARGE_IN_AFTER`
+    (120 ms) and overlapping speech is used. Overlap is measured from the later of the user's
+    speech start and the start of playback, re-checked every `BARGE_IN_POLL` (40 ms).
+  - Whatever the output, a final of 2+ words of which at least 80% appear in the last 8
+    synthesized sentences, within `RECENT_SPEECH_WINDOW` (10 s) of the assistant last being
+    audible, is dropped as echo. Approval answers are checked first, because they reuse the
+    prompt's words ("Say run it, or no").
   - "Stop" (stop, stop talking, stop it, quiet, be quiet, shush) is a command only while the
     assistant is Speaking or Thinking, when it barged in, or when it overlapped the speech; while
     Listening it is an ordinary prompt. After a stop or barge-in, later replies and readouts of
     the same turn stay silent until the next prompt.
   - Not done: a playback-correlated energy gate and a raised VAD threshold during playback (the
-    server VAD config is fixed per socket). Real AEC (VoiceProcessingIO on macOS, WebRTC AEC3
-    elsewhere) remains future work; loudspeaker barge-in is therefore deliberately slow.
+    server VAD config is fixed per socket).
+  - Real AEC is not implemented; nothing calls `set_echo_cancelled(true)` yet, so loudspeakers stay
+    half-duplex. The planned macOS path: open one `kAudioUnitSubType_VoiceProcessingIO` unit
+    (coreaudio-rs or AudioToolbox) that does both capture (input bus 1) and playback (output bus
+    0), replacing cpal for both `LiveCapture` and `SpeechOutput` while conversation mode runs, since
+    the canceller only removes audio played through the same unit. Its render callback pulls TTS
+    samples from a lock-free queue fed by `SpeechOutput::play` (resampled to the unit's rate) and
+    reports playback end; its input callback resamples to 16 kHz for `LiveChunk`. If the unit fails
+    to start, fall back to cpal and keep half-duplex. It was left out of this change because
+    sharing one unit between the hands-free and conversation sessions, device-change handling,
+    and testing on real hardware could not be done safely here. WebRTC AEC3 elsewhere is also
+    future work.
 - **Spoken readout of results**: when a command action finishes (not cancelled), its result is
   spoken after the reply so far (`conversation_text::spoken_action_result`). Successful output of
   at most 2 lines and 120 characters is read ("Ran pwd: /tmp."); anything longer, or a failure,

@@ -204,6 +204,13 @@ impl HandsFreeController {
         effects
     }
 
+    /// Moves a pending auto-send to no earlier than `at`.
+    pub fn defer_auto_send(&mut self, at: Instant) {
+        if let Some(due) = &mut self.auto_send_at {
+            *due = (*due).max(at);
+        }
+    }
+
     /// Sends the prompt once the auto-send pause has passed.
     pub fn tick(&mut self, now: Instant) -> Option<HandsFreeEffect> {
         let due = self.auto_send_at.is_some_and(|at| now >= at)

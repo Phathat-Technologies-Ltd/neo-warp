@@ -306,3 +306,16 @@ fn starts_input_ignores_the_open_utterance() {
     let buffer = range.replace("git", "status");
     assert!(!range.starts_input(&buffer));
 }
+
+#[test]
+fn deferred_auto_send_waits_for_the_new_time() {
+    let now = Instant::now();
+    let mut controller = started();
+    controller.on_message(final_(1, "run the tests"), now);
+    controller.defer_auto_send(now + Duration::from_secs(3));
+    assert_eq!(controller.tick(now + Duration::from_secs(2)), None);
+    assert_eq!(
+        controller.tick(now + Duration::from_secs(3)),
+        Some(HandsFreeEffect::AutoSend)
+    );
+}
