@@ -27013,6 +27013,9 @@ impl View for Workspace {
         {
             context.set.insert(flags::IS_VOICE_INPUT_ENABLED);
         }
+        if *AISettings::as_ref(app).system_echo_cancellation {
+            context.set.insert(flags::SYSTEM_ECHO_CANCELLATION_FLAG);
+        }
 
         if self
             .active_tab_pane_group()

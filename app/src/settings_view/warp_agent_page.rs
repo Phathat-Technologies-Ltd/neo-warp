@@ -111,9 +111,9 @@ use crate::settings::{
     NaturalLanguageAutosuggestionsEnabled, OrchestrationMessageDisplayMode, PromptSubmissionMode,
     SharedBlockTitleGenerationEnabled, ShouldRenderUseAgentToolbarForUserCommands,
     ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
-    ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceContextCorrection, VoiceDenoise,
-    VoiceInputEnabled, VoiceInputLanguage, VoiceInputToggleKey, VoiceSpeakerIdEnabled,
-    WarpCloudModelsEnabled,
+    SystemEchoCancellation, ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceContextCorrection,
+    VoiceDenoise, VoiceInputEnabled, VoiceInputLanguage, VoiceInputToggleKey,
+    VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
 };
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -500,6 +500,26 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
             )
             .with_group(bindings::BindingGroup::WarpAi)
             .with_enabled(|| cfg!(feature = "voice_input")),
+        ],
+        app,
+    );
+    ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
+        vec![
+            ToggleSettingActionPair::new(
+                "system-wide echo cancellation",
+                builder(SettingsAction::WarpAgent(
+                    WarpAgentPageAction::ToggleSystemEchoCancellation,
+                )),
+                &(context.clone() & id!(flags::IS_VOICE_INPUT_ENABLED)),
+                flags::SYSTEM_ECHO_CANCELLATION_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi)
+            .with_enabled(|| cfg!(feature = "voice_input"))
+            .is_supported_on_current_platform(
+                AISettings::as_ref(app)
+                    .system_echo_cancellation
+                    .is_supported_on_current_platform(),
+            ),
         ],
         app,
     );
@@ -2844,6 +2864,7 @@ pub enum WarpAgentPageAction {
     CycleConversationSpeechRate,
     ToggleConversationReadCodeSummaries,
     ToggleVoiceDenoise,
+    ToggleSystemEchoCancellation,
     ToggleVoiceSpeakerId,
     /// Switches "Recognize my voice" to the next sensitivity.
     CycleVoiceSpeakerSensitivity,
@@ -3267,6 +3288,18 @@ impl TypedActionView for WarpAgentPageView {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.voice_denoise.toggle_and_save_value(ctx));
                 });
+                crate::voice::apply_system_echo_cancellation_setting(ctx);
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::ToggleSystemEchoCancellation => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.system_echo_cancellation.toggle_and_save_value(ctx));
+                    if *settings.system_echo_cancellation {
+                        report_if_error!(settings.system_audio_notice_shown.set_value(false, ctx));
+                    }
+                });
+                crate::voice::apply_system_echo_cancellation_setting(ctx);
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
@@ -3341,6 +3374,7 @@ impl TypedActionView for WarpAgentPageView {
             }
             #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
             WarpAgentPageAction::ToggleVoiceDenoise
+            | WarpAgentPageAction::ToggleSystemEchoCancellation
             | WarpAgentPageAction::ToggleVoiceSpeakerId
             | WarpAgentPageAction::CycleVoiceSpeakerSensitivity
             | WarpAgentPageAction::EnrollVoice
@@ -4781,6 +4815,7 @@ struct VoiceWidget {
     conversation_rate_button: MouseStateHandle,
     conversation_code_summaries_toggle: SwitchStateHandle,
     denoise_toggle: SwitchStateHandle,
+    system_echo_cancellation_toggle: SwitchStateHandle,
     speaker_id_toggle: SwitchStateHandle,
     speaker_model_button: MouseStateHandle,
     enroll_button: MouseStateHandle,
@@ -4926,6 +4961,20 @@ impl VoiceWidget {
                     &view.local_only_icon_tooltip_states,
                     app,
                 ));
+                if ai_settings
+                    .system_echo_cancellation
+                    .is_supported_on_current_platform()
+                {
+                    column.add_child(render_ai_setting_toggle::<SystemEchoCancellation>(
+                        "Cancel Sound From Other Apps",
+                        WarpAgentPageAction::ToggleSystemEchoCancellation,
+                        *ai_settings.system_echo_cancellation,
+                        true,
+                        self.system_echo_cancellation_toggle.clone(),
+                        &view.local_only_icon_tooltip_states,
+                        app,
+                    ));
+                }
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             if crate::voice::local_model::is_speaker_id_enabled() {

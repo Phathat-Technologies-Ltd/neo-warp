@@ -8,6 +8,7 @@ use anyhow::Context as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::recovery::{Heartbeat, RecoveryTiming, Signal, StreamFault, supervise};
+use crate::voice_processing::system_aec::{self, SystemCaptureLease};
 use crate::voice_processing::{
     self, AudioBackend, CaptureLease, CaptureRegistration, open_with_fallback,
 };
@@ -78,9 +79,11 @@ impl LiveCapture {
 enum CaptureStream {
     Cpal(#[allow(dead_code)] cpal::Stream),
     VoiceProcessing(#[allow(dead_code)] CaptureLease),
+    SystemAec(#[allow(dead_code)] SystemCaptureLease),
 }
 
-/// Opens the microphone on the preferred backend, falling back to cpal.
+/// Opens the microphone on the system echo-cancelling pipeline when it is wanted and works, else on
+/// the preferred backend, falling back to cpal.
 fn open_capture<F>(
     on_chunk: Arc<Mutex<F>>,
     heartbeat: Heartbeat,
@@ -89,6 +92,18 @@ fn open_capture<F>(
 where
     F: FnMut(LiveChunk) + Send + 'static,
 {
+    if system_aec::should_try() {
+        let mut on_mono = chunk_emitter(on_chunk.clone(), heartbeat.clone(), TARGET_RATE);
+        match system_aec::acquire_capture(Box::new(move |mono: &[f32]| on_mono(mono))) {
+            Ok(lease) => {
+                log::info!("Hands-free microphone: using system-wide echo cancellation");
+                return Ok(CaptureStream::SystemAec(lease));
+            }
+            Err(error) => {
+                log::warn!("System echo cancellation unavailable, falling back: {error:#}");
+            }
+        }
+    }
     let (stream, backend) = voice_processing::with_selector(|selector| {
         open_with_fallback(
             selector,

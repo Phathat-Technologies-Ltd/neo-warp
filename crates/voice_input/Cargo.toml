@@ -22,14 +22,31 @@ warpui_core.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 coreaudio-rs = { version = "0.14.2", default-features = false, features = ["core_audio", "audio_toolbox"], optional = true }
+objc2 = { version = "0.6", optional = true }
 objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AUComponent", "AudioUnitProperties"], optional = true }
-objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"], optional = true }
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"], optional = true }
 objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std"], optional = true }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary", "CFString"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSUUID", "NSValue", "NSObject", "NSProcessInfo"], optional = true }
+# WebRTC AEC3 for system-wide echo cancellation.
+sonora = "0.3"
+
+# Used by the `system_aec_probe` example.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.6"
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary", "CFString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSString", "NSUUID", "NSValue", "NSObject"] }
 
 [features]
-# Echo-cancelled full-duplex audio through Apple's voice-processing I/O unit (macOS only).
+# Echo cancellation through Apple's voice-processing I/O unit and the system-wide process tap
+# pipeline (macOS only).
 voice_processing = [
     "dep:coreaudio-rs",
+    "dep:objc2",
+    "dep:objc2-core-foundation",
+    "dep:objc2-foundation",
     "dep:objc2-audio-toolbox",
     "dep:objc2-core-audio",
     "dep:objc2-core-audio-types",

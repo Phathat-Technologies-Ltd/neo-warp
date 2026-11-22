@@ -313,6 +313,7 @@ impl SpeakerProfile {
     /// Starts guided enrollment: the user reads each phrase while the microphone records.
     pub fn start_enrollment(&mut self, ctx: &mut ModelContext<Self>) -> Result<(), String> {
         self.cancel_enrollment(ctx);
+        super::apply_system_echo_cancellation_setting(ctx);
         let recording = Arc::new(Mutex::new(Vec::new()));
         let sink = recording.clone();
         let capture = LiveCapture::start(

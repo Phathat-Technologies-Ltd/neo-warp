@@ -45,6 +45,12 @@ the embedded server's `/ai/transcribe` route (`crates/selfhost_server/src/transc
   (`kAudioUnitSubType_VoiceProcessingIO`) using `coreaudio-sys` or `objc2-audio-toolbox`. It
   provides the system's echo cancellation and noise suppression. See
   `specs/neo-warp-voice-conversation/TECH.md`. Hands-free on its own can use plain `cpal` input.
+- On macOS 14.2+, hands-free (and speaker enrollment) prefer system-wide echo cancellation: a
+  Core Audio process tap of everything the Mac plays, cancelled from the microphone with WebRTC
+  AEC3, so music, videos and spoken replies aren't transcribed. Setting
+  `agents.voice.system_echo_cancellation` (default on); falls back to the voice-processing unit or
+  plain `cpal` when unavailable or when system audio recording isn't allowed (a toast shown once ever, re-armed by turning the setting back on). See
+  "System-wide echo cancellation" in `specs/neo-warp-voice-conversation/TECH.md`.
 
 ## Streaming endpoint
 A new WebSocket route on the embedded server: `GET /ai/transcribe/stream` (upgrade).

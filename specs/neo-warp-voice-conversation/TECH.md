@@ -287,6 +287,46 @@ synthesis. `ConversationSession` follows `HandsFreeSession::target_surface()`.
     Bluetooth headsets (it can switch them to the HFP profile), aggregate devices, and whether the
     unit's `kAudioDevicePropertyBufferFrameSize` query in `set_input_callback` succeeds on every
     device (if not, the start fails and cpal is used).
+- **System-wide echo cancellation (macOS 14.2+)**: `voice_input::voice_processing::system_aec`,
+  behind `agents.voice.system_echo_cancellation` (default on, macOS only; Settings → Warp Agent →
+  Voice "Cancel Sound From Other Apps" and a Command Palette enable/disable pair). It removes audio
+  played by *any* process, including our own TTS, from the microphone.
+  - Pipeline: a private global `CATapDescription` process tap (no exclusions) and the default input
+    in one private aggregate device (tap drift compensation on, rate set to 48 kHz when possible;
+    16/32/48 kHz accepted, otherwise the start fails). The aggregate's I/O proc splits each buffer
+    into the microphone (first buffer, channel 0) and the tap (last buffer, channels averaged),
+    accumulates 10 ms frames, and runs sonora (pure-Rust WebRTC AEC3): `process_render_f32` with the
+    tap, then `process_capture_f32` with the microphone. AEC3 finds the ~75 ms delay itself. Output
+    is resampled to 16 kHz with rubato `FftFixedInOut` and pushed into a lock-free `SampleRing`. The
+    I/O proc never locks, allocates (buffers are preallocated) or makes property calls. A worker
+    thread drains the ring every 10 ms into the `LiveCapture` sink.
+  - Processing: AEC3 always; AEC3 noise suppression only when `agents.voice.denoise` (RNNoise) is
+    off (changing it rebuilds the pipeline); AGC and the other APM stages are off.
+  - Selection, per microphone open: setting on + macOS ≥ 14.2 + tap not blocked + fewer than 2
+    failed starts → system AEC; else the voice-processing unit (conversation mode with
+    `conversation_echo_cancellation`); else cpal. Hands-free, conversation and speaker enrollment
+    all open the microphone through `LiveCapture`, so voiceprints are enrolled and verified on the
+    same path. `SpeechOutput::open` uses plain cpal while the pipeline runs (the tap hears it).
+    `is_echo_cancelling()` is true while a microphone is attached to a live pipeline, so barge-in
+    uses the short delay.
+  - Lifetime: started on first use and kept warm after the last microphone detaches, for
+    `IDLE_LINGER` (10 min), because startup takes 2–4.5 s; while it is warming up the worker pings
+    the sink so the supervisor doesn't count the delay as a stall (no audio after 8 s fails the
+    start). A default input/output device change or a stall (no frames for 1 s) rebuilds it on the
+    next open; supervisors are told to reopen right away. Turning the setting off stops it.
+  - Permission: creating the tap makes macOS ask for system audio recording
+    (`NSAudioCaptureUsageDescription` in the plist; needs a signed bundle). Denial is silent: the
+    tap delivers zeros. `TapHealthDetector` (every 500 ms after audio starts) marks the tap healthy
+    once it carries sound, and blocked after 3 s of cumulative silence while some process reports
+    `kAudioProcessPropertyIsRunningOutput`. Blocked → fall back (microphones reopen), log at info,
+    and send a notice; `HandsFreeSession` shows, once ever (private setting
+    `system_audio_notice_shown`, cleared when the setting is turned back on), a persistent toast "Allow neo-warp to
+    record system audio in System Settings › Privacy & Security to cancel sound from other apps."
+    with a link to the Privacy_AudioCapture pane. Toggling the setting off and on retries and re-arms the notice.
+  - Tests: health detector and selector with fakes (`system_aec/mod_tests.rs`), output-backend
+    choice. The Core Audio code is exercised by `cargo run -p voice_input --example
+    system_aec_probe` (offline AEC3 on recorded tap + microphone: 30–50 dB cancellation, ~0.6% of a
+    core).
 - To make "stop" reliable on speakers without echo cancellation, short stop phrases (also "enough"
   and "that's enough") are honoured even when they overlap playback and never barged in; they are
   checked before the echo filter.

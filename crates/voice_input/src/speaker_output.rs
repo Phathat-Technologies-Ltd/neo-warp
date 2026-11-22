@@ -10,6 +10,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 
 use crate::live::LinearResampler;
+use crate::voice_processing::system_aec;
 use crate::voice_processing::{self, AudioBackend, OnFinished, OutputLease, open_with_fallback};
 
 /// The speech gain the output ramps toward, as `f32` bits.
@@ -131,16 +132,25 @@ impl SpeechOutput {
     /// Opens the default output device, on the echo-cancelling unit while
     /// [`voice_processing::set_voice_processing_wanted`] is on and the unit works.
     pub fn open() -> anyhow::Result<Self> {
+        let system_aec_running = system_aec::is_running();
         let (backend, kind) = voice_processing::with_selector(|selector| {
             open_with_fallback(
                 selector,
-                voice_processing::is_supported(),
+                voice_processing::is_supported()
+                    && system_aec::output_backend(
+                        system_aec_running,
+                        AudioBackend::VoiceProcessing,
+                    ) == AudioBackend::VoiceProcessing,
                 || voice_processing::acquire_output().map(Backend::VoiceProcessing),
                 || CpalOutput::open().map(Backend::Cpal),
             )
         })?;
         if kind == AudioBackend::VoiceProcessing {
             log::info!("Speech output: using the echo-cancelling voice-processing unit");
+        } else if system_aec_running {
+            log::info!(
+                "Speech output: plain path; system echo cancellation hears it through the tap"
+            );
         }
         let (device_name, reports_headphones) = default_output_description();
         Ok(Self {

@@ -53,6 +53,24 @@ pub fn mic_indicator_label(app: &warpui::AppContext) -> Option<String> {
     Some(format!("{label}{rejected}"))
 }
 
+/// Where macOS lets the user allow system audio recording.
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+pub(crate) const SYSTEM_AUDIO_PRIVACY_URL: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture";
+
+/// Applies the system echo cancellation setting to the audio pipeline. Its noise suppression only
+/// runs when the RNNoise denoiser is off.
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+pub fn apply_system_echo_cancellation_setting(app: &warpui::AppContext) {
+    use warpui::SingletonEntity as _;
+
+    let settings = crate::settings::AISettings::as_ref(app);
+    voice_input::set_system_echo_cancellation(
+        *settings.system_echo_cancellation,
+        !*settings.voice_denoise,
+    );
+}
+
 /// Whether voice input is transcribed on this machine, which has no Warp voice quota.
 pub fn is_voice_transcribed_locally() -> bool {
     #[cfg(not(target_family = "wasm"))]
