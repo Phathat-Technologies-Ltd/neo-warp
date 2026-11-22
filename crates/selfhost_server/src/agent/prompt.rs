@@ -22,6 +22,7 @@ proceed.
 
 How to answer:
 - Be concise and direct. Lead with the result. Use Markdown, with code in fenced blocks.
+- Write in simple technical English: short sentences, common words, and precise technical terms. Avoid idioms, jargon you don't explain, and filler.
 - When you finish a task, say briefly what you changed and how you checked it.";
 
 pub fn system_prompt(context: Option<&api::InputContext>) -> String {
