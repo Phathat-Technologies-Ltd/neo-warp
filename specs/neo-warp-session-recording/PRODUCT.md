@@ -84,8 +84,9 @@ cannot recognize every secret, and users should still review a recording before 
 
 - Default: `<app data dir>/recordings/user-<id>/<YYYY-MM-DD_HH-MM-SS>-<pane title>.cast`, where
   `user-<id>` is a per-user folder derived from the signed-in account. A number is added if the
-  name is taken. Recordings saved directly in the recordings folder by earlier builds are not
-  listed; move them into the `user-<id>` folder to see them.
+  name is taken. Recordings saved directly in the recordings folder by earlier builds are moved
+  into the user's folder the first time that user lists or starts a recording, as long as no
+  other user has a folder there; otherwise they are left in place.
 - **Save recordings to** on the Recordings settings page changes the directory (`~` works). Empty
   means the default.
 - The file header records the terminal width and height, start time, title (pane title and
@@ -95,8 +96,8 @@ cannot recognize every secret, and users should still review a recording before 
 
 - Lists recordings in the directory, newest first: title, date, duration, size.
 - Per recording: **Play**, **Reveal in Finder** (Show in folder on other platforms; shown only
-  for recordings stored on this machine), **Copy**, **Rename**, **Delete** (asks for a second
-  click to confirm).
+  for recordings stored on this machine), **Copy**, **Rename** (not while the recording is still in
+  progress), **Delete** (asks for a second click to confirm).
 - Recordings require being signed in; each user sees only their own.
 - **Copy** puts the file's contents on the clipboard (and the file path, where the platform takes
   file paths), ready to paste or upload.

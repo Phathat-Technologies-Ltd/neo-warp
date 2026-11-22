@@ -90,6 +90,7 @@ impl RecordingsClient for FakeClient {
             duration: 0.,
             size_bytes: 0,
             local_path: None,
+            in_progress: false,
         })
     }
 

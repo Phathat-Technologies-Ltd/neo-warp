@@ -1,7 +1,8 @@
+use std::fs::{self, File};
 use std::io::Cursor;
 
 use super::*;
-use crate::asciicast::{EventData, Header};
+use crate::asciicast::{CastWriter, EventData, Header};
 
 fn request(name: &str) -> CreateRecording {
     CreateRecording {
@@ -111,6 +112,14 @@ fn renames_deletes_and_isolates_owners() {
     let store = LocalDirStore::new(dir.path().to_owned());
     let a = store.create("alice", &request("a")).unwrap();
     let b = store.create("alice", &request("b")).unwrap();
+    assert!(store.get("alice", &a).unwrap().in_progress);
+    assert!(matches!(
+        store.rename("alice", &a, "early"),
+        Err(StoreError::InProgress)
+    ));
+    store.finish("alice", &a).unwrap();
+    store.finish("alice", &b).unwrap();
+    assert!(!store.get("alice", &a).unwrap().in_progress);
 
     assert!(store.list("bob").unwrap().is_empty());
     assert!(matches!(store.get("bob", &a), Err(StoreError::NotFound)));
@@ -148,4 +157,57 @@ fn follows_root_changes() {
     store.create("alice", &request("x")).unwrap();
     store.set_root(second.path().to_owned());
     assert!(store.list("alice").unwrap().is_empty());
+}
+
+fn write_flat(dir: &std::path::Path, name: &str) {
+    let file = File::create(dir.join(name)).unwrap();
+    CastWriter::new(file, &Header::new(80, 24))
+        .unwrap()
+        .into_inner()
+        .unwrap();
+}
+
+#[test]
+fn migrates_flat_recordings_for_the_only_user() {
+    let dir = tempfile::tempdir().unwrap();
+    write_flat(dir.path(), "old.cast");
+    fs::write(dir.path().join("notes.txt"), "keep").unwrap();
+    let store = LocalDirStore::new(dir.path().to_owned());
+
+    let ids: Vec<_> = store
+        .list("alice")
+        .unwrap()
+        .into_iter()
+        .map(|recording| recording.id)
+        .collect();
+    assert_eq!(ids, ["old"]);
+    assert!(!dir.path().join("old.cast").exists());
+    assert!(dir.path().join("notes.txt").exists());
+    // Idempotent.
+    assert_eq!(store.list("alice").unwrap().len(), 1);
+}
+
+#[test]
+fn migrates_on_start_and_skips_taken_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalDirStore::new(dir.path().to_owned());
+    fs::create_dir_all(store.owner_dir("alice")).unwrap();
+    write_flat(&store.owner_dir("alice"), "dup.cast");
+    write_flat(dir.path(), "dup.cast");
+    write_flat(dir.path(), "fresh.cast");
+
+    store.create("alice", &request("new")).unwrap();
+    assert!(store.owner_dir("alice").join("fresh.cast").exists());
+    assert!(dir.path().join("dup.cast").exists());
+}
+
+#[test]
+fn leaves_flat_recordings_when_several_users_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalDirStore::new(dir.path().to_owned());
+    store.create("bob", &request("b")).unwrap();
+    write_flat(dir.path(), "old.cast");
+
+    assert!(store.list("alice").unwrap().is_empty());
+    assert!(dir.path().join("old.cast").exists());
 }

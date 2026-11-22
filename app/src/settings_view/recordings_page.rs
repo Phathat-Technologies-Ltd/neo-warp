@@ -819,29 +819,30 @@ fn render_row(
             RecordingsPageAction::Reveal(index),
         ));
     }
-    buttons.extend([
-        button(
-            appearance,
-            "Copy",
-            ButtonVariant::Secondary,
-            &states.copy,
-            RecordingsPageAction::Copy(index),
-        ),
-        button(
+    buttons.extend([button(
+        appearance,
+        "Copy",
+        ButtonVariant::Secondary,
+        &states.copy,
+        RecordingsPageAction::Copy(index),
+    )]);
+    // A recording still in progress keeps receiving events under its ID, so it can't be renamed.
+    if !info.in_progress {
+        buttons.push(button(
             appearance,
             "Rename",
             ButtonVariant::Secondary,
             &states.rename,
             RecordingsPageAction::StartRename(index),
-        ),
-        button(
-            appearance,
-            delete_label,
-            ButtonVariant::Warn,
-            &states.delete,
-            RecordingsPageAction::Delete(index),
-        ),
-    ]);
+        ));
+    }
+    buttons.push(button(
+        appearance,
+        delete_label,
+        ButtonVariant::Warn,
+        &states.delete,
+        RecordingsPageAction::Delete(index),
+    ));
     Flex::row()
         .with_main_axis_size(MainAxisSize::Max)
         .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)

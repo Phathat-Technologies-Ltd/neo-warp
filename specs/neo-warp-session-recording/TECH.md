@@ -48,7 +48,13 @@ an ID containing a path separator or starting with `.` is never resolved.
 
 `LocalDirStore` keeps each owner in `<root>/user-<first 16 hex of sha256(owner)>/`. It holds the
 next expected sequence number of in-progress recordings in memory; after a server restart the
-next batch is accepted as-is.
+next batch is accepted as-is. Metadata reports `in_progress` for those, and `PATCH` on one
+returns 409 (`StoreError::InProgress`), since the uploader keeps appending under the old ID; the
+page hides **Rename** for them.
+
+On `create` and `list`, `LocalDirStore` moves `.cast` files in the root (the pre-per-user layout)
+into the caller's folder when no other `user-*` folder exists, skipping names already taken.
+With other users present it leaves them and logs. Repeating it is a no-op.
 
 ## Format
 

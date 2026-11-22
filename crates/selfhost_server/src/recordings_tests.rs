@@ -139,6 +139,18 @@ async fn round_trips_a_recording() {
         2
     );
 
+    let (status, _, body) = call(
+        &state,
+        Method::PATCH,
+        &format!("/recordings/{id}"),
+        Some(&token),
+        Some(("content-type", "application/json")),
+        json_body(json!({ "name": "early" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(String::from_utf8(body).unwrap().contains("in progress"));
+
     let (status, finished) = json_call(
         &state,
         Method::POST,

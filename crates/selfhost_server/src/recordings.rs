@@ -60,7 +60,9 @@ async fn run<T: Send + 'static>(
 fn error_response(error: StoreError) -> Response {
     match error {
         StoreError::NotFound => (StatusCode::NOT_FOUND, error.to_string()).into_response(),
-        StoreError::AlreadyExists(_) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+        StoreError::AlreadyExists(_) | StoreError::InProgress => {
+            (StatusCode::CONFLICT, error.to_string()).into_response()
+        }
         StoreError::OutOfOrder { expected } => (
             StatusCode::CONFLICT,
             Json(json!({ "error": error.to_string(), "expected_seq": expected })),

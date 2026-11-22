@@ -48,7 +48,68 @@ impl LocalDirStore {
     pub fn owner_dir(&self, owner: &str) -> PathBuf {
         let digest = Sha256::digest(owner.as_bytes());
         self.root()
-            .join(format!("user-{}", &hex::encode(digest)[..16]))
+            .join(format!("{OWNER_DIR_PREFIX}{}", &hex::encode(digest)[..16]))
+    }
+
+    /// Moves recordings saved directly in the root (the layout before per-user folders) into
+    /// `owner`'s folder, but only while `owner` is the only user of the store; with several users
+    /// there's no telling whose they are, so they are left in place.
+    fn migrate_flat_layout(&self, owner: &str) {
+        let root = self.root();
+        let Ok(entries) = fs::read_dir(&root) else {
+            return;
+        };
+        let owner_dir = self.owner_dir(owner);
+        let mut flat = Vec::new();
+        let mut has_other_owner = false;
+        for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+            let is_owner_dir = path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(OWNER_DIR_PREFIX));
+            if is_owner_dir {
+                has_other_owner |= path != owner_dir;
+            } else if path.is_file() && path.extension().is_some_and(|ext| ext == FILE_EXTENSION) {
+                flat.push(path);
+            }
+        }
+        if flat.is_empty() {
+            return;
+        }
+        if has_other_owner {
+            log::info!(
+                "Leaving {} recordings in {} because several users share it",
+                flat.len(),
+                root.display()
+            );
+            return;
+        }
+        if let Err(error) = fs::create_dir_all(&owner_dir) {
+            log::warn!("Couldn't create {}: {error}", owner_dir.display());
+            return;
+        }
+        for path in flat {
+            let Some(name) = path.file_name() else {
+                continue;
+            };
+            let target = owner_dir.join(name);
+            if target.exists() {
+                log::warn!("Not moving {}: {} exists", path.display(), target.display());
+                continue;
+            }
+            if let Err(error) = fs::rename(&path, &target) {
+                log::warn!("Couldn't move {}: {error}", path.display());
+            }
+        }
+    }
+
+    fn is_in_progress(&self, owner: &str, id: &str) -> bool {
+        self.seqs().contains_key(&key(owner, id))
+    }
+
+    fn with_progress(&self, owner: &str, mut metadata: RecordingMetadata) -> RecordingMetadata {
+        metadata.in_progress = self.is_in_progress(owner, &metadata.id);
+        metadata
     }
 
     fn path(&self, owner: &str, id: &str) -> Result<PathBuf, StoreError> {
@@ -84,8 +145,11 @@ fn metadata(info: RecordingInfo) -> RecordingMetadata {
         duration: info.duration,
         size_bytes: info.size_bytes,
         local_path: Some(info.path),
+        in_progress: false,
     }
 }
+
+const OWNER_DIR_PREFIX: &str = "user-";
 
 fn file_id(path: &Path) -> String {
     path.file_stem()
@@ -118,6 +182,7 @@ impl RecordingStore for LocalDirStore {
                 request.header.version
             )));
         }
+        self.migrate_flat_layout(owner);
         let dir = self.owner_dir(owner);
         fs::create_dir_all(&dir)?;
         let started_at = request
@@ -167,15 +232,16 @@ impl RecordingStore for LocalDirStore {
     }
 
     fn list(&self, owner: &str) -> Result<Vec<RecordingMetadata>, StoreError> {
+        self.migrate_flat_layout(owner);
         Ok(naming::list_recordings(&self.owner_dir(owner))?
             .into_iter()
-            .map(metadata)
+            .map(|info| self.with_progress(owner, metadata(info)))
             .filter(|recording| is_valid_id(&recording.id))
             .collect())
     }
 
     fn get(&self, owner: &str, id: &str) -> Result<RecordingMetadata, StoreError> {
-        read_metadata(&self.existing_path(owner, id)?)
+        Ok(self.with_progress(owner, read_metadata(&self.existing_path(owner, id)?)?))
     }
 
     fn read(
@@ -209,6 +275,9 @@ impl RecordingStore for LocalDirStore {
 
     fn rename(&self, owner: &str, id: &str, name: &str) -> Result<RecordingMetadata, StoreError> {
         let path = self.existing_path(owner, id)?;
+        if self.is_in_progress(owner, id) {
+            return Err(StoreError::InProgress);
+        }
         let target = naming::rename_recording(&path, name).map_err(|error| {
             if error.kind() == io::ErrorKind::AlreadyExists {
                 StoreError::AlreadyExists(name.trim().to_owned())
@@ -216,11 +285,6 @@ impl RecordingStore for LocalDirStore {
                 not_found_as_store_error(error)
             }
         })?;
-        let mut seqs = self.seqs();
-        if let Some(next) = seqs.remove(&key(owner, id)) {
-            seqs.insert(key(owner, &file_id(&target)), next);
-        }
-        drop(seqs);
         read_metadata(&target)
     }
 

@@ -181,8 +181,11 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
         codebase_index_dir: FeatureFlag::CodebaseIndexing
             .is_enabled()
             .then(|| warp_core::paths::data_dir().join("codebase-index")),
-        recording_store: Some(crate::terminal::session_recording::client::local_store()
-            as std::sync::Arc<dyn session_recording::RecordingStore>),
+        // Org flags are applied before the server starts, so this sees the org's setting.
+        recording_store: FeatureFlag::SessionRecording.is_enabled().then(|| {
+            crate::terminal::session_recording::client::local_store()
+                as std::sync::Arc<dyn session_recording::RecordingStore>
+        }),
     }) {
         Ok(address) => Some(format!("http://{address}")),
         Err(error) => {

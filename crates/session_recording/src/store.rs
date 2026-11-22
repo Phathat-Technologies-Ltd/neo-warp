@@ -47,6 +47,9 @@ pub struct RecordingMetadata {
     /// Where the recording is on this machine, when the store is local to the client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<PathBuf>,
+    /// Still being recorded: events may arrive and it can't be renamed.
+    #[serde(default)]
+    pub in_progress: bool,
 }
 
 /// An inclusive byte range, as in an HTTP `Range: bytes=start-end` header.
@@ -86,6 +89,8 @@ pub enum StoreError {
     NotFound,
     #[error("{0} already exists")]
     AlreadyExists(String),
+    #[error("the recording is still in progress; stop it before renaming")]
+    InProgress,
     #[error("expected batch {expected}")]
     OutOfOrder { expected: u64 },
     #[error("requested range is outside the recording")]
