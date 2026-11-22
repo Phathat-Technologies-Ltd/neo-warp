@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use org_flags::{OrgFlags, ProductArea};
 use org_sign_in::{OrganizationConfig, OrganizationSignInConfig};
 use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
@@ -52,7 +53,97 @@ pub(crate) fn init() {
         // the server; only the embedded server, from builds bundled with the app, offers them.
         FeatureFlag::SshRemoteServer.set_enabled(false);
     }
+    if config.sign_in.is_some() {
+        apply_org_flags(&OrgFlags::load(ChannelState::enable_debug_features()));
+    }
     let _ = ORGANIZATION_CONFIG.set(config);
+}
+
+/// Sets each product-area flag from the organization's flags, and turns off the upstream flags
+/// that gate parts of an area that is off.
+fn apply_org_flags(flags: &OrgFlags) {
+    for area in ProductArea::ALL {
+        let enabled = flags.is_enabled(area);
+        log::info!(
+            "Organization flag {} is {}",
+            area.key(),
+            if enabled { "on" } else { "off" }
+        );
+        let (flag, upstream_flags) = feature_flags_for(area);
+        flag.set_enabled(enabled);
+        if !enabled {
+            for upstream in upstream_flags {
+                upstream.set_enabled(false);
+            }
+        }
+    }
+}
+
+fn feature_flags_for(area: ProductArea) -> (FeatureFlag, &'static [FeatureFlag]) {
+    match area {
+        ProductArea::WarpDrive => (
+            FeatureFlag::WarpDrive,
+            &[FeatureFlag::DriveObjectsAsContext],
+        ),
+        ProductArea::SettingsSync => (FeatureFlag::SettingsSync, &[]),
+        ProductArea::CloudAgents => (
+            FeatureFlag::CloudAgents,
+            &[
+                FeatureFlag::CloudMode,
+                FeatureFlag::CloudModeFromLocalSession,
+                FeatureFlag::CloudModeHostSelector,
+                FeatureFlag::CloudModeSetupV2,
+                FeatureFlag::CloudModeInputV2,
+                FeatureFlag::CloudModeImageContext,
+                FeatureFlag::AmbientAgentsCommandLine,
+                FeatureFlag::AmbientAgentsRTC,
+                FeatureFlag::AmbientAgentsImageUpload,
+                FeatureFlag::ScheduledAmbientAgents,
+                FeatureFlag::CloudEnvironments,
+                FeatureFlag::CreateEnvironmentSlashCommand,
+                FeatureFlag::OzHandoff,
+                FeatureFlag::HandoffLocalCloud,
+                FeatureFlag::HandoffCloudCloud,
+                FeatureFlag::PeriodicHandoffCheckpoints,
+                FeatureFlag::OzLaunchModal,
+                FeatureFlag::OzPlatformSkills,
+                FeatureFlag::OzIdentityFederation,
+                FeatureFlag::OzChangelogUpdates,
+                FeatureFlag::CloudRunners,
+                FeatureFlag::CloudAgentRunners,
+            ],
+        ),
+        ProductArea::WarpHostedMcp => (
+            FeatureFlag::WarpHostedMcp,
+            &[
+                FeatureFlag::FactoryMcp,
+                FeatureFlag::PreviewUrlsMcp,
+                FeatureFlag::WellKnownMcpIds,
+                FeatureFlag::ManagedMcpCredentialRefresh,
+            ],
+        ),
+        ProductArea::SharingAndTeams => (
+            FeatureFlag::SharingAndTeams,
+            &[
+                FeatureFlag::CreatingSharedSessions,
+                FeatureFlag::ViewingSharedSessions,
+                FeatureFlag::SessionSharingAcls,
+            ],
+        ),
+        ProductArea::BillingAndReferrals => (FeatureFlag::BillingAndReferrals, &[]),
+        ProductArea::BlockTitles => (
+            FeatureFlag::BlockTitles,
+            &[FeatureFlag::SharedBlockTitleGeneration],
+        ),
+        ProductArea::ConversationCloudSync => (
+            FeatureFlag::ConversationCloudSync,
+            &[FeatureFlag::CloudConversations],
+        ),
+        ProductArea::VoiceInput => (FeatureFlag::VoiceInput, &[]),
+        ProductArea::CodebaseIndexing => (FeatureFlag::CodebaseIndexing, &[]),
+        ProductArea::AiPromptSuggestions => (FeatureFlag::AiPromptSuggestions, &[]),
+        ProductArea::AiCommandSearch => (FeatureFlag::AiCommandSearch, &[]),
+    }
 }
 
 fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {

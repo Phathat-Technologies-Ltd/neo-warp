@@ -18,3 +18,14 @@ fn local_child_harnesses_are_local_only_by_default() {
     assert!(!DEBUG_FLAGS.contains(&FeatureFlag::LocalClaudeCodexChildHarnesses));
     assert!(!DOGFOOD_FLAGS.contains(&FeatureFlag::LocalClaudeCodexChildHarnesses));
 }
+
+#[test]
+fn product_area_flags_start_enabled() {
+    for flag in PRODUCT_AREA_FLAGS {
+        assert!(
+            FLAG_STATES[*flag as usize].load(Ordering::Relaxed),
+            "{flag:?}"
+        );
+    }
+    assert!(!FLAG_STATES[FeatureFlag::OrganizationSignIn as usize].load(Ordering::Relaxed));
+}

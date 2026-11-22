@@ -41,6 +41,8 @@ Nothing connects to Warp's servers. To allowlist neo-warp on a firewall, allow:
 
    Writing there takes admin rights, which is the point: users can't point the app at another
    server or identity provider. Device management (MDM) can deploy it.
+   Optionally, put a `flags.flagd.json` next to it to turn product areas on or off; see
+   [feature-flags.md](feature-flags.md).
 3. Distribute a release:
    - **Desktop app (macOS):** `neo-warp-<version>-macos-<arch>-app.zip` contains `neo-warp.app`;
      users move it to Applications. Build it with `script/neo-warp/package-app <version>`.

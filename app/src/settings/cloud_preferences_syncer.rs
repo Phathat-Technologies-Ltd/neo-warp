@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 use settings::{Setting as _, SyncToCloud};
 use warp_core::r#async::debounce;
 use warp_core::execution_mode::AppExecutionMode;
+use warp_core::features::FeatureFlag;
 use warp_core::settings::ChangeEventReason;
 use warp_core::user_preferences::GetUserPreferences;
 use warp_errors::report_if_error;
@@ -99,7 +100,8 @@ pub fn initialize_cloud_preferences_syncer(
 
     // The settings surface decides whether this process participates in cloud
     // sync at all (e.g. the TUI keeps its config local).
-    let sync_enabled = settings::settings_mode().should_sync_to_cloud();
+    let sync_enabled =
+        settings::settings_mode().should_sync_to_cloud() && FeatureFlag::SettingsSync.is_enabled();
     CloudPreferencesSyncer::new(
         force_local_wins_on_startup,
         toml_file_path,
