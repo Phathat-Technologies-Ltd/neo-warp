@@ -111,8 +111,9 @@ use crate::settings::{
     NaturalLanguageAutosuggestionsEnabled, OrchestrationMessageDisplayMode, PromptSubmissionMode,
     SharedBlockTitleGenerationEnabled, ShouldRenderUseAgentToolbarForUserCommands,
     ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
-    ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceDenoise, VoiceInputEnabled,
-    VoiceInputLanguage, VoiceInputToggleKey, VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
+    ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceContextCorrection, VoiceDenoise,
+    VoiceInputEnabled, VoiceInputLanguage, VoiceInputToggleKey, VoiceSpeakerIdEnabled,
+    WarpCloudModelsEnabled,
 };
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -906,6 +907,13 @@ impl WarpAgentPageView {
             me.handle_detection_denylist_editor_event(event, ctx);
         });
 
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        if ctx.has_singleton_model::<crate::voice::context_correction::VoiceCorrections>() {
+            ctx.subscribe_to_model(
+                &crate::voice::context_correction::VoiceCorrections::handle(ctx),
+                |_, _, _, ctx| ctx.notify(),
+            );
+        }
         #[cfg(not(target_family = "wasm"))]
         if ctx.has_singleton_model::<crate::voice::local_model::LocalVoiceModel>() {
             ctx.subscribe_to_model(
@@ -2756,8 +2764,67 @@ pub enum WarpAgentPageEvent {
     HideModal,
 }
 
+impl WarpAgentPageView {
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn handle_voice_correction_action(action: &VoiceCorrectionAction, ctx: &mut ViewContext<Self>) {
+        use crate::voice::context_correction::VoiceCorrections;
+
+        if let VoiceCorrectionAction::ToggleEnabled = action {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.voice_context_correction.toggle_and_save_value(ctx));
+            });
+            ctx.notify();
+            return;
+        }
+        if !ctx.has_singleton_model::<VoiceCorrections>() {
+            return;
+        }
+        VoiceCorrections::handle(ctx).update(ctx, |corrections, ctx| match action {
+            VoiceCorrectionAction::ToggleEnabled => {}
+            VoiceCorrectionAction::TogglePinned { heard, corrected } => {
+                corrections.toggle_pinned(heard, corrected, ctx)
+            }
+            VoiceCorrectionAction::ToggleDisabled { heard, corrected } => {
+                corrections.toggle_disabled(heard, corrected, ctx)
+            }
+            VoiceCorrectionAction::Remove { heard, corrected } => {
+                corrections.remove(heard, corrected, ctx)
+            }
+            VoiceCorrectionAction::Export => {
+                let dir = dirs::download_dir()
+                    .or_else(dirs::home_dir)
+                    .unwrap_or_else(std::env::temp_dir);
+                corrections.export(dir.join("warp-voice-corrections.json"), ctx);
+            }
+        });
+    }
+
+    #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
+    fn handle_voice_correction_action(_: &VoiceCorrectionAction, _: &mut ViewContext<Self>) {}
+}
+
 impl Entity for WarpAgentPageView {
     type Event = WarpAgentPageEvent;
+}
+
+/// Settings > Voice actions on transcript correction and its corrections log.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VoiceCorrectionAction {
+    ToggleEnabled,
+    TogglePinned {
+        heard: String,
+        corrected: String,
+    },
+    ToggleDisabled {
+        heard: String,
+        corrected: String,
+    },
+    Remove {
+        heard: String,
+        corrected: String,
+    },
+    /// Writes the log as JSON to the downloads folder.
+    Export,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2787,6 +2854,7 @@ pub enum WarpAgentPageAction {
     DownloadSpeakerModel,
     CancelSpeakerModelDownload,
     RemoveSpeakerModel,
+    VoiceCorrection(VoiceCorrectionAction),
     SetVoiceInputToggleKey(VoiceInputToggleKey),
     SetVoiceInputLanguage(String),
     ToggleGlobalAI,
@@ -3292,6 +3360,9 @@ impl TypedActionView for WarpAgentPageView {
             | WarpAgentPageAction::CycleConversationVoice
             | WarpAgentPageAction::CycleConversationSpeechRate
             | WarpAgentPageAction::ToggleConversationReadCodeSummaries => {}
+            WarpAgentPageAction::VoiceCorrection(action) => {
+                Self::handle_voice_correction_action(action, ctx);
+            }
             WarpAgentPageAction::ToggleVoiceInput => {
                 match AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     settings
@@ -4715,6 +4786,24 @@ struct VoiceWidget {
     enroll_button: MouseStateHandle,
     delete_voiceprint_button: MouseStateHandle,
     sensitivity_button: MouseStateHandle,
+    context_correction_toggle: SwitchStateHandle,
+    correction_buttons: CorrectionButtons,
+}
+
+/// Rows shown in the Settings > Voice corrections list.
+const MAX_CORRECTION_ROWS: usize = 15;
+
+/// Mouse states for the corrections list: three per row, then the export button.
+struct CorrectionButtons(Vec<MouseStateHandle>);
+
+impl Default for CorrectionButtons {
+    fn default() -> Self {
+        Self(
+            (0..MAX_CORRECTION_ROWS * 3 + 1)
+                .map(|_| MouseStateHandle::default())
+                .collect(),
+        )
+    }
 }
 
 impl VoiceWidget {
@@ -4842,6 +4931,8 @@ impl VoiceWidget {
             if crate::voice::local_model::is_speaker_id_enabled() {
                 self.render_speaker_id_settings(&mut column, view, appearance, app);
             }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            self.render_correction_settings(&mut column, view, appearance, app);
         }
 
         column.finish()
@@ -5030,6 +5121,118 @@ impl VoiceWidget {
         ));
     }
 
+    /// Settings > Voice rows for screen-aware correction: the toggle and the corrections log.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    fn render_correction_settings(
+        &self,
+        column: &mut Flex,
+        view: &WarpAgentPageView,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) {
+        use crate::voice::context_correction::VoiceCorrections;
+
+        let enabled = *AISettings::as_ref(app).voice_context_correction;
+        column.add_child(render_ai_setting_toggle::<VoiceContextCorrection>(
+            "Correct Transcripts From Screen",
+            WarpAgentPageAction::VoiceCorrection(VoiceCorrectionAction::ToggleEnabled),
+            enabled,
+            true,
+            self.context_correction_toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        ));
+        if !enabled || !app.has_singleton_model::<VoiceCorrections>() {
+            return;
+        }
+        let mut entries = VoiceCorrections::as_ref(app).entries().to_vec();
+        entries.sort_by(|a, b| {
+            b.pinned
+                .cmp(&a.pinned)
+                .then(b.count.cmp(&a.count))
+                .then(b.last_seen.cmp(&a.last_seen))
+        });
+        let buttons = &self.correction_buttons.0;
+        column.add_child(render_cycle_row(
+            "Voice Corrections",
+            "Words heard and the screen terms they were corrected to. Pin a mapping to always \
+             apply it; reverted mappings stop applying.",
+            "Export JSON",
+            WarpAgentPageAction::VoiceCorrection(VoiceCorrectionAction::Export),
+            buttons[MAX_CORRECTION_ROWS * 3].clone(),
+            appearance,
+        ));
+        for (row, entry) in entries.iter().take(MAX_CORRECTION_ROWS).enumerate() {
+            let heard = &entry.heard;
+            let corrected = &entry.corrected;
+            let button = |label: &str, action: VoiceCorrectionAction, state: &MouseStateHandle| {
+                let action = WarpAgentPageAction::VoiceCorrection(action);
+                Container::new(
+                    appearance
+                        .ui_builder()
+                        .button(ButtonVariant::Secondary, state.clone())
+                        .with_text_label(label.to_owned())
+                        .build()
+                        .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
+                        .finish(),
+                )
+                .with_padding_right(4.)
+                .finish()
+            };
+            let buttons_row = Flex::row()
+                .with_child(button(
+                    if entry.pinned { "Unpin" } else { "Pin" },
+                    VoiceCorrectionAction::TogglePinned {
+                        heard: heard.clone(),
+                        corrected: corrected.clone(),
+                    },
+                    &buttons[row * 3],
+                ))
+                .with_child(button(
+                    if entry.disabled { "Enable" } else { "Disable" },
+                    VoiceCorrectionAction::ToggleDisabled {
+                        heard: heard.clone(),
+                        corrected: corrected.clone(),
+                    },
+                    &buttons[row * 3 + 1],
+                ))
+                .with_child(button(
+                    "Delete",
+                    VoiceCorrectionAction::Remove {
+                        heard: heard.clone(),
+                        corrected: corrected.clone(),
+                    },
+                    &buttons[row * 3 + 2],
+                ))
+                .finish();
+            let status = if entry.pinned {
+                "pinned"
+            } else if entry.is_suppressed() {
+                "off"
+            } else {
+                "on"
+            };
+            column.add_child(build_toggle_element(
+                render_body_item_label::<WarpAgentPageAction>(
+                    format!("\u{201c}{heard}\u{201d} \u{2192} {corrected}"),
+                    None,
+                    None,
+                    LocalOnlyIconState::Hidden,
+                    ToggleState::Enabled,
+                    appearance,
+                ),
+                Container::new(buttons_row)
+                    .with_padding_right(TOGGLE_BUTTON_RIGHT_PADDING)
+                    .finish(),
+                appearance,
+                Some(format!(
+                    "{} corrected, {} kept, {} reverted, {status}",
+                    entry.count, entry.accepted, entry.reverted
+                )),
+            ));
+        }
+    }
+
     /// A downloadable model's status, with a button to download, cancel, or remove it.
     #[cfg(not(target_family = "wasm"))]
     fn render_model_row(
@@ -5199,7 +5402,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

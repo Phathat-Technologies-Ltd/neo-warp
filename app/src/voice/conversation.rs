@@ -79,11 +79,15 @@ impl ConversationSession {
             |_, _| {},
         );
         ctx.subscribe_to_model(&HandsFreeSession::handle(ctx), |me, session, event, ctx| {
-            if matches!(event, HandsFreeEvent::StateChanged)
-                && me.is_active()
-                && !session.as_ref(ctx).is_active()
-            {
+            if !matches!(event, HandsFreeEvent::StateChanged) || !me.is_active() {
+                return;
+            }
+            let session = session.as_ref(ctx);
+            if !session.is_active() {
                 me.stop(ctx);
+            } else if !session.state().is_mic_on() {
+                // Paused because Warp isn't the active app: nothing is spoken over other apps.
+                me.stop_speaking(ctx);
             }
         });
         ctx.subscribe_to_model(
@@ -124,6 +128,12 @@ impl ConversationSession {
     /// Whether a reply is being read aloud, so Esc and the Stop button stop it.
     pub fn is_speaking(&self) -> bool {
         self.is_active() && self.controller.is_speaking()
+    }
+
+    /// Whether the microphone may be hearing the reply right now, so partial transcripts stay off
+    /// screen and auto-send waits.
+    pub fn is_echo_window(&self) -> bool {
+        self.controller.is_echo_window(Instant::now())
     }
 
     pub fn is_muted(&self) -> bool {

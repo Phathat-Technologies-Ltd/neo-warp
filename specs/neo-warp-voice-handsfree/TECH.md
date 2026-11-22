@@ -119,6 +119,25 @@ Add `FeatureFlag::VoiceHandsFree` to `crates/warp_features`, add it to the org d
   and stops decoding at once; that utterance's `final` is dropped because transcripts are paused.
 - Server errors (`error` messages, a failed socket, VAD load failures) show an error toast in the
   session's window. The socket task ends as soon as either direction ends or fails.
+- Privacy pause: `HandsFreeSession` follows `WindowManager`'s application stage. When Warp
+  stops being the active app, the session enters `HandsFreeState::Paused`: the capture is dropped
+  (the microphone closes, so the OS mic indicator turns off), the generation is bumped so the
+  socket's remaining messages (including the open utterance's final) are dropped, a pending
+  partial is removed from the input (`HandsFreeEffect::DiscardPartial`), and the auto-send timer
+  is cancelled. Conversation mode stays on but stops speaking. When Warp becomes active again the
+  microphone and a new socket reopen and the state returns to Listening. The placeholder and the
+  window-header label show "Mic paused" meanwhile. `SystemStatsEvent::CpuWillSleep` stops the
+  session outright. Screen lock has no dedicated hook; it is covered when locking deactivates the
+  app or sleeps the system.
+- Diagnostics: the chain logs at INFO (lengths and counts only, never audio or transcript text):
+  microphone device, rate, channels, and format; the first audio callback and periodic callback
+  counts with peak level (a WARN when a period is pure silence, which is what macOS delivers
+  without microphone access); the socket URL, connect result and HTTP status, and close reason;
+  server session start, VAD speech start and end, decode requests and results; client receipt of
+  each message; and which input applied each edit. Inputs that skip an edit log why at DEBUG.
+- `voice::hands_free::tests` runs the client socket loop against the real embedded server
+  (`spawn_embedded`, signed-in token, real WebSocket) with a fake capture source, an energy VAD,
+  and a fake transcriber, and checks that partial and commit edits come out of the controller.
 - `LiveCapture` accepts f32, i16, u16, and i32 input devices.
 - The server sends `speech_end` as soon as the VAD ends an utterance, and `final` once its decode
   finishes. The client's auto-send timer starts at the `final`.

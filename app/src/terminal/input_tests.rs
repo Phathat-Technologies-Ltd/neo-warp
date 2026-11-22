@@ -798,6 +798,8 @@ pub fn initialize_app(app: &mut App) {
     // register the singleton in its `NotLoaded` state to satisfy callers that
     // look it up via `LocalShellState::handle(ctx)`.
     app.add_singleton_model(|_| LocalShellState::NotLoaded);
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    crate::test_util::register_voice_models_for_tests(app);
 }
 
 fn bootstrap_terminal(

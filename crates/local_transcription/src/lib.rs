@@ -8,6 +8,7 @@
 //! The crate has no dependency on Warp's code so it can be reused as is.
 
 mod audio;
+pub mod context_correction;
 #[cfg(feature = "denoise")]
 pub mod denoise;
 pub mod fbank;
@@ -40,12 +41,12 @@ pub use model::{
     ProgressThrottle, campplus_en_voxceleb, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3,
     silero_vad_v5, tiny_voca,
 };
-#[cfg(feature = "speaker_id")]
-pub use speaker_onnx::{OnnxSpeakerEmbedder, SPEAKER_MODEL_FILE};
 #[cfg(feature = "parakeet")]
 pub use parakeet::ParakeetTranscriber;
 #[cfg(feature = "silero")]
 pub use silero::SileroVad;
+#[cfg(feature = "speaker_id")]
+pub use speaker_onnx::{OnnxSpeakerEmbedder, SPEAKER_MODEL_FILE};
 pub use state::{ModelAction, ModelEvent, ModelState};
 pub use vad::{
     SegmentEvent, Segmenter, SegmenterConfig, VAD_FRAME_SAMPLES, VAD_SAMPLE_RATE, VadFactory,

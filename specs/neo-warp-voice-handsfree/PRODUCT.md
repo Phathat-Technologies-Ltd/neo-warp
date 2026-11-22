@@ -13,11 +13,24 @@ is not a goal.
 ## Behavior
 - **Toggle**: a mic toggle in the input footer (GUI and TUI), a Command Palette entry
   "Enable/Disable hands-free voice", and a keybinding. Off by default in each session.
+- **Footer mic and mode dropdown (GUI)**: the agent input footer and the terminal (agent view)
+  input footer share one mic button with a small chevron dropdown next to it. The dropdown picks the
+  dictation mode, shared by every footer: "Push to talk / click to record" (default; one recording
+  per click, the existing voice input) or "Hands-free". Clicking the mic starts the selected mode.
+  While hands-free has the microphone open, the mic is drawn in red and a click turns hands-free
+  off, whatever mode is selected. The tooltip names the action and its shortcut (the hold-to-talk
+  key for recording, cmd-shift-H for hands-free). The dropdown is hidden when `VoiceHandsFree` is
+  off or local models aren't served, and the mic is hidden when voice input is off. In a CLI agent
+  session the mic keeps its PTY recording behavior and only stops a running hands-free session.
 - **Listening indicator**: while hands-free is on, the input shows a pulsing mic glyph with a level
   meter and three states: Listening (idle), Hearing (speech detected), and Transcribing.
 - **Privacy indicator**: whenever the microphone is open, a red dot and a "Mic on" label stay in the
   window header or TUI status line, whatever has focus. All audio stays on the device and nothing is
   written to disk.
+- **Pause outside Warp**: when Warp is not the active app, hands-free (and conversation mode)
+  pauses: the microphone closes, so the system mic indicator turns off; an utterance in progress
+  is discarded, and nothing said meanwhile is inserted or sent. The indicator reads "Mic paused".
+  Listening resumes on its own when the user returns to Warp. System sleep turns hands-free off.
 - **Segmentation**: a local voice-activity detector splits speech into utterances. A pause under
   about 300 ms keeps the current utterance open; a longer one ends it.
 - **Live text**: partial transcripts update in place in the input while the user speaks. When the

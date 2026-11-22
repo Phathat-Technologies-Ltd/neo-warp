@@ -533,6 +533,17 @@ impl EditorView {
         match result {
             Ok(transcribe_response) => {
                 log::debug!("Transcribed voice input: {transcribe_response:?}");
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let (text, corrections) =
+                        self.correct_voice_transcript(&transcribe_response, ctx);
+                    self.user_insert(&text, ctx);
+                    let buffer = self.buffer_text(ctx);
+                    if let Some(start) = buffer.rfind(&text) {
+                        self.show_voice_corrections(start, &corrections, ctx);
+                    }
+                }
+                #[cfg(target_family = "wasm")]
                 self.user_insert(&transcribe_response, ctx);
             }
             Err(e) => match e {

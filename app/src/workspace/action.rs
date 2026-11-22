@@ -324,6 +324,8 @@ pub enum WorkspaceAction {
     DownloadSpeakerModel,
     /// Cancels a running speaker model download.
     CancelSpeakerModelDownload,
+    /// Reverts a voice transcript correction by its id.
+    RevertVoiceCorrection(u64),
     /// Turns voice conversation mode on or off.
     ToggleVoiceConversation,
     /// Stops reading the current agent reply aloud in voice conversation mode.
@@ -1065,6 +1067,7 @@ impl WorkspaceAction {
             | CancelVoiceModelDownload { .. }
             | DownloadSpeakerModel
             | CancelSpeakerModelDownload
+            | RevertVoiceCorrection(_)
             | ToggleVoiceConversation
             | StopVoiceSpeaking
             | ToggleVoiceReadoutMute

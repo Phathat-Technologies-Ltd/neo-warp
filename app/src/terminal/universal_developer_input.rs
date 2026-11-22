@@ -65,6 +65,8 @@ use crate::ui_components::icons::Icon;
 use crate::view_components::action_button::{
     ActionButton, ActionButtonTheme, ButtonSize, NakedTheme, TooltipAlignment,
 };
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+use crate::voice::footer_controls::{VoiceControls, VoiceControlsStyle};
 use crate::workspaces::user_workspaces::{TeamScope, UserWorkspaces};
 
 pub enum AtContextMenuDisabledReason {
@@ -295,6 +297,8 @@ pub struct UniversalDeveloperInputButtonBar {
     terminal_view_id: EntityId,
     view_handle: WeakViewHandle<Self>,
     mic_button: ViewHandle<ActionButton>,
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    voice_controls: ViewHandle<VoiceControls>,
     at_button: ViewHandle<ActionButton>,
     file_button: ViewHandle<ActionButton>,
     slash_command_button: ViewHandle<ActionButton>,
@@ -359,6 +363,20 @@ impl UniversalDeveloperInputButtonBar {
             }
             button
         });
+
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        let voice_controls = {
+            let mic_button = mic_button_view.clone();
+            let menu_positioning_provider = menu_positioning_provider.clone();
+            ctx.add_typed_action_view(|ctx| {
+                VoiceControls::new(
+                    VoiceControlsStyle::UniversalInput,
+                    mic_button,
+                    menu_positioning_provider,
+                    ctx,
+                )
+            })
+        };
 
         let at_button_view = ctx.add_typed_action_view(|_ctx| {
             ActionButton::new("", PromptIconButtonTheme::new(false))
@@ -602,6 +620,8 @@ impl UniversalDeveloperInputButtonBar {
             terminal_view_id,
             view_handle: ctx.handle(),
             mic_button: mic_button_view,
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            voice_controls,
             at_button: at_button_view,
             file_button: file_button_view,
             slash_command_button: slash_command_menu_view,
@@ -842,6 +862,10 @@ impl View for UniversalDeveloperInputButtonBar {
             #[cfg(feature = "voice_input")]
             if is_voice_input_enabled {
                 buttons = buttons.with_child(ChildView::new(&self.mic_button).finish());
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    buttons = buttons.with_child(ChildView::new(&self.voice_controls).finish());
+                }
             }
 
             buttons = buttons.with_child(ChildView::new(&self.at_button).finish());
@@ -916,6 +940,10 @@ impl TypedActionView for UniversalDeveloperInputButtonBar {
         match action {
             #[cfg(feature = "voice_input")]
             UniversalDeveloperInputButtonBarAction::ToggleVoiceInput => {
+                #[cfg(not(target_family = "wasm"))]
+                if crate::voice::footer_controls::handle_mic_click(ctx.window_id(), ctx) {
+                    return;
+                }
                 ctx.emit(UniversalDeveloperInputButtonBarEvent::ToggleVoiceInput(
                     voice_input::VoiceInputToggledFrom::Button,
                 ));

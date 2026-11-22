@@ -467,6 +467,42 @@ pub struct ServerApi {
     last_server_time: Arc<Mutex<Option<ServerTime>>>,
 }
 
+/// Opens `/ai/transcribe/stream` on the server at `server_root`, authenticated with
+/// `bearer_token`.
+#[cfg(not(target_family = "wasm"))]
+pub async fn connect_transcribe_stream(
+    server_root: &str,
+    bearer_token: Option<&str>,
+) -> Result<websocket::WebSocket> {
+    let url = match server_root.split_once("://") {
+        Some(("https", rest)) => format!("wss://{rest}/ai/transcribe/stream"),
+        Some((_, rest)) => format!("ws://{rest}/ai/transcribe/stream"),
+        None => return Err(anyhow!("invalid server URL {server_root}")),
+    };
+    log::info!(
+        "Hands-free: connecting to {url} (authenticated: {})",
+        bearer_token.is_some()
+    );
+    let headers = bearer_token
+        .map(|token| vec![("Authorization", format!("Bearer {token}"))])
+        .unwrap_or_default();
+    match websocket::WebSocket::connect_with_headers(&url, [], headers).await {
+        Ok(socket) => {
+            log::info!("Hands-free: connected to {url}");
+            Ok(socket)
+        }
+        Err(error) => {
+            let status = websocket::connect_error_http_response(&error)
+                .map(|response| response.status().to_string());
+            log::warn!(
+                "Hands-free: couldn't connect to {url} (HTTP status {}): {error:#}",
+                status.as_deref().unwrap_or("none")
+            );
+            Err(error)
+        }
+    }
+}
+
 impl ServerApi {
     fn new(
         auth_state: Arc<AuthState>,
@@ -1302,17 +1338,11 @@ impl ServerApi {
     #[cfg(not(target_family = "wasm"))]
     pub async fn open_transcribe_stream(&self) -> Result<websocket::WebSocket> {
         let auth_token = self.get_or_refresh_access_token().await?;
-        let root = ChannelState::server_root_url();
-        let url = match root.split_once("://") {
-            Some(("https", rest)) => format!("wss://{rest}/ai/transcribe/stream"),
-            Some((_, rest)) => format!("ws://{rest}/ai/transcribe/stream"),
-            None => return Err(anyhow!("invalid server URL {root}")),
-        };
-        let headers = auth_token
-            .as_bearer_token()
-            .map(|token| vec![("Authorization", format!("Bearer {token}"))])
-            .unwrap_or_default();
-        websocket::WebSocket::connect_with_headers(&url, [], headers).await
+        connect_transcribe_stream(
+            &ChannelState::server_root_url(),
+            auth_token.as_bearer_token(),
+        )
+        .await
     }
 
     /// Hits the /ai/transcribe endpoint to get the transcription for the given audio.

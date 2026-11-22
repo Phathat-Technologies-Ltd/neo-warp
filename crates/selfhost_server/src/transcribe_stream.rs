@@ -74,6 +74,9 @@ pub(crate) enum Frame {
     Close,
 }
 
+/// Audio frames between progress logs.
+const AUDIO_FRAMES_PER_LOG: u64 = 1000;
+
 type DecodeResult = (DecodeRequest, Result<String, TranscribeError>);
 
 /// Runs one streaming session until the client ends or closes it. At most one decode runs at a
@@ -90,6 +93,7 @@ pub(crate) async fn run_session<In, Out>(
     let detector = match tokio::task::spawn_blocking(move || vad()).await {
         Ok(Ok(detector)) => detector,
         Ok(Err(error)) => {
+            log::warn!("Hands-free stream: couldn't load the voice activity detector: {error}");
             let _ = send(&mut outgoing, &error_message(&error)).await;
             let _ = outgoing.send(Frame::Close).await;
             return;
@@ -100,7 +104,10 @@ pub(crate) async fn run_session<In, Out>(
             return;
         }
     };
+    log::info!("Hands-free stream: session started, voice activity detector loaded");
     let mut utterances = UtteranceStream::new(detector, StreamConfig::default());
+    let mut audio_frames: u64 = 0;
+    let mut audio_bytes: u64 = 0;
     let mut queue = DecodeQueue::default();
     let mut running: Option<tokio::task::JoinHandle<DecodeResult>> = None;
     let mut language: Option<String> = None;
@@ -110,6 +117,13 @@ pub(crate) async fn run_session<In, Out>(
             if let Some(request) = queue.pop() {
                 let transcriber = transcriber.clone();
                 let language = language.clone();
+                log::info!(
+                    "Hands-free stream: decoding {:?} of utterance {} ({} ms of audio)",
+                    request.kind,
+                    request.utterance,
+                    request.audio.samples.len() as u64 * 1000
+                        / u64::from(request.audio.sample_rate.max(1))
+                );
                 running = Some(tokio::task::spawn_blocking(move || {
                     let result = transcriber.transcribe(&request.audio, language.as_deref());
                     (request, result)
@@ -121,14 +135,35 @@ pub(crate) async fn run_session<In, Out>(
         let mut outputs = Vec::new();
         tokio::select! {
             frame = incoming.next(), if !ending => match frame {
-                None | Some(Frame::Close) => return,
-                Some(Frame::Binary(bytes)) => match utterances.push_pcm(&bytes) {
+                None | Some(Frame::Close) => {
+                    log::info!(
+                        "Hands-free stream: client closed after {audio_frames} audio frames \
+                         ({audio_bytes} bytes)"
+                    );
+                    return;
+                }
+                Some(Frame::Binary(bytes)) => {
+                    audio_frames += 1;
+                    audio_bytes += bytes.len() as u64;
+                    if audio_frames == 1 {
+                        log::info!(
+                            "Hands-free stream: first audio frame ({} bytes)",
+                            bytes.len()
+                        );
+                    } else if audio_frames.is_multiple_of(AUDIO_FRAMES_PER_LOG) {
+                        log::info!(
+                            "Hands-free stream: {audio_frames} audio frames ({audio_bytes} bytes), \
+                             in speech: {}",
+                            utterances.in_speech()
+                        );
+                    }
+                    match utterances.push_pcm(&bytes) {
                     Ok(more) => outputs = more,
                     Err(error) => {
                         let _ = send(&mut outgoing, &error_message(&error)).await;
                         return;
                     }
-                },
+                }},
                 Some(Frame::Text(text)) => match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(ClientMessage::Config { language: new_language, vad }) => {
                         if new_language.is_some() {
@@ -158,7 +193,15 @@ pub(crate) async fn run_session<In, Out>(
             {
                 running = None;
                 let message = match result {
-                    Ok((request, Ok(text))) => request.into_message(text),
+                    Ok((request, Ok(text))) => {
+                        log::info!(
+                            "Hands-free stream: decoded {:?} of utterance {} ({} chars)",
+                            request.kind,
+                            request.utterance,
+                            text.len()
+                        );
+                        request.into_message(text)
+                    }
                     Ok((_, Err(error))) => error_message(&error),
                     Err(error) => {
                         log::error!("Streaming transcription task failed: {error}");
@@ -175,6 +218,13 @@ pub(crate) async fn run_session<In, Out>(
         for output in outputs {
             match output {
                 StreamOutput::Message(message) => {
+                    match &message {
+                        ServerMessage::SpeechStart => log::info!("Hands-free stream: speech start"),
+                        ServerMessage::SpeechEnd => log::info!("Hands-free stream: speech end"),
+                        ServerMessage::Partial { .. }
+                        | ServerMessage::Final { .. }
+                        | ServerMessage::Error { .. } => {}
+                    }
                     if send(&mut outgoing, &message).await.is_err() {
                         return;
                     }

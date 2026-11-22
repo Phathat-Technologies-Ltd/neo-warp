@@ -306,3 +306,79 @@ fn starts_input_ignores_the_open_utterance() {
     let buffer = range.replace("git", "status");
     assert!(!range.starts_input(&buffer));
 }
+
+#[test]
+fn deferred_auto_send_waits_for_the_new_time() {
+    let now = Instant::now();
+    let mut controller = started();
+    controller.on_message(final_(1, "run the tests"), now);
+    controller.defer_auto_send(now + Duration::from_secs(3));
+    assert_eq!(controller.tick(now + Duration::from_secs(2)), None);
+    assert_eq!(
+        controller.tick(now + Duration::from_secs(3)),
+        Some(HandsFreeEffect::AutoSend)
+    );
+}
+
+#[test]
+fn pause_discards_the_open_utterance_and_resume_listens_again() {
+    let now = Instant::now();
+    let mut controller = started();
+    controller.on_message(ServerMessage::SpeechStart, now);
+    controller.on_message(partial(1, "secret"), now);
+
+    assert_eq!(controller.pause(), vec![HandsFreeEffect::DiscardPartial]);
+    assert_eq!(controller.state(), HandsFreeState::Paused);
+    assert!(controller.state().is_on());
+    assert!(!controller.state().is_mic_on());
+    assert_eq!(controller.state().label(), "Mic paused");
+
+    controller.resume();
+    assert_eq!(controller.state(), HandsFreeState::Listening);
+    assert_eq!(
+        controller.on_message(final_(2, "hello"), now),
+        vec![HandsFreeEffect::Commit("hello".to_owned())]
+    );
+}
+
+#[test]
+fn nothing_from_the_paused_period_reaches_the_input() {
+    let now = Instant::now();
+    let mut controller = started();
+    controller.on_message(final_(1, "first"), now);
+    assert!(controller.auto_send_at().is_some());
+
+    assert!(controller.pause().is_empty());
+    assert_eq!(controller.auto_send_at(), None);
+    for message in [
+        ServerMessage::SpeechStart,
+        partial(1, "other app"),
+        ServerMessage::SpeechEnd,
+        final_(1, "other app"),
+    ] {
+        assert!(controller.on_message(message, now).is_empty());
+    }
+    assert_eq!(controller.tick(now + MAX_AUTO_SEND), None);
+    assert_eq!(controller.state(), HandsFreeState::Paused);
+}
+
+#[test]
+fn pause_and_resume_only_apply_to_a_running_session() {
+    let mut controller = HandsFreeController::default();
+    assert!(controller.pause().is_empty());
+    controller.resume();
+    assert_eq!(controller.state(), HandsFreeState::Off);
+
+    let mut controller = started();
+    controller.pause();
+    controller.stop();
+    controller.resume();
+    assert_eq!(controller.state(), HandsFreeState::Off);
+}
+
+#[test]
+fn discard_removes_the_partial_and_its_space() {
+    let mut range = PendingVoiceRange::default();
+    let buffer = range.replace("ls", "secret");
+    assert_eq!(range.commit(&buffer, ""), "ls");
+}

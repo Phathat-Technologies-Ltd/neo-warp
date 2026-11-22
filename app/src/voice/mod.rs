@@ -1,7 +1,11 @@
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+pub mod context_correction;
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 pub mod conversation;
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 mod conversation_text;
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+pub mod footer_controls;
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 pub mod hands_free;
 #[cfg(not(target_family = "wasm"))]
@@ -26,6 +30,9 @@ pub fn mic_indicator_label(app: &warpui::AppContext) -> Option<String> {
     let session = hands_free::HandsFreeSession::as_ref(app);
     if !session.is_active() {
         return None;
+    }
+    if !session.state().is_mic_on() {
+        return Some(session.state().label().to_owned());
     }
     let rejected = if session.showing_rejection() {
         " \u{b7} Not you \u{2014} ignored"
