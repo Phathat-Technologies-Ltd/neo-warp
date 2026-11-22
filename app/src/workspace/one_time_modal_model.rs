@@ -738,7 +738,7 @@ impl OneTimeModalModel {
         // guards its own call, but `maybe_recheck_free_ai_removal_modal` and
         // `resume_modal_checks_after_feature_intro` call this directly (e.g. from an
         // async billing/usage update), so the guard belongs here too.
-        if cfg!(target_family = "wasm") {
+        if cfg!(target_family = "wasm") || !FeatureFlag::BillingAndReferrals.is_enabled() {
             return false;
         }
 

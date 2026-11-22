@@ -51,16 +51,25 @@ cannot turn them back on.
 
 ### What an off flag hides today
 
-- `warp_drive`: the Warp Drive panel, its settings page, and Drive objects as AI context.
+- `warp_drive`: the Warp Drive panel, its settings page, Drive objects as AI context, and every
+  workflow, notebook, and env var collection entry point outside the panel: workspace handlers
+  that open workflow, notebook, and env var collection panes, the new workflow modal, "View in
+  Warp Drive", the AI workflow info box and Warp AI transcript "Save as workflow" buttons.
 - `settings_sync`: cloud settings sync and its settings controls.
-- `cloud_agents`: cloud mode, ambient and scheduled agents, handoff, cloud environments, runners,
-  and their settings pages.
+- `cloud_agents`: cloud mode, ambient and scheduled agents, handoff (including the Warp Agent
+  settings cloud handoff toggle), cloud environments, runners, the cloud agent capacity modal,
+  their settings pages, and the "Open Settings: Environments" command palette entry.
 - `warp_hosted_mcp`: Warp-hosted MCP servers in the MCP gallery.
 - `sharing_and_teams`: session sharing, block sharing from the terminal, the shared blocks and
   teams settings pages, and the pane header share button with its "Share pane" command palette
-  entry and keybinding (Drive objects, sessions, and conversations).
+  entry and keybinding (Drive objects, sessions, and conversations), Drive panel object "Share"
+  menu items and the object sharing dialog (including invitee-request deep links), and the
+  "Open Settings: Teams" and "Open Settings: Shared Blocks" command palette entries.
 - `billing_and_referrals`: billing, usage, and referrals settings pages, the workspace upgrade
-  prompts gated on the flag, and the resource center "Invite a friend" button.
+  prompts gated on the flag, the resource center "Invite a friend" button, the `ShowUpgrade`
+  action from any source, the shared objects tier-limit modal, the free AI removal modal, the
+  pricing promotion banners, and the "Open Settings: Billing and usage" and "Open Settings:
+  Referrals" command palette entries.
 - `block_titles`: shared block title generation requests.
 - `conversation_cloud_sync`: cloud conversation storage, its privacy setting toggle, and every
   conversation share entry point: the pane header share button and its "not stored in the cloud"
@@ -73,11 +82,12 @@ cannot turn them back on.
 
 ### Known gaps
 
-These entry points are not yet hidden when their flag is off. They fail against the organization
-server instead of disappearing:
+Remaining entry points that are not hidden when their flag is off:
 
-- `warp_drive`: workflow, notebook, and env var collection entry points outside the Drive panel
-  (command palette, slash commands, block context menus).
-- `sharing_and_teams`: Drive panel object sharing menus and guest dialogs outside the pane header,
-  and team invite flows outside settings.
-- `billing_and_referrals`: upgrade modals raised by quota or plan errors outside the workspace view.
+- `billing_and_referrals`: inline "Upgrade" hyperlinks inside quota and plan error text (AI
+  prompt alerts, out-of-credits replies, command search and workflow error toasts, agent profile
+  and Warp Agent settings copy). They are part of server-driven error strings rendered at many
+  sites; an organization server does not return these plan errors, so they do not appear in
+  practice. The onboarding offer and AI access slides keep their upgrade choice because the
+  onboarding crate does not depend on product-area flags and its step sequence would need
+  reworking.

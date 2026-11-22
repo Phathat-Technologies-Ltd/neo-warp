@@ -2,6 +2,7 @@ use markdown_parser::CodeBlockText;
 use markdown_parser::markdown_parser::RUNNABLE_BLOCK_MARKDOWN_LANG;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
+use warp_core::features::FeatureFlag;
 use warp_core::ui::builder::AnimatedButtonOptions;
 use warpui::clipboard::ClipboardContent;
 use warpui::elements::{
@@ -198,6 +199,9 @@ impl Transcript {
         code_block_index: CodeBlockIndex,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::WarpDrive.is_enabled() {
+            return;
+        }
         if let Some(code) = self.code_for_index(code_block_index, ctx) {
             ctx.clipboard().write(ClipboardContent::plain_text(code));
         }
@@ -476,43 +480,47 @@ impl Transcript {
                 .finish(),
             );
 
-            let save_as_workflow_button = appearance
-                .ui_builder()
-                .animated_button(
-                    mouse_state_handles.save_as_workflow_button.clone(),
-                    SAVE_WORKFLOW_ICON_PATH,
-                    AnimatedButtonOptions {
-                        size: SAVE_AS_WORKFLOW_BUTTON_SIZE,
-                        padding: Some(4.),
-                        color: None,
-                        with_accent_animations: true,
-                        circular: true,
-                    },
-                )
-                .build()
-                .on_click(move |ctx, _, _| {
-                    ctx.dispatch_typed_action(TranscriptAction::OpenWorkflowModal(code_block_index))
-                })
-                .with_cursor(Cursor::PointingHand)
-                .finish();
+            if FeatureFlag::WarpDrive.is_enabled() {
+                let save_as_workflow_button = appearance
+                    .ui_builder()
+                    .animated_button(
+                        mouse_state_handles.save_as_workflow_button.clone(),
+                        SAVE_WORKFLOW_ICON_PATH,
+                        AnimatedButtonOptions {
+                            size: SAVE_AS_WORKFLOW_BUTTON_SIZE,
+                            padding: Some(4.),
+                            color: None,
+                            with_accent_animations: true,
+                            circular: true,
+                        },
+                    )
+                    .build()
+                    .on_click(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(TranscriptAction::OpenWorkflowModal(
+                            code_block_index,
+                        ))
+                    })
+                    .with_cursor(Cursor::PointingHand)
+                    .finish();
 
-            buttons.add_child(
-                SavePosition::new(
-                    Container::new(appearance.ui_builder().tool_tip_on_element(
-                        "Save as workflow [Cmd + S]".to_string(),
-                        mouse_state_handles.save_as_workflow_button_tooltip.clone(),
-                        save_as_workflow_button,
-                        ParentAnchor::TopRight,
-                        ChildAnchor::BottomRight,
-                        vec2f(0., -5.),
-                    ))
-                    .with_margin_left(2.)
-                    .with_margin_bottom(-4.)
+                buttons.add_child(
+                    SavePosition::new(
+                        Container::new(appearance.ui_builder().tool_tip_on_element(
+                            "Save as workflow [Cmd + S]".to_string(),
+                            mouse_state_handles.save_as_workflow_button_tooltip.clone(),
+                            save_as_workflow_button,
+                            ParentAnchor::TopRight,
+                            ChildAnchor::BottomRight,
+                            vec2f(0., -5.),
+                        ))
+                        .with_margin_left(2.)
+                        .with_margin_bottom(-4.)
+                        .finish(),
+                        &save_as_workflow_position_id(code_block_index),
+                    )
                     .finish(),
-                    &save_as_workflow_position_id(code_block_index),
-                )
-                .finish(),
-            );
+                );
+            }
         }
         buttons.finish()
     }

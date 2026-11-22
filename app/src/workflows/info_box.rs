@@ -713,7 +713,7 @@ impl WorkflowsMoreInfoView {
                 let edit_button = self.render_edit_button(cloud_workflow, appearance);
                 row_content.add_children([edit_button, collapse_button, close_button]);
             }
-            WorkflowType::AIGenerated { .. } => {
+            WorkflowType::AIGenerated { .. } if FeatureFlag::WarpDrive.is_enabled() => {
                 let save_as_workflow_button = self.render_save_workflow_button(appearance);
                 row_content.add_children([save_as_workflow_button, collapse_button, close_button]);
             }

@@ -390,7 +390,7 @@ impl SettingsSection {
         }
     }
 
-    fn is_available(self) -> bool {
+    pub(crate) fn is_available(self) -> bool {
         self.feature_flag().is_none_or(|flag| flag.is_enabled())
     }
 

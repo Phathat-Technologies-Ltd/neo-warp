@@ -235,13 +235,13 @@ use crate::app_state::{
     TabSnapshot, TerminalPaneSnapshot, WindowSnapshot, WorkflowPaneSnapshot,
 };
 use crate::appearance::{Appearance, AppearanceManager};
-use crate::auth::{self, AuthStateProvider};
 use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::auth::auth_override_warning_modal::{
     AuthOverrideWarningModal, AuthOverrideWarningModalEvent, AuthOverrideWarningModalVariant,
 };
 use crate::auth::auth_state::AuthState;
 use crate::auth::auth_view_modal::{AuthRedirectPayload, AuthView, AuthViewEvent, AuthViewVariant};
+use crate::auth::{self, AuthStateProvider};
 use crate::autoupdate::{
     AutoupdateState, AutoupdateStateEvent, RelaunchModel, is_incoming_version_past_current,
 };
@@ -8517,6 +8517,9 @@ impl Workspace {
     /// Opens the Warp Drive object identified by `uid` in a new pane
     /// if it has a pane representation.
     fn open_warp_drive_object_in_new_pane(&mut self, uid: &ObjectUid, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::WarpDrive.is_enabled() {
+            return;
+        }
         let Some(object) = CloudModel::as_ref(ctx).get_by_uid(uid) else {
             return;
         };
@@ -8567,6 +8570,9 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
         default_to_new_pane: bool,
     ) {
+        if !FeatureFlag::WarpDrive.is_enabled() {
+            return;
+        }
         let notebook_manager = NotebookManager::handle(ctx);
         let mut notebook_already_open = false;
         if let Some((window_id, locator)) = notebook_manager.as_ref(ctx).find_pane(source) {
@@ -8649,6 +8655,9 @@ impl Workspace {
         settings: &OpenWarpDriveObjectSettings,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::WarpDrive.is_enabled() {
+            return;
+        }
         // If running workflows is supported, do so. Otherwise, or if the workflow isn't in memory,
         // fall back to the workflow pane.
         // We don't want to run the workflow if the invitee email is set, as we want to open the share dialog instead with the
@@ -8692,6 +8701,9 @@ impl Workspace {
         mode: WorkflowViewMode,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::WarpDrive.is_enabled() {
+            return;
+        }
         let workflow_manager = WorkflowManager::handle(ctx);
 
         if let Some((window_id, locator)) = workflow_manager.as_ref(ctx).find_pane(source) {
@@ -8729,6 +8741,9 @@ impl Workspace {
         reload: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::WarpDrive.is_enabled() {
+            return;
+        }
         let env_var_collection_manager = EnvVarCollectionManager::handle(ctx);
 
         if let Some((window_id, locator)) = env_var_collection_manager.as_ref(ctx).find_pane(source)
@@ -15197,6 +15212,9 @@ impl Workspace {
     /// This function is used when we set a selected object, which is an object open in an active pane.
     /// We do not want to focus Warp Drive, instead we want to focus the editor of the open object.
     fn view_in_warp_drive(&mut self, item_id: WarpDriveItemId, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::WarpDrive.is_enabled() {
+            return;
+        }
         self.open_left_panel(ctx);
         self.left_panel_view.update(ctx, |left_panel, ctx| {
             left_panel.handle_action(&LeftPanelAction::WarpDrive, ctx);
@@ -15249,6 +15267,9 @@ impl Workspace {
         source: SharingDialogSource,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::WarpDrive.is_enabled() || !FeatureFlag::SharingAndTeams.is_enabled() {
+            return;
+        }
         self.view_in_warp_drive(WarpDriveItemId::Object(object_id), ctx);
         self.update_warp_drive_view(ctx, |warp_drive, ctx| {
             warp_drive.reset_and_open_to_main_index(ctx);
@@ -19818,6 +19839,9 @@ impl Workspace {
         variant: CloudAgentCapacityModalVariant,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::CloudAgents.is_enabled() {
+            return;
+        }
         if !FeatureFlag::CloudMode.is_enabled() {
             return;
         }
@@ -19953,6 +19977,9 @@ impl Workspace {
         team_uid: ServerId,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::BillingAndReferrals.is_enabled() {
+            return;
+        }
         let team = UserWorkspaces::as_ref(ctx).team_from_uid(team_uid);
         if let Some(team) = team {
             let current_user_email = self.auth_state.user_email().unwrap_or_default();
@@ -20000,6 +20027,9 @@ impl Workspace {
         initial_folder_id: Option<SyncId>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !FeatureFlag::WarpDrive.is_enabled() {
+            return;
+        }
         // We only check whether a user can open a workflow modal for new workflows in the
         // team space. We don't do this check if opening a pre-existing workflow, or
         // creating a new workflow in the personal space, e.g.:
@@ -24719,6 +24749,9 @@ impl TypedActionView for Workspace {
                 source,
             } => self.toggle_palette(*palette_mode, *source, ctx),
             ShowUpgrade => {
+                if !FeatureFlag::BillingAndReferrals.is_enabled() {
+                    return;
+                }
                 send_telemetry_from_ctx!(TelemetryEvent::UserMenuUpgradeClicked, ctx);
 
                 let auth_state = AuthStateProvider::as_ref(ctx).get();
