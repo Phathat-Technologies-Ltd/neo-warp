@@ -59,3 +59,29 @@ fn blank_rows_have_no_runs() {
     assert_eq!(lines[0][0].text, "hi");
     assert!(lines[1].is_empty());
 }
+
+fn row_widths(lines: &[Vec<Run>]) -> Vec<usize> {
+    lines
+        .iter()
+        .map(|runs| runs.iter().map(|run| run.text.chars().count()).sum())
+        .collect()
+}
+
+#[test]
+fn empty_start_cast_renders_the_full_grid() {
+    let cast = "{\"version\":2,\"width\":80,\"height\":24}\n[5.0,\"o\",\"hi\"]\n";
+    let player = Player::new(asciicast::parse(Cursor::new(cast)).unwrap());
+    let lines = grid_lines(player.screen(), &palette());
+
+    assert_eq!(row_widths(&lines), vec![80; 24]);
+    assert!(lines.iter().flatten().all(|run| run.background.is_none()));
+}
+
+#[test]
+fn grid_follows_resize_events() {
+    let cast = "{\"version\":2,\"width\":10,\"height\":2}\n[0.0,\"r\",\"30x5\"]\n";
+    let player = Player::new(asciicast::parse(Cursor::new(cast)).unwrap());
+    let lines = grid_lines(player.screen(), &palette());
+
+    assert_eq!(row_widths(&lines), vec![30; 5]);
+}

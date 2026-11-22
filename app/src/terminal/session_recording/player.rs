@@ -56,6 +56,8 @@ impl Player {
             state: PlaybackState::Paused,
         };
         player.rebuild_timeline();
+        // Shows the recording's opening frame before playback starts.
+        player.apply_until(0.);
         player
     }
 
