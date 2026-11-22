@@ -8,7 +8,7 @@ use super::tts_text;
 
 /// How long after the assistant's audio stops its echo may still reach the microphone, so speech
 /// that starts within it is not trusted as the user's.
-pub const ECHO_TAIL: Duration = Duration::from_millis(400);
+pub const ECHO_TAIL: Duration = Duration::from_millis(700);
 
 /// How long a spoken answer is accepted once the prompt has played; after that only the on-screen
 /// buttons answer.

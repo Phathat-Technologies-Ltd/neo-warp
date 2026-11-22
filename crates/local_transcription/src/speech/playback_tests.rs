@@ -237,7 +237,7 @@ fn barge_in_counts_speech_that_started_before_playback() {
 }
 
 #[test]
-fn loudspeakers_need_sustained_speech_to_barge_in() {
+fn loudspeakers_without_echo_cancellation_never_barge_in() {
     let mut h = Harness::new();
     let actions = h.controller.prompt_sent();
     h.apply(actions);
@@ -246,11 +246,106 @@ fn loudspeakers_need_sustained_speech_to_barge_in() {
     h.run_synthesis();
     let now = h.now;
     h.controller.speech_started(now);
+    assert!(
+        h.controller
+            .check_barge_in(now + Duration::from_secs(5))
+            .is_empty()
+    );
+    assert_eq!(h.controller.state(), ConversationState::Speaking);
+    assert!(h.controller.is_echo_window(now));
+    // Sustained echo is still dropped rather than sent as a prompt.
+    h.controller.speech_ended();
+    let (outcome, _) = h.controller.on_final("a long answer", now);
+    assert_eq!(outcome, FinalOutcome::Echo);
+}
+
+#[test]
+fn echo_cancellation_allows_quick_barge_in_on_loudspeakers() {
+    let mut h = Harness::new();
+    h.controller.set_echo_cancelled(true);
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("A long answer. ");
+    h.apply(actions);
+    h.run_synthesis();
+    let now = h.now;
+    assert!(!h.controller.is_echo_window(now));
+    h.controller.speech_started(now);
     assert!(h.controller.check_barge_in(now + BARGE_IN_AFTER).is_empty());
     let actions = h
         .controller
-        .check_barge_in(now + BARGE_IN_AFTER_ON_SPEAKERS);
+        .check_barge_in(now + BARGE_IN_AFTER_WITH_ECHO_CANCELLATION);
     h.apply(actions);
+    assert_eq!(h.controller.state(), ConversationState::Listening);
+    h.controller.speech_ended();
+    let (outcome, _) = h.controller.on_final(
+        "wait, run the tests instead",
+        now + BARGE_IN_AFTER_WITH_ECHO_CANCELLATION,
+    );
+    assert_eq!(outcome, FinalOutcome::NotConsumed);
+}
+
+#[test]
+fn speech_under_way_when_playback_starts_is_echo() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("Here is the plan. ");
+    h.apply(actions);
+    h.controller.speech_started(h.now);
+    h.run_synthesis();
+    h.controller.speech_ended();
+    h.finish_playback();
+    h.advance(ECHO_TAIL);
+    let (outcome, _) = h.controller.on_final("something else entirely", h.now);
+    assert_eq!(outcome, FinalOutcome::Echo);
+}
+
+#[test]
+fn a_final_without_speech_start_during_the_tail_is_echo() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("Done. ");
+    h.apply(actions);
+    h.run_synthesis();
+    h.finish_playback();
+    h.advance(ECHO_TAIL / 2);
+    assert!(h.controller.is_echo_window(h.now));
+    let (outcome, _) = h.controller.on_final("unrelated words here", h.now);
+    assert_eq!(outcome, FinalOutcome::Echo);
+}
+
+#[test]
+fn transcripts_repeating_recent_speech_are_dropped_after_the_tail() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h
+        .controller
+        .reply_text("The build has two errors in main. ");
+    h.apply(actions);
+    h.run_synthesis();
+    h.finish_playback();
+    h.advance(ECHO_TAIL * 2);
+    assert!(!h.controller.is_echo_window(h.now));
+    assert_eq!(h.say("the build has two errors"), FinalOutcome::Echo);
+    assert_eq!(h.say("Two errors in main."), FinalOutcome::Echo);
+    assert_eq!(h.say("fix the two errors"), FinalOutcome::NotConsumed);
+    h.advance(RECENT_SPEECH_WINDOW);
+    assert_eq!(h.say("the build has two errors"), FinalOutcome::NotConsumed);
+}
+
+#[test]
+fn enough_stops_speech_in_the_echo_tail() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("First. Second sentence here. ");
+    h.apply(actions);
+    h.run_synthesis();
+    h.finish_playback();
+    assert_eq!(h.say("enough"), FinalOutcome::Stopped);
     assert_eq!(h.controller.state(), ConversationState::Listening);
 }
 

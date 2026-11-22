@@ -126,6 +126,12 @@ impl ConversationSession {
         self.is_active() && self.controller.is_speaking()
     }
 
+    /// Whether the microphone may be hearing the reply right now, so partial transcripts stay off
+    /// screen and auto-send waits.
+    pub fn is_echo_window(&self) -> bool {
+        self.controller.is_echo_window(Instant::now())
+    }
+
     pub fn is_muted(&self) -> bool {
         self.controller.is_muted()
     }
