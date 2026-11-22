@@ -187,6 +187,7 @@ fn state(enabled: bool) -> Arc<AppState> {
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
+        recordings: None,
     })
 }
 
