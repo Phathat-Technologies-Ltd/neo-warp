@@ -25,6 +25,7 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
         transcriber: None,
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
+        codebase_index: None,
     })
 }
 
@@ -555,6 +556,7 @@ fn embedded_server_answers_on_its_reported_port() {
         session_max_age: Duration::from_secs(3600),
         remote_server_artifacts: None,
         transcriber: None,
+        codebase_index_dir: None,
     })
     .expect("embedded server should start");
     assert!(address.ip().is_loopback());
@@ -757,4 +759,94 @@ async fn legacy_prompt_suggestions_answer_null_without_settings() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["suggestion"].is_null());
     assert!(body["id"].is_string());
+}
+
+fn state_with_codebase_index(dir: &std::path::Path) -> Arc<AppState> {
+    let keys: JwkSet = serde_json::from_str(PROVIDER_JWKS).unwrap();
+    Arc::new(AppState {
+        verifier: OidcVerifier::with_keys(ISSUER, CLIENT_ID, keys),
+        sessions: SessionStore::new(Some(b"test-secret"), Duration::from_secs(3600)),
+        required_group: None,
+        remote_server_artifacts: None,
+        transcriber: None,
+        ai_settings: Default::default(),
+        make_provider: crate::agent::default_provider_factory(),
+        codebase_index: Some(Arc::new(CodebaseIndex::with_zvec_grep_binary(
+            dir.to_owned(),
+            None,
+        ))),
+    })
+}
+
+#[tokio::test]
+async fn indexing_operations_are_answered_only_with_an_index_and_a_sign_in() {
+    use warp_graphql::queries::sync_merkle_tree::{SyncMerkleTree, SyncMerkleTreeResult};
+
+    let hash = "a".repeat(64);
+    let body = json!({
+        "query": "",
+        "operationName": "SyncMerkleTree",
+        "variables": {
+            "input": { "hashedNodes": [hash], "embeddingConfig": "VOYAGE_CODE_3_512" },
+            "requestContext": { "clientContext": {}, "osContext": {} },
+        },
+    });
+    let request = |id_token: Option<&str>| {
+        let mut request = Request::post("/graphql/v2?op=SyncMerkleTree")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(id_token) = id_token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {id_token}"));
+        }
+        request.body(Body::from(body.to_string())).unwrap()
+    };
+
+    let without_index = state();
+    let (id_token, _) = sign_in(&without_index).await;
+    let (_, response) = send(&without_index, request(Some(&id_token))).await;
+    assert!(response["errors"].is_array());
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_with_codebase_index(dir.path());
+    assert_eq!(
+        send(&state, request(None)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (id_token, _) = sign_in(&state).await;
+    let (status, response) = send(&state, request(Some(&id_token))).await;
+    assert_eq!(status, StatusCode::OK);
+    let response: cynic::GraphQlResponse<SyncMerkleTree> =
+        serde_json::from_value(response).unwrap();
+    let SyncMerkleTreeResult::SyncMerkleTreeOutput(output) =
+        response.data.unwrap().sync_merkle_tree
+    else {
+        panic!("unexpected sync result");
+    };
+    assert_eq!(output.changed_nodes[0].0, hash);
+}
+
+#[tokio::test]
+async fn relevant_files_are_ranked_locally() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_with_codebase_index(dir.path());
+    let (id_token, _) = sign_in(&state).await;
+    let request = Request::post("/ai/relevant_files")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {id_token}"))
+        .body(Body::from(
+            json!({
+                "query": "keybindings editor",
+                "files": [
+                    { "path": "src/tabs.rs", "symbols": "Tab" },
+                    { "path": "src/keybindings/editor.rs", "symbols": "KeybindingEditor" },
+                ],
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, body) = send(&state, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["relevant_file_paths"],
+        json!(["src/keybindings/editor.rs"])
+    );
 }
