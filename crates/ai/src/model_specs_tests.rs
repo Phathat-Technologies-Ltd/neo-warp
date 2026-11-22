@@ -49,6 +49,9 @@ fn catalog() -> Catalog {
             1.,
         ),
         model("llama-4-scout", "Llama 4 Scout", 30., 150., 0.1, 0.3),
+        model("glm-5-3", "GLM-5.3", 40., 40., 1., 4.),
+        model("muse-spark-1-3", "Muse Spark 1.3", 45., 40., 1., 4.),
+        model("gpt-5-6-luna", "GPT-5.6 Luna", 35., 40., 1., 4.),
     ])
 }
 
@@ -66,7 +69,8 @@ fn matches_variants_but_never_a_different_version() {
         "the strongest variant wins a tie"
     );
     assert_eq!(scores("gpt-6").unwrap().quality, 50. / 80.);
-    assert!(scores("gpt-6.1-sol").is_none());
+    assert!(scores("gpt-6.1-sol").unwrap().estimated_from.is_some());
+    assert_eq!(opus.estimated_from, None);
     assert!(scores("claude-sonnet-5-5").is_none());
 }
 
@@ -131,4 +135,40 @@ fn parses_the_free_endpoint() {
     assert_eq!(model.slug, "glm-5-3");
     assert_eq!(model.intelligence, Some(31.7));
     assert_eq!(model.output_tokens_per_second, Some(80.07));
+}
+
+fn estimated_from(id: &str) -> Option<String> {
+    scores(id).and_then(|scores| scores.estimated_from)
+}
+
+#[test]
+fn strips_a_vendor_prefix_as_an_estimate() {
+    assert_eq!(estimated_from("zai-glm-5.3").as_deref(), Some("GLM-5.3"));
+    assert_eq!(scores("zai-glm-5.3").unwrap().quality, 40. / 80.);
+    assert_eq!(scores("glm-5.3").unwrap().estimated_from, None);
+}
+
+#[test]
+fn estimates_from_the_nearest_version_of_the_same_family() {
+    assert_eq!(
+        estimated_from("msl-muse-spark-1.2").as_deref(),
+        Some("Muse Spark 1.3")
+    );
+    assert_eq!(
+        estimated_from("gpt-5.6-sol").as_deref(),
+        Some("GPT-6.2 Sol (xhigh)"),
+        "never the Luna model of the same version"
+    );
+    assert_eq!(
+        estimated_from("gpt-6.2-luna").as_deref(),
+        Some("GPT-5.6 Luna")
+    );
+}
+
+#[test]
+fn never_estimates_across_families() {
+    assert!(scores("claude-sonnet-5-5").is_none());
+    assert!(scores("claude-sonnet-6").is_none());
+    assert!(scores("mistral-large-2").is_none());
+    assert!(scores("muse-2").is_none());
 }

@@ -45,11 +45,14 @@ pub struct BenchmarkedModel {
 }
 
 /// Scores from 0 to 1, as the model picker draws them.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Scores {
     pub quality: f32,
     pub speed: f32,
     pub cost: f32,
+    /// The display name of the benchmarked model these scores are borrowed from, when it isn't
+    /// the same model: our ID carries a vendor prefix or names a version that isn't benchmarked.
+    pub estimated_from: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -156,14 +159,13 @@ impl Catalog {
         display_name: &str,
         aliases: &HashMap<String, String>,
     ) -> Option<Scores> {
-        let model = match aliases.get(id) {
-            Some(slug) => self.models.iter().find(|m| &m.slug == slug),
-            None => self
-                .best_match(id)
-                .or_else(|| self.best_match(display_name)),
-        }?;
+        let (model, estimated) = match aliases.get(id) {
+            Some(slug) => (self.models.iter().find(|m| &m.slug == slug)?, false),
+            None => self.find(&[id, display_name])?,
+        };
         let intelligence = model.intelligence?;
         Some(Scores {
+            estimated_from: estimated.then(|| model.name.clone()),
             quality: ratio(intelligence, self.max_intelligence),
             speed: model
                 .output_tokens_per_second
@@ -172,18 +174,67 @@ impl Catalog {
         })
     }
 
-    fn best_match(&self, name: &str) -> Option<&BenchmarkedModel> {
-        let ours = tokens(name);
-        if ours.is_empty() {
-            return None;
+    /// The benchmarked model for the first of `names` that matches, and whether it is only an
+    /// estimate. Exact matches win over a vendor-prefixed match, which wins over the nearest
+    /// version of the same family.
+    fn find(&self, names: &[&str]) -> Option<(&BenchmarkedModel, bool)> {
+        let names: Vec<Vec<String>> = names
+            .iter()
+            .map(|name| tokens(name))
+            .filter(|t| !t.is_empty())
+            .collect();
+        if let Some(model) = names.iter().find_map(|ours| self.best_match(ours)) {
+            return Some((model, false));
         }
+        let unprefixed: Vec<&[String]> =
+            names.iter().filter_map(|ours| strip_vendor(ours)).collect();
+        unprefixed
+            .iter()
+            .find_map(|ours| self.best_match(ours))
+            .or_else(|| {
+                names
+                    .iter()
+                    .map(Vec::as_slice)
+                    .chain(unprefixed.iter().copied())
+                    .find_map(|ours| self.nearest_version(ours))
+            })
+            .map(|model| (model, true))
+    }
+
+    /// The benchmarked model of exactly the same family (the same words, ignoring variant and size
+    /// words) whose version is numerically closest to ours. Ties go to the higher intelligence.
+    fn nearest_version(&self, ours: &[String]) -> Option<&BenchmarkedModel> {
+        let (family, version) = family_and_version(ours)?;
+        self.models
+            .iter()
+            .filter(|m| m.intelligence.is_some())
+            .filter_map(|m| {
+                [tokens(&m.slug), tokens(&m.name)]
+                    .iter()
+                    .filter_map(|theirs| family_and_version(theirs))
+                    .filter(|(their_family, _)| *their_family == family)
+                    .map(|(_, their_version)| (their_version - version).abs())
+                    .min_by(f64::total_cmp)
+                    .map(|distance| (distance, m))
+            })
+            .min_by(|(a, x), (b, y)| {
+                a.total_cmp(b).then(
+                    y.intelligence
+                        .partial_cmp(&x.intelligence)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+            })
+            .map(|(_, model)| model)
+    }
+
+    fn best_match(&self, ours: &[String]) -> Option<&BenchmarkedModel> {
         self.models
             .iter()
             .filter(|m| m.intelligence.is_some())
             .filter_map(|m| {
                 let theirs = tokens(&m.slug);
-                match_distance(&ours, &theirs)
-                    .or_else(|| match_distance(&ours, &tokens(&m.name)))
+                match_distance(ours, &theirs)
+                    .or_else(|| match_distance(ours, &tokens(&m.name)))
                     .map(|distance| (distance, m))
             })
             // Among equally close variants, the highest-scoring one is the default the
@@ -221,6 +272,44 @@ fn match_distance(a: &[String], b: &[String]) -> Option<usize> {
         distance += count.unsigned_abs() as usize;
     }
     Some(distance)
+}
+
+/// `ours` without a leading vendor word, such as `zai` in `zai-glm-5.3`.
+fn strip_vendor(ours: &[String]) -> Option<&[String]> {
+    let (first, rest) = ours.split_first()?;
+    (first.chars().all(|c| c.is_ascii_alphabetic())
+        && !is_ignorable(first)
+        && rest
+            .iter()
+            .any(|t| t.chars().all(|c| c.is_ascii_alphabetic())))
+    .then_some(rest)
+}
+
+/// The sorted family words of a name and its version number (`5`, `3` reads as 5.3), or `None`
+/// when the name has no family word or no version.
+fn family_and_version(name: &[String]) -> Option<(Vec<&str>, f64)> {
+    let mut family = Vec::new();
+    let mut numbers = Vec::new();
+    for token in name {
+        if is_ignorable(token) {
+            continue;
+        }
+        if token.chars().all(|c| c.is_ascii_digit()) {
+            numbers.push(token.as_str());
+        } else {
+            family.push(token.as_str());
+        }
+    }
+    if family.is_empty() || numbers.is_empty() {
+        return None;
+    }
+    family.sort_unstable();
+    family.dedup();
+    let version = match numbers.split_first()? {
+        (major, []) => major.to_string(),
+        (major, rest) => format!("{major}.{}", rest.concat()),
+    };
+    Some((family, version.parse().ok()?))
 }
 
 fn is_ignorable(token: &str) -> bool {

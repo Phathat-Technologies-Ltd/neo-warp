@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use fuzzy_match::{FuzzyMatchResult, match_indices_case_insensitive};
 use itertools::Itertools;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
@@ -365,6 +367,8 @@ struct ModelSearchItem {
     upgrade_url: String,
     provider: LLMProvider,
     spec: Option<LLMSpec>,
+    /// The benchmarked model `spec` is estimated from, when it isn't this model's own rating.
+    spec_estimated_from: Option<String>,
     leading_icon: Icon,
     credential_icon: Option<Icon>,
     byo_key_source: Option<ByoKeySource>,
@@ -412,15 +416,25 @@ impl ModelSearchItem {
         let is_using_cloud_host = is_using_bedrock || is_using_gemini_enterprise_agent_platform;
         let credential_icon =
             (!is_using_cloud_host && byo_key_source.is_some()).then_some(Icon::Key);
+        let rating = llm
+            .spec
+            .is_none()
+            .then(|| {
+                app.has_singleton_model::<ModelSpecs>()
+                    .then(|| ModelSpecs::as_ref(app).spec_for(llm))
+                    .flatten()
+            })
+            .flatten();
+        let (spec, spec_estimated_from) = match rating {
+            Some(rating) => (Some(rating.spec), rating.estimated_from),
+            None => (llm.spec.clone(), None),
+        };
         Self {
             id: llm.id.clone(),
             upgrade_url: upgrade_url.to_owned(),
             provider: llm.provider,
-            spec: llm.spec.clone().or_else(|| {
-                app.has_singleton_model::<ModelSpecs>()
-                    .then(|| ModelSpecs::as_ref(app).spec_for(llm))
-                    .flatten()
-            }),
+            spec,
+            spec_estimated_from,
             leading_icon,
             credential_icon,
             byo_key_source,
@@ -626,11 +640,17 @@ impl SearchItem for ModelSearchItem {
         }
 
         let (title, description) = if self.reasoning_level.is_some() {
-            (REASONING_LEVEL_TITLE, REASONING_LEVEL_DESCRIPTION)
+            (
+                REASONING_LEVEL_TITLE,
+                Cow::Borrowed(REASONING_LEVEL_DESCRIPTION),
+            )
         } else {
-            (MODEL_SPECS_TITLE, model_specs_description(app))
+            (
+                MODEL_SPECS_TITLE,
+                model_specs_description(self.spec_estimated_from.as_deref(), app),
+            )
         };
-        let header = render_model_spec_header(title, description, app);
+        let header = render_model_spec_header(title, &description, app);
 
         let uses_external_inference = self.is_using_bedrock
             || self.is_using_gemini_enterprise_agent_platform
@@ -826,11 +846,17 @@ fn should_show_discount_chip(discount_percentage: Option<f32>, is_using_byok: bo
     discount_percentage.is_some_and(|p| p > 0.) && !is_using_byok
 }
 
-/// Credits Artificial Analysis when its ratings fill the bars, as its terms require.
-fn model_specs_description(app: &AppContext) -> &'static str {
-    if app.has_singleton_model::<ModelSpecs>() && ModelSpecs::as_ref(app).is_active() {
-        ::ai::model_specs::ATTRIBUTION
-    } else {
-        MODEL_SPECS_DESCRIPTION
+/// Credits Artificial Analysis when its ratings fill the bars, as its terms require, and names the
+/// benchmarked model when the ratings are only an estimate.
+fn model_specs_description(estimated_from: Option<&str>, app: &AppContext) -> Cow<'static, str> {
+    if !(app.has_singleton_model::<ModelSpecs>() && ModelSpecs::as_ref(app).is_active()) {
+        return Cow::Borrowed(MODEL_SPECS_DESCRIPTION);
+    }
+    match estimated_from {
+        Some(source) => Cow::Owned(format!(
+            "~ Estimated from {source}. {}",
+            ::ai::model_specs::ATTRIBUTION
+        )),
+        None => Cow::Borrowed(::ai::model_specs::ATTRIBUTION),
     }
 }

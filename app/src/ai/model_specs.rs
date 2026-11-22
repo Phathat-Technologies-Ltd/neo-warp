@@ -27,6 +27,13 @@ struct CachedCatalog {
     unlisted: BTreeSet<String>,
 }
 
+/// A model's ratings from Artificial Analysis.
+pub struct Rating {
+    pub spec: LLMSpec,
+    /// The benchmarked model the ratings are borrowed from, when it isn't this model.
+    pub estimated_from: Option<String>,
+}
+
 pub struct ModelSpecs {
     api_key: Option<String>,
     aliases: HashMap<String, String>,
@@ -71,14 +78,17 @@ impl ModelSpecs {
     }
 
     /// Ratings for `llm`, when it matches a benchmarked model.
-    pub fn spec_for(&self, llm: &LLMInfo) -> Option<LLMSpec> {
+    pub fn spec_for(&self, llm: &LLMInfo) -> Option<Rating> {
         let catalog = self.catalog.as_ref()?;
         catalog
             .scores_for(benchmark_id(llm), &llm.display_name, &self.aliases)
-            .map(|scores| LLMSpec {
-                cost: scores.cost,
-                quality: scores.quality,
-                speed: scores.speed,
+            .map(|scores| Rating {
+                spec: LLMSpec {
+                    cost: scores.cost,
+                    quality: scores.quality,
+                    speed: scores.speed,
+                },
+                estimated_from: scores.estimated_from,
             })
     }
 
