@@ -24,6 +24,16 @@ pub struct Run {
 
 /// One run list per screen row. Trailing default-styled blanks are trimmed.
 pub fn styled_lines(screen: &vt100::Screen, palette: &Palette) -> Vec<Vec<Run>> {
+    lines(screen, palette, true)
+}
+
+/// One run list per screen row, each covering every column so the grid renders at its full size
+/// even before any output arrives.
+pub fn grid_lines(screen: &vt100::Screen, palette: &Palette) -> Vec<Vec<Run>> {
+    lines(screen, palette, false)
+}
+
+fn lines(screen: &vt100::Screen, palette: &Palette, trim: bool) -> Vec<Vec<Run>> {
     let (rows, cols) = screen.size();
     (0..rows)
         .map(|row| {
@@ -70,7 +80,9 @@ pub fn styled_lines(screen: &vt100::Screen, palette: &Palette) -> Vec<Vec<Run>> 
                     }),
                 }
             }
-            trim_trailing_blanks(&mut runs);
+            if trim {
+                trim_trailing_blanks(&mut runs);
+            }
             runs
         })
         .collect()

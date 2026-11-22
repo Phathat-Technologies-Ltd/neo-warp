@@ -31,7 +31,7 @@ use super::client::{RecordingsClient, sync_local_store_root};
 use super::list::{RecordingRow, RecordingsList};
 use super::naming::format_duration;
 use super::player::{Chapter, PlaybackState, Player};
-use super::screen_style::{Palette, styled_lines};
+use super::screen_style::{Palette, grid_lines};
 use crate::appearance::Appearance;
 use crate::editor::{EditorView, Event as EditorEvent, SingleLineEditorOptions, TextOptions};
 use crate::pane_group::focus_state::PaneFocusHandle;
@@ -112,6 +112,7 @@ struct PlayerControls {
     close: MouseStateHandle,
     seek: SliderStateHandle,
     chapters_scroll: ClippedScrollStateHandle,
+    screen_scroll: ClippedScrollStateHandle,
 }
 
 struct PlaybackSession {
@@ -549,7 +550,7 @@ impl RecordingsView {
         let palette = palette(appearance);
 
         let mut screen = Flex::column();
-        for runs in styled_lines(player.screen(), &palette) {
+        for runs in grid_lines(player.screen(), &palette) {
             let mut text = String::new();
             let mut highlights = Vec::new();
             for run in &runs {
@@ -601,6 +602,15 @@ impl RecordingsView {
             .with_background(Fill::Solid(palette.background))
             .with_border(warpui::elements::Border::all(1.).with_border_fill(theme.outline()))
             .finish();
+        let screen = ClippedScrollable::horizontal(
+            controls.screen_scroll.clone(),
+            screen,
+            ScrollbarWidth::Auto,
+            theme.disabled_text_color(theme.background()).into(),
+            theme.main_text_color(theme.background()).into(),
+            Fill::None,
+        )
+        .finish();
 
         let play_label = match player.state() {
             PlaybackState::Playing => "Pause",
