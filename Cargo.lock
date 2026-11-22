@@ -16015,6 +16015,7 @@ dependencies = [
  "libsqlite3-sys",
  "line-ending",
  "local_control",
+ "local_transcription",
  "log",
  "log-panics",
  "lsp",

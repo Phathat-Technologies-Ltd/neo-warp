@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     )
     // Keeps neo-warp's settings, sessions, and credentials apart from Warp OSS builds.
     .with_data_profile("neo-warp")
-    .with_additional_features(&[FeatureFlag::OrganizationSignIn]);
+    .with_additional_features(&[FeatureFlag::OrganizationSignIn, FeatureFlag::NeoVoiceInput]);
     if cfg!(debug_assertions) {
         state = state.with_additional_features(warp_core::features::DEBUG_FLAGS);
     }

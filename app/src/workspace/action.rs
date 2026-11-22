@@ -308,6 +308,8 @@ pub enum WorkspaceAction {
     JoinSlack,
     ViewUserDocs,
     ViewLatestChangelog,
+    /// Downloads the on-device speech model after the user agreed in the voice input prompt.
+    DownloadLocalVoiceModel,
     ViewPrivacyPolicy,
     SendFeedback,
     /// Open the log directory in the system file explorer with the current log file selected.
@@ -1035,6 +1037,7 @@ impl WorkspaceAction {
             | JoinSlack
             | ViewUserDocs
             | ViewLatestChangelog
+            | DownloadLocalVoiceModel
             | ViewPrivacyPolicy
             | SendFeedback
             | ChangeCursor(_)

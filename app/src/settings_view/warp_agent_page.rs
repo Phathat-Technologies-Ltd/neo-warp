@@ -876,6 +876,12 @@ impl WarpAgentPageView {
             me.handle_detection_denylist_editor_event(event, ctx);
         });
 
+        #[cfg(not(target_family = "wasm"))]
+        ctx.subscribe_to_model(
+            &crate::voice::local_model::LocalVoiceModel::handle(ctx),
+            |_, _, _, ctx| ctx.notify(),
+        );
+
         ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |me, _handle, _event, ctx| {
             // Re-render if teams-related data changed that may affect whether features such as voice input are enabled.
             me.sync_custom_endpoint_buttons(ctx);
@@ -2602,6 +2608,9 @@ impl Entity for WarpAgentPageView {
 #[derive(Debug, Clone, PartialEq)]
 pub enum WarpAgentPageAction {
     OpenUrl(String),
+    DownloadLocalVoiceModel,
+    CancelLocalVoiceModelDownload,
+    RemoveLocalVoiceModel,
     SetVoiceInputToggleKey(VoiceInputToggleKey),
     SetVoiceInputLanguage(String),
     ToggleGlobalAI,
@@ -2912,6 +2921,25 @@ impl TypedActionView for WarpAgentPageView {
                 }
                 ctx.notify();
             }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::DownloadLocalVoiceModel => {
+                crate::voice::local_model::LocalVoiceModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.download(ctx));
+            }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::CancelLocalVoiceModelDownload => {
+                crate::voice::local_model::LocalVoiceModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.cancel_download(ctx));
+            }
+            #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::RemoveLocalVoiceModel => {
+                crate::voice::local_model::LocalVoiceModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.remove(ctx));
+            }
+            #[cfg(target_family = "wasm")]
+            WarpAgentPageAction::DownloadLocalVoiceModel
+            | WarpAgentPageAction::CancelLocalVoiceModelDownload
+            | WarpAgentPageAction::RemoveLocalVoiceModel => {}
             WarpAgentPageAction::ToggleVoiceInput => {
                 match AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     settings
@@ -4190,6 +4218,7 @@ impl NaturalLanguageDetectionWidget {
 struct VoiceWidget {
     voice_input_toggle: SwitchStateHandle,
     wispr_highlight_index: HighlightedHyperlink,
+    local_model_button: MouseStateHandle,
 }
 
 impl VoiceWidget {
@@ -4211,13 +4240,21 @@ impl VoiceWidget {
             app,
         ));
 
-        let voice_input_description_text_fragments = vec![
-            FormattedTextFragment::plain_text(
-                "Voice input allows you to control Warp by speaking directly to your terminal (powered by ",
-            ),
-            FormattedTextFragment::hyperlink("Wispr Flow", WISPR_FLOW_URL),
-            FormattedTextFragment::plain_text(")."),
-        ];
+        let voice_input_description_text_fragments = if crate::voice::is_voice_transcribed_locally()
+        {
+            vec![FormattedTextFragment::plain_text(
+                "Voice input allows you to control Warp by speaking directly to your terminal. \
+                 Speech is transcribed on this computer.",
+            )]
+        } else {
+            vec![
+                FormattedTextFragment::plain_text(
+                    "Voice input allows you to control Warp by speaking directly to your terminal (powered by ",
+                ),
+                FormattedTextFragment::hyperlink("Wispr Flow", WISPR_FLOW_URL),
+                FormattedTextFragment::plain_text(")."),
+            ]
+        };
 
         let voice_input_description = FormattedTextElement::new(
             FormattedText::new([FormattedTextLine::Line(
@@ -4271,9 +4308,79 @@ impl VoiceWidget {
                 None,
                 &view.voice_input_language_dropdown,
             ));
+            #[cfg(not(target_family = "wasm"))]
+            if let Some(state) = crate::voice::local_model::local_model_state(app) {
+                column.add_child(self.render_local_model(state, appearance, app));
+            }
         }
 
         column.finish()
+    }
+
+    /// The on-device speech model's status, with a button to download, cancel, or remove it.
+    #[cfg(not(target_family = "wasm"))]
+    fn render_local_model(
+        &self,
+        state: local_transcription::ModelState,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        use crate::voice::local_model::{LocalVoiceModel, format_megabytes, format_progress};
+        use local_transcription::ModelState;
+
+        let model = LocalVoiceModel::as_ref(app);
+        let size = format_megabytes(model.download_size());
+        let (description, button_label, action) = match state {
+            ModelState::NotInstalled | ModelState::AwaitingConsent | ModelState::Declined => (
+                format!(
+                    "{} runs on this computer. Not downloaded ({size}).",
+                    model.display_name()
+                ),
+                "Download",
+                WarpAgentPageAction::DownloadLocalVoiceModel,
+            ),
+            ModelState::Downloading(progress) => (
+                format!(
+                    "Downloading {} ({}).",
+                    model.display_name(),
+                    format_progress(progress)
+                ),
+                "Cancel",
+                WarpAgentPageAction::CancelLocalVoiceModelDownload,
+            ),
+            ModelState::Installed => (
+                format!("{} is downloaded ({size}).", model.display_name()),
+                "Remove",
+                WarpAgentPageAction::RemoveLocalVoiceModel,
+            ),
+            ModelState::Failed(error) => (
+                format!("The download failed: {error}"),
+                "Retry",
+                WarpAgentPageAction::DownloadLocalVoiceModel,
+            ),
+        };
+        let button = appearance
+            .ui_builder()
+            .button(ButtonVariant::Secondary, self.local_model_button.clone())
+            .with_text_label(button_label.to_owned())
+            .build()
+            .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
+            .finish();
+        build_toggle_element(
+            render_body_item_label::<WarpAgentPageAction>(
+                "Speech Model".to_owned(),
+                None,
+                None,
+                LocalOnlyIconState::Hidden,
+                ToggleState::Enabled,
+                appearance,
+            ),
+            Container::new(button)
+                .with_padding_right(TOGGLE_BUTTON_RIGHT_PADDING)
+                .finish(),
+            appearance,
+            Some(description),
+        )
     }
 }
 
@@ -4281,7 +4388,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

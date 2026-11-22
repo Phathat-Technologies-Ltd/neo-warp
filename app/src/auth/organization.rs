@@ -45,7 +45,9 @@ pub(crate) fn init() {
         eprintln!("Error: invalid organization server URL {server_url}: {error:#}");
         log::error!("Invalid organization server URL {server_url}: {error:#}");
     }
-    if config.sign_in.is_some() && !(config.server_url.is_none() && bundled_remote_server_builds().is_some()) {
+    if config.sign_in.is_some()
+        && !(config.server_url.is_none() && bundled_remote_server_builds().is_some())
+    {
         // The SSH extension installs a Linux build of the app on the remote host, downloaded from
         // the server; only the embedded server, from builds bundled with the app, offers them.
         FeatureFlag::SshRemoteServer.set_enabled(false);
@@ -66,6 +68,7 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
         signing_secret,
         session_max_age: EMBEDDED_SESSION_MAX_AGE,
         remote_server_artifacts: bundled_remote_server_builds(),
+        transcriber: local_transcriber(),
     }) {
         Ok(address) => Some(format!("http://{address}")),
         Err(error) => {
@@ -74,6 +77,17 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
             None
         }
     }
+}
+
+/// The on-device speech engine for `/ai/transcribe`, when local voice input is on.
+fn local_transcriber() -> Option<std::sync::Arc<dyn local_transcription::Transcriber>> {
+    if !FeatureFlag::NeoVoiceInput.is_enabled() {
+        return None;
+    }
+    crate::voice::local_model::mark_served_locally();
+    Some(std::sync::Arc::new(
+        local_transcription::ParakeetTranscriber::new(crate::voice::local_model::model_store()),
+    ))
 }
 
 /// The directory of Linux builds bundled with the app for its SSH extension, if any.

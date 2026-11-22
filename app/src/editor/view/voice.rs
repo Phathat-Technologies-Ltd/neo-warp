@@ -265,9 +265,15 @@ impl EditorView {
                     return false;
                 }
 
-                if !crate::ai::AIRequestUsageModel::handle(ctx)
-                    .as_ref(ctx)
-                    .can_request_voice()
+                #[cfg(not(target_family = "wasm"))]
+                if !crate::voice::local_model::ensure_ready_to_record(ctx.window_id(), ctx) {
+                    return false;
+                }
+
+                if !crate::voice::is_voice_transcribed_locally()
+                    && !crate::ai::AIRequestUsageModel::handle(ctx)
+                        .as_ref(ctx)
+                        .can_request_voice()
                 {
                     self.voice_error_toast(super::VOICE_LIMIT_HIT_TOAST_TEXT, ctx);
                     return false;
