@@ -1525,6 +1525,16 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.denoise",
         description: "Whether hands-free voice input suppresses background noise before detecting speech.",
     },
+    conversation_echo_cancellation: ConversationEchoCancellation {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::MAC,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.conversation_echo_cancellation",
+        description: "Experimental: in voice conversation mode, route the microphone and spoken replies through macOS echo cancellation so you can interrupt a reply on laptop speakers by talking.",
+    },
     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
     // explicitly interacted with voice input. We use this to determine whether we should show a toast
     // to inform the user about voice input and auto-set the keybinding.

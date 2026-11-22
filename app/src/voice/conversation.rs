@@ -186,8 +186,13 @@ impl ConversationSession {
         let options = ChunkerOptions {
             read_code_summaries: *settings.conversation_read_code_summaries,
         };
-        let output = SpeechOutput::open()
-            .map_err(|error| format!("Couldn't open the speaker: {error:#}"))?;
+        // The microphone and the speaker must both be on the echo-cancelling unit, so hands-free
+        // capture moves onto it as well.
+        voice_input::set_voice_processing_wanted(*settings.conversation_echo_cancellation);
+        let output = SpeechOutput::open().map_err(|error| {
+            voice_input::set_voice_processing_wanted(false);
+            format!("Couldn't open the speaker: {error:#}")
+        })?;
         let headphones =
             output.reports_headphones() || is_headphone_device_name(output.device_name());
         self.output = Some(output);
@@ -203,6 +208,7 @@ impl ConversationSession {
         self.window_id = Some(window_id);
         self.controller.start(options);
         self.controller.set_headphones(headphones);
+        self.refresh_echo_cancellation();
         VOICE_CONVERSATION_ACTIVE.store(true, Ordering::Relaxed);
         ctx.emit(ConversationEvent::StateChanged);
         ctx.notify();
@@ -217,6 +223,7 @@ impl ConversationSession {
         self.apply(actions, ctx);
         VOICE_CONVERSATION_ACTIVE.store(false, Ordering::Relaxed);
         self.output = None;
+        voice_input::set_voice_processing_wanted(false);
         self.speaker = None;
         self.surface = None;
         self.reply = None;
@@ -355,6 +362,7 @@ impl ConversationSession {
     /// Lets conversation mode handle a final utterance before hands-free applies it. Returns
     /// whether it was consumed ("stop", or an approval answer) and must not reach the input.
     pub fn intercept_final(&mut self, text: &str, ctx: &mut ModelContext<Self>) -> bool {
+        self.refresh_echo_cancellation();
         let (outcome, actions) = self.controller.on_final(text, Instant::now());
         self.apply(actions, ctx);
         match outcome {
@@ -385,6 +393,7 @@ impl ConversationSession {
         if !self.is_active() {
             return;
         }
+        self.refresh_echo_cancellation();
         self.controller.speech_started(Instant::now());
         self.poll_barge_in(ctx);
     }
@@ -432,6 +441,13 @@ impl ConversationSession {
         self.controller.speech_ended();
     }
 
+    /// Trusts speech over the reply only while the microphone and speaker are actually on the
+    /// echo-cancelling unit; it can fall back to the plain audio path at any time.
+    fn refresh_echo_cancellation(&mut self) {
+        self.controller
+            .set_echo_cancelled(voice_input::is_echo_cancelling());
+    }
+
     fn apply(&mut self, actions: Vec<PlaybackAction<Arc<Audio>>>, ctx: &mut ModelContext<Self>) {
         let before = self.controller.state();
         for action in actions {
@@ -460,6 +476,7 @@ impl ConversationSession {
                     });
                 }
                 PlaybackAction::Play { reply, seq, audio } => {
+                    self.refresh_echo_cancellation();
                     if let Some(output) = &self.output {
                         let finished_tx = self.finished_tx.clone();
                         output.play(&audio.samples, audio.sample_rate, move || {

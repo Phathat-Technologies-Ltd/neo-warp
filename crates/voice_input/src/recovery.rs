@@ -20,6 +20,8 @@ pub type Heartbeat = Arc<AtomicU64>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
     Fault(StreamFault),
+    /// Rebuild the stream now, such as after the preferred audio backend or device changed.
+    Reopen,
     Stop,
 }
 
@@ -160,6 +162,7 @@ pub fn supervise<S>(
                 }
                 policy.on_fault(fault)
             }
+            Ok(Signal::Reopen) => RecoveryDecision::RebuildAfter(Duration::ZERO),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let beats = heartbeat.load(Ordering::Relaxed);
                 if beats != seen_beats {
@@ -181,7 +184,7 @@ pub fn supervise<S>(
             match signals.recv_timeout(delay) {
                 Ok(Signal::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
                 // Faults of the stream just dropped no longer matter.
-                Ok(Signal::Fault(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Ok(Signal::Fault(_) | Signal::Reopen) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             match open(heartbeat.clone()) {
                 Ok(new_stream) => {
