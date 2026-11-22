@@ -2715,6 +2715,13 @@ impl Workspace {
                         toast_stack.add_persistent_toast(toast.clone(), ctx)
                     });
                 }
+                WorkspaceToastStackEvent::UpdateToast { window_id, toast }
+                    if *window_id == ctx.window_id() =>
+                {
+                    toast_stack.update(ctx, |toast_stack, ctx| {
+                        toast_stack.update_toast_in_place(toast.clone(), ctx)
+                    });
+                }
                 WorkspaceToastStackEvent::RemoveToast {
                     window_id,
                     identifier,
@@ -24733,9 +24740,9 @@ impl TypedActionView for Workspace {
             DownloadLocalVoiceModel => {
                 #[cfg(not(target_family = "wasm"))]
                 {
-                    crate::voice::local_model::dismiss_toast(ctx.window_id(), ctx);
+                    let window_id = ctx.window_id();
                     crate::voice::local_model::LocalVoiceModel::handle(ctx)
-                        .update(ctx, |model, ctx| model.download(ctx));
+                        .update(ctx, |model, ctx| model.download(window_id, ctx));
                 }
             }
             ViewPrivacyPolicy => self.view_privacy_policy(ctx),

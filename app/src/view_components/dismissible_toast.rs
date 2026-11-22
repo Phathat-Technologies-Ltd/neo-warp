@@ -167,6 +167,27 @@ impl<A: Action + Clone> DismissibleToastStack<A> {
         ctx.notify();
     }
 
+    /// Replaces the content of the showing toast with the same `object_id` as `toast`, keeping its
+    /// position and dismissal timer. Does nothing when no such toast shows, so a toast the user
+    /// dismissed stays dismissed.
+    pub fn update_toast_in_place(
+        &mut self,
+        toast: DismissibleToast<A>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(object_id) = toast.object_id.as_deref() else {
+            return;
+        };
+        if let Some(existing) = self
+            .toasts
+            .iter_mut()
+            .find(|data| data.dismissible_toast.object_id.as_deref() == Some(object_id))
+        {
+            existing.dismissible_toast = toast;
+            ctx.notify();
+        }
+    }
+
     /// Find a toast by uuid and removed it from the stack.
     pub fn dismiss_toast_by_uuid(&mut self, uuid: &Uuid, ctx: &mut ViewContext<Self>) {
         if let Some(index) = self.toasts.iter().position(|toast| toast.uuid == *uuid) {

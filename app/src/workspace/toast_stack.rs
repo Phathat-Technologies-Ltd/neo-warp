@@ -40,6 +40,17 @@ impl ToastStack {
         ctx.emit(ToastStackEvent::AddPersistentToast { window_id, toast });
     }
 
+    /// Updates the content of the toast with the same object id in the window identified by
+    /// `window_id`, if it's still showing.
+    pub fn update_toast_in_place(
+        &mut self,
+        toast: DismissibleToast<WorkspaceAction>,
+        window_id: WindowId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        ctx.emit(ToastStackEvent::UpdateToast { window_id, toast });
+    }
+
     pub fn add_ephemeral_toast_by_type(
         &mut self,
         toast_type: ToastType,
@@ -71,6 +82,11 @@ pub enum ToastStackEvent {
         toast: DismissibleToast<WorkspaceAction>,
     },
     AddPersistentToast {
+        /// The window for which this event is for.
+        window_id: WindowId,
+        toast: DismissibleToast<WorkspaceAction>,
+    },
+    UpdateToast {
         /// The window for which this event is for.
         window_id: WindowId,
         toast: DismissibleToast<WorkspaceAction>,

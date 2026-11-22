@@ -1,6 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
 use reqwest::{StatusCode, header};
@@ -79,6 +80,46 @@ pub enum ModelStatus {
 pub struct DownloadProgress {
     pub downloaded: u64,
     pub total: u64,
+}
+
+impl DownloadProgress {
+    /// Whole percent downloaded, or `None` before the total is known.
+    pub fn percent(&self) -> Option<u64> {
+        (self.total > 0).then(|| self.downloaded.min(self.total) * 100 / self.total)
+    }
+}
+
+/// Limits how often download progress reaches the UI: a report goes through when the whole
+/// percent changes, when `interval` has passed since the last one, or when the download completes.
+#[derive(Debug, Clone)]
+pub struct ProgressThrottle {
+    interval: Duration,
+    last: Option<(Option<u64>, Instant)>,
+}
+
+impl ProgressThrottle {
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: None,
+        }
+    }
+
+    pub fn should_report(&mut self, progress: DownloadProgress, now: Instant) -> bool {
+        let percent = progress.percent();
+        let report = match self.last {
+            None => true,
+            Some((last_percent, at)) => {
+                last_percent != percent
+                    || progress.downloaded >= progress.total
+                    || now.saturating_duration_since(at) >= self.interval
+            }
+        };
+        if report {
+            self.last = Some((percent, now));
+        }
+        report
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
