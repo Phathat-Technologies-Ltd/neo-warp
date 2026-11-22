@@ -35,7 +35,10 @@ impl Transcriber for FakeTranscriber {
             .lock()
             .unwrap()
             .push(language.map(str::to_owned));
-        Ok(format!("{} frames", audio.samples.len() / VAD_FRAME_SAMPLES))
+        Ok(format!(
+            "{} frames",
+            audio.samples.len() / VAD_FRAME_SAMPLES
+        ))
     }
 
     fn is_ready(&self) -> bool {
@@ -181,8 +184,7 @@ fn state(enabled: bool) -> Arc<AppState> {
         sessions: SessionStore::new(Some(b"test-secret"), Duration::from_secs(3600)),
         required_group: None,
         remote_server_artifacts: None,
-        transcriber: enabled
-            .then(|| Arc::new(FakeTranscriber::default()) as Arc<dyn Transcriber>),
+        transcriber: enabled.then(|| Arc::new(FakeTranscriber::default()) as Arc<dyn Transcriber>),
         vad: enabled.then(vad_factory),
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),

@@ -28,28 +28,89 @@ How to answer:
 /// The request metadata key the client sets while voice conversation mode reads replies aloud.
 pub const VOICE_CONVERSATION_METADATA_KEY: &str = "voice_conversation";
 
+/// The request metadata key the client sets when the user's prompt came from speech recognition.
+pub const DICTATED_METADATA_KEY: &str = "dictated";
+
 const SPOKEN_SUMMARY_INSTRUCTIONS: &str = "\n\n# Voice conversation
-The user is listening to your replies read aloud to them through speakers. Start every reply, \
-including replies after tool calls, with <spoken>...</spoken>. Inside the tag, talk like a \
-colleague sitting next to them: one or two short, plain sentences. Never put commands, code, \
-shell syntax, file paths, flags, URLs, hashes, math, symbols, lists, or numbers longer than \
-three digits inside the tag; describe them in words instead (for example, \"I searched for \
-files changed in the last week\" rather than the command you ran). When something fails, say \
-what happened and what the user should do next. When you ask the user a question, keep the \
-spoken part to one sentence. After the closing tag, write the full answer as usual; it is shown \
-on screen and not read aloud.";
+The user hears your replies through speakers and may not be looking at the screen. Start every \
+reply, including replies after tool calls, with one or two short, plain sentences wrapped in \
+<spoken>...</spoken>, written the way a colleague would say them out loud. State the key fact or \
+result itself, not just the topic: say \"you have two uncommitted changes\", not \"I checked \
+the git status\". Inside the tag never include commands, shell syntax, flags, file paths, file \
+names with extensions, code, hashes, URLs, version strings, math, symbols, or lists. Round or \
+describe numbers instead of reading them, and never read numbers longer than three digits: say \
+\"about a day\", not 86400 seconds; \"a few gigabytes\", not 3.7G; \"yesterday afternoon\", not \
+a timestamp. Name things by what they are (\"the config file\", \"the build\", \"your home \
+folder\"). When something fails, say what happened and what the user should do next. When you \
+ask the user a question, keep the spoken part to one sentence. After the closing tag, write the \
+full answer as usual; it is shown on screen and not read aloud.";
+
+const DICTATED_INSTRUCTIONS: &str = "\n\n# Dictated input
+The user's message came from speech recognition and may contain mis-heard words, missing \
+punctuation, or spelled-out symbols (\"dash dash\", \"dot txt\"). Interpret the intended request, \
+including likely command, file, and tool names. If a mis-hearing makes the request ambiguous in a \
+way that matters, ask a short question instead of guessing.";
+
+/// System prompt for a separate narration call that turns a finished reply into speech.
+pub const NARRATION_SYSTEM_PROMPT: &str = "You turn a terminal assistant's reply into one or two \
+short sentences that will be read aloud to the user through speakers. State the key fact or \
+result (for example, \"you have two uncommitted changes\") and any next step, the way a colleague would say it. Never include commands, flags, file paths, file \
+names with extensions, code, hashes, URLs, version strings, or lists. Round or describe numbers \
+(\"about a day\", not 86400 seconds; \"a few gigabytes\", not 3.7G). Reply with the spoken \
+sentences only.";
 
 /// Whether the request's metadata says voice conversation mode is on.
 pub fn wants_spoken_summary(metadata: Option<&api::request::Metadata>) -> bool {
+    logging_flag(metadata, VOICE_CONVERSATION_METADATA_KEY)
+}
+
+/// Whether the request's metadata says the user's prompt was dictated.
+pub fn is_dictated(metadata: Option<&api::request::Metadata>) -> bool {
+    logging_flag(metadata, DICTATED_METADATA_KEY)
+}
+
+fn logging_flag(metadata: Option<&api::request::Metadata>, key: &str) -> bool {
     metadata
-        .and_then(|metadata| metadata.logging.get(VOICE_CONVERSATION_METADATA_KEY))
+        .and_then(|metadata| metadata.logging.get(key))
         .is_some_and(|value| matches!(value.kind, Some(prost_types::value::Kind::BoolValue(true))))
 }
 
-pub fn system_prompt(context: Option<&api::InputContext>, spoken_summary: bool) -> String {
+/// Drops spans a speech engine reads badly from spoken text: inline code, URLs, paths, and
+/// command-line flags. Whitespace in the result is collapsed.
+pub fn sanitize_spoken(text: &str) -> String {
+    let mut without_code = String::with_capacity(text.len());
+    let mut in_code = false;
+    for character in text.chars() {
+        if character == '`' {
+            in_code = !in_code;
+        } else if !in_code {
+            without_code.push(character);
+        }
+    }
+    without_code
+        .split_whitespace()
+        .filter(|word| {
+            let core = word.trim_matches(|c: char| ",.;:!?()\"'".contains(c));
+            let is_flag = core.len() > 1 && core.starts_with('-');
+            let is_path = core.starts_with(['/', '~', '.']) && core.len() > 1
+                || core.contains('/') && core.contains('.');
+            !(core.contains("://") || is_flag || is_path)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn system_prompt(
+    context: Option<&api::InputContext>,
+    spoken_summary: bool,
+    dictated: bool,
+) -> String {
     let mut prompt = INSTRUCTIONS.to_owned();
     if spoken_summary {
         prompt.push_str(SPOKEN_SUMMARY_INSTRUCTIONS);
+    }
+    if dictated {
+        prompt.push_str(DICTATED_INSTRUCTIONS);
     }
     let Some(context) = context else {
         return prompt;
