@@ -2,14 +2,20 @@
 //! stays deterministic.
 
 use super::asciicast::{Cast, EventData};
+use super::naming::format_duration;
 
-pub const SPEEDS: [f64; 5] = [0.5, 1., 1.5, 2., 4.];
+pub const SPEEDS: [f64; 4] = [0.5, 1., 2., 4.];
 const SCROLLBACK_LINES: usize = 0;
 /// Used when the recording's header has no `idle_time_limit`.
 pub const DEFAULT_IDLE_TIME_LIMIT: f64 = 2.;
 /// Going to the previous command within this many seconds of a command's start goes to the one
 /// before it, like a media player's previous-track button.
 const PREVIOUS_CHAPTER_GRACE: f64 = 1.;
+/// A screen snapshot is kept after this many seconds of playback time or
+/// [`SNAPSHOT_INTERVAL_EVENTS`] events since the previous one, so seeking replays a bounded number
+/// of events.
+const SNAPSHOT_INTERVAL_SECONDS: f64 = 5.;
+const SNAPSHOT_INTERVAL_EVENTS: usize = 2000;
 
 /// A command marker in the recording.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,6 +44,16 @@ pub struct Player {
     position: f64,
     speed: f64,
     state: PlaybackState,
+    /// Screens after replaying the first `next_event` events, in increasing `next_event` order.
+    /// They depend only on the events applied, so they stay valid when the timeline changes.
+    snapshots: Vec<Snapshot>,
+}
+
+/// Taken between events, so it drops any escape sequence an event left unfinished. Recorders
+/// write whole chunks of output, which keeps that rare.
+struct Snapshot {
+    next_event: usize,
+    screen: vt100::Screen,
 }
 
 impl Player {
@@ -54,6 +70,7 @@ impl Player {
             position: 0.,
             speed: 1.,
             state: PlaybackState::Paused,
+            snapshots: Vec::new(),
         };
         player.rebuild_timeline();
         // Shows the recording's opening frame before playback starts.
@@ -272,6 +289,7 @@ impl Player {
             self.next_event = 0;
             self.position = 0.;
         }
+        self.restore_snapshot_before(time);
         let was_playing = self.state == PlaybackState::Playing;
         self.state = PlaybackState::Paused;
         self.apply_until(time);
@@ -295,6 +313,7 @@ impl Player {
                 EventData::Input(_) | EventData::Marker(_) => {}
             }
             self.next_event += 1;
+            self.maybe_snapshot();
         }
         let duration = self.duration();
         if target >= duration {
@@ -304,6 +323,59 @@ impl Player {
             self.position = target;
         }
     }
+}
+
+impl Player {
+    /// Jumps to the latest snapshot at or before `time` when it is ahead of the current screen.
+    fn restore_snapshot_before(&mut self, time: f64) {
+        let usable = self
+            .snapshots
+            .partition_point(|snapshot| self.times[snapshot.next_event - 1] <= time);
+        let Some(snapshot) = usable.checked_sub(1).map(|index| &self.snapshots[index]) else {
+            return;
+        };
+        if snapshot.next_event <= self.next_event {
+            return;
+        }
+        let mut screen = new_screen(&self.cast);
+        *screen.screen_mut() = snapshot.screen.clone();
+        self.screen = screen;
+        self.next_event = snapshot.next_event;
+        self.position = self.times[snapshot.next_event - 1];
+    }
+
+    fn maybe_snapshot(&mut self) {
+        let (last_event, last_time) = self.snapshots.last().map_or((0, 0.), |snapshot| {
+            (snapshot.next_event, self.times[snapshot.next_event - 1])
+        });
+        if self.next_event <= last_event {
+            return;
+        }
+        let time = self.times[self.next_event - 1];
+        if time - last_time >= SNAPSHOT_INTERVAL_SECONDS
+            || self.next_event - last_event >= SNAPSHOT_INTERVAL_EVENTS
+        {
+            self.snapshots.push(Snapshot {
+                next_event: self.next_event,
+                screen: self.screen.screen().clone(),
+            });
+        }
+    }
+}
+
+/// Elapsed and total time, e.g. `0:05 / 1:05`. Elapsed time counts whole seconds so it doesn't
+/// run ahead of the screen.
+pub fn format_playback_time(position: f64, duration: f64) -> String {
+    let elapsed = if position >= duration {
+        duration.round()
+    } else {
+        position.floor().min(duration.round())
+    };
+    format!(
+        "{} / {}",
+        format_duration(elapsed),
+        format_duration(duration)
+    )
 }
 
 fn new_screen(cast: &Cast) -> vt100::Parser {
