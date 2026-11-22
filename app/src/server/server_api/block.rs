@@ -7,6 +7,7 @@ use cynic::{MutationBuilder, QueryBuilder};
 #[cfg(test)]
 use mockall::automock;
 use warp_core::channel::{Channel, ChannelState};
+use warp_core::features::FeatureFlag;
 use warp_graphql::mutations::share_block::{
     BlockInput, ShareBlock, ShareBlockResult, ShareBlockVariables,
 };
@@ -142,6 +143,9 @@ impl BlockClient for ServerApi {
         &self,
         request: GenerateBlockTitleRequest,
     ) -> Result<GenerateBlockTitleResponse, anyhow::Error> {
+        if !FeatureFlag::BlockTitles.is_enabled() {
+            return Err(anyhow!("Block title generation is turned off"));
+        }
         let auth_token = self.get_or_refresh_access_token().await?;
         let request_builder = self.base_client.http_client().post(format!(
             "{}/ai/generate_block_title",

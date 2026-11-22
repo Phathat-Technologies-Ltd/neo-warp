@@ -1075,6 +1075,11 @@ const fn initial_flag_states() -> [AtomicBool; cardinality::<FeatureFlag>()] {
 static USER_PREFERENCE_MAP: [AtomicTriState; cardinality::<FeatureFlag>()] =
     [const { AtomicTriState::new() }; { cardinality::<FeatureFlag>() }];
 
+/// Flags turned off by an organization's product-area flags. They stay off regardless of
+/// experiments, user preferences, overrides, or later `set_enabled` calls.
+static FORCED_OFF: [AtomicBool; cardinality::<FeatureFlag>()] =
+    [const { AtomicBool::new(false) }; { cardinality::<FeatureFlag>() }];
+
 /// Flag for whether or not feature flags have been globally initialized. Outside
 /// of tests, this ensures that feature flags are only used after they're set
 /// up by the app's `run_internal` function.
@@ -1207,6 +1212,9 @@ impl FeatureFlag {
             );
         }
 
+        if FORCED_OFF[*self as usize].load(Ordering::Relaxed) {
+            return false;
+        }
         overrides::get_override(*self)
             .or(USER_PREFERENCE_MAP[*self as usize].get())
             .or(Some(FLAG_STATES[*self as usize].load(Ordering::Relaxed)))
@@ -1223,6 +1231,12 @@ impl FeatureFlag {
             );
         }
         FLAG_STATES[self as usize].store(enabled, Ordering::Relaxed);
+    }
+
+    /// Turns this flag off for the rest of the process, overriding every other source.
+    pub fn force_disable(self) {
+        FORCED_OFF[self as usize].store(true, Ordering::Relaxed);
+        FLAG_STATES[self as usize].store(false, Ordering::Relaxed);
     }
 
     /// Sets a user preference for this flag. User preferences take precedence

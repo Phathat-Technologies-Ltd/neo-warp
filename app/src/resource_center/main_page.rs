@@ -512,6 +512,7 @@ impl View for ResourceCenterMainView {
             .get()
             .is_anonymous_or_logged_out()
             && !FeatureFlag::AvatarInTabBar.is_enabled()
+            && FeatureFlag::BillingAndReferrals.is_enabled()
         {
             main_page = main_page.with_child(invite_button);
         }

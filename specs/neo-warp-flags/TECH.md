@@ -32,14 +32,22 @@ organization keep upstream behavior.
 
 `app/src/auth/organization.rs::init` is the single startup path for the GUI and the TUI (both go
 through `run_internal`). When organization sign-in is configured it loads the flags and calls
-`apply_org_flags`, which sets each product-area flag and, when an area is off, also turns off the
-upstream flags that already gate parts of it:
+`apply_org_flags` before it starts the embedded server. `flags_to_disable` returns, for every area
+that is off, its product-area flag plus the upstream flags that already gate parts of it, and
+`apply_org_flags` calls `FeatureFlag::force_disable` on each. `force_disable` records the flag in
+`FORCED_OFF`, which `is_enabled` checks before test overrides, user preferences
+(`USER_PREFERENCE_MAP`), and `FLAG_STATES`, so later `set_enabled(true)` calls from server
+experiments (`server/experiments/mod.rs`) cannot turn the flag back on. The upstream flags are:
 
 - `cloud_agents`: `CloudMode*`, `AmbientAgents*`, `ScheduledAmbientAgents`, `CloudEnvironments`,
   `CreateEnvironmentSlashCommand`, `Oz*`, `Handoff*`, `PeriodicHandoffCheckpoints`, runners.
 - `sharing_and_teams`: `CreatingSharedSessions`, `ViewingSharedSessions`, `SessionSharingAcls`.
 - `block_titles`: `SharedBlockTitleGeneration`.
 - `conversation_cloud_sync`: `CloudConversations`.
+- `warp_drive`: `DriveObjectsAsContext`.
+- `codebase_indexing`: `FullSourceCodeEmbedding`, `CodebaseIndexPersistence`,
+  `CodebaseIndexSpeedbump`, `CrossRepoContext`, `RemoteCodebaseIndexing`. The embedded server also
+  gets `codebase_index_dir: None`.
 - `warp_hosted_mcp`: `FactoryMcp`, `PreviewUrlsMcp`, `WellKnownMcpIds`,
   `ManagedMcpCredentialRefresh`.
 
@@ -55,7 +63,10 @@ upstream flags that already gate parts of it:
 - Settings sync: the cloud preferences syncer is inert, the Account page toggle and its palette
   binding are hidden, and privacy settings stop calling `UpdateUserSettings`.
 - Warp-hosted MCP: the MCP gallery ignores server updates, so it stays empty in the GUI and TUI.
-- Billing and referrals: the Account page "Earn rewards" widget is hidden.
+- Billing and referrals: the Account page "Earn rewards" widget and the resource center "Invite a
+  friend" button are hidden.
+- Block titles: `should_send_title_gen_request` and `generate_shared_block_title` require
+  `BlockTitles`, so no `/ai/generate_block_title` request is sent.
 
 Voice input, codebase indexing, prompt suggestions, and AI command search get flags and plumbing
 here; the teams that own those features gate them.
@@ -63,5 +74,7 @@ here; the teams that own those features gate them.
 ## Testing
 
 `crates/org_flags/src/lib_tests.rs` covers parsing, `DISABLED`, targeting fallback, layering,
-unknown names, invalid files, and the bundled defaults. The app-side mapping calls `set_enabled`,
-which panics in unit tests, so it is kept thin.
+unknown names, invalid files, and the bundled defaults. `app/src/auth/organization_tests.rs` tests the
+pure `flags_to_disable`/`feature_flags_for` mapping (`set_enabled` panics in unit tests): that
+`ProductArea::ALL` maps to `PRODUCT_AREA_FLAGS` in order, and that turning an area off disables its
+flag and upstream flags.
