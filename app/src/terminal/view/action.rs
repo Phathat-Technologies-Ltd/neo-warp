@@ -462,6 +462,8 @@ pub enum TerminalAction {
     CycleNextOrchestrationChildAgent,
     /// Toggle PTY recording for this session.
     ToggleSessionRecording,
+    /// Start or stop recording this pane to an asciicast file.
+    ToggleCastRecording,
     /// Toggle the rich input editor for composing a prompt to send to a CLI agent.
     /// Triggered by Ctrl-G when a CLI agent is detected, or from the footer button.
     ToggleCLIAgentRichInput,
@@ -749,6 +751,7 @@ impl fmt::Debug for TerminalAction {
             }
             CycleNextOrchestrationChildAgent => write!(f, "CycleNextOrchestrationChildAgent"),
             ToggleSessionRecording => write!(f, "ToggleSessionRecording"),
+            ToggleCastRecording => write!(f, "ToggleCastRecording"),
             ToggleCLIAgentRichInput => write!(f, "ToggleCLIAgentRichInput"),
             Osc52AllowBlockedClipboardOperation => {
                 write!(f, "Osc52AllowBlockedClipboardOperation")

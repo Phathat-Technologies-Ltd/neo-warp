@@ -1605,6 +1605,14 @@ fn add_open_setting_pages_as_editable_binding(app: &mut AppContext) {
         .with_context_predicate(id!("Workspace"))
         .with_custom_action(CustomAction::ShowAboutWarp),
         EditableBinding::new(
+            "workspace:show_settings_recordings_page",
+            BindingDescription::new("Open Settings: Recordings"),
+            WorkspaceAction::ShowSettingsPage(SettingsSection::Recordings),
+        )
+        .with_group(bindings::BindingGroup::Settings.as_str())
+        .with_enabled(|| FeatureFlag::SessionRecording.is_enabled())
+        .with_context_predicate(id!("Workspace")),
+        EditableBinding::new(
             "workspace:show_settings_teams_page",
             BindingDescription::new("Open Settings: Teams")
                 .with_custom_description(bindings::MAC_MENUS_CONTEXT, "Open Team Settings"),

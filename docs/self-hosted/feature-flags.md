@@ -56,6 +56,7 @@ when `organization.toml` configures organization sign-in.
 | `codebase_indexing` | on | Hides codebase indexing |
 | `ai_prompt_suggestions` | on | Hides AI prompt suggestions |
 | `ai_command_search` | on | Hides AI command search |
+| `session_recording` | on | Hides session recording: the start/stop entries, `/record`, the recording indicator, and the Recordings settings page |
 
 The areas that default to off need Warp's own cloud service, which neo-warp doesn't use. Turn one
 on only if your deployment provides that service.

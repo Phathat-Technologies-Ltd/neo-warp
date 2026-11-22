@@ -895,6 +895,18 @@ pub const COPY_DEBUGGING_ID: StaticCommand = StaticCommand {
     argument: None,
 };
 
+pub const RECORD: StaticCommand = StaticCommand {
+    name: "/record",
+    description: "Start or stop recording this pane",
+    kind: SlashCommandKind::Record,
+    supported_surfaces: SlashCommandSurfaces::GuiOnly {
+        icon_path: "bundled/svg/circle-filled.svg",
+    },
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+};
+
 pub static COMMAND_REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
 
 /// A unique identifier for a static slash command.
@@ -1014,6 +1026,10 @@ fn all_commands_for_all_surfaces() -> Vec<StaticCommand> {
         VIEW_LOGS,
         VOICE,
     ];
+
+    if FeatureFlag::SessionRecording.is_enabled() && cfg!(feature = "local_fs") {
+        commands.push(RECORD);
+    }
 
     if FeatureFlag::LocalDockerSandbox.is_enabled() {
         commands.push(CREATE_DOCKER_SANDBOX);

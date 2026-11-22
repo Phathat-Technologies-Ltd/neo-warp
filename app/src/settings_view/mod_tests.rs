@@ -150,6 +150,7 @@ fn subpage_display_names_are_correct() {
 /// breaks the exhaustive match there, which is the prompt to add it here.
 const ALL_SECTIONS: &[SettingsSection] = &[
     SettingsSection::About,
+    SettingsSection::Recordings,
     SettingsSection::Account,
     SettingsSection::BillingAndUsage,
     SettingsSection::Appearance,
@@ -184,6 +185,7 @@ fn all_sections_list_is_exhaustive() {
     fn is_listed(section: SettingsSection) -> bool {
         let known = match section {
             SettingsSection::About
+            | SettingsSection::Recordings
             | SettingsSection::Account
             | SettingsSection::BillingAndUsage
             | SettingsSection::Appearance

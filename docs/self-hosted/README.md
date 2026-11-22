@@ -93,6 +93,22 @@ be downloaded or removed in Settings > AI > Voice. It's stored under the app's d
 `models/`, and each file is checked against a pinned SHA-256. Allow `huggingface.co` and its
 download CDN (currently `*.cdn.hf.co`) through your proxy if you want people to use voice input.
 
+### Session recording
+
+People can record a terminal pane (pane menu, command palette, or `/record`) to a local asciicast
+`.cast` file, and play, rename, or delete recordings in Settings > Recordings. Recordings stay on
+the computer. They contain terminal output only; keyboard input is recorded only if the user turns
+it on, and never at password prompts. Common secrets (API keys, tokens, passwords in `key=value`
+pairs and URLs, private keys) are replaced with `[REDACTED]` before anything is written. To
+redact more, add patterns to `organization.toml`:
+
+```toml
+[recording]
+redact_patterns = ["corp-[0-9]{6}"]
+```
+
+Turn the feature off with the `session_recording` flag; see [feature-flags.md](feature-flags.md).
+
 ## Security model
 
 - Sign-in tokens are validated against your identity provider's signing keys (issuer, audience,

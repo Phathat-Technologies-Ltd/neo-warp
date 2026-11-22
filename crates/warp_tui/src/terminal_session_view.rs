@@ -4918,6 +4918,7 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::AddRule
             | SlashCommandKind::Edit
             | SlashCommandKind::RenameTab
+            | SlashCommandKind::Record
             | SlashCommandKind::RenameConversation
             | SlashCommandKind::SetTabColor
             | SlashCommandKind::OpenCodeReview

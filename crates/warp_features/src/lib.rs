@@ -1052,6 +1052,8 @@ pub enum FeatureFlag {
     AiPromptSuggestions,
     /// AI command search.
     AiCommandSearch,
+    /// Recording terminal panes to asciicast files and replaying them.
+    SessionRecording,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] = initial_flag_states();
@@ -1191,6 +1193,7 @@ pub const PRODUCT_AREA_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::CodebaseIndexing,
     FeatureFlag::AiPromptSuggestions,
     FeatureFlag::AiCommandSearch,
+    FeatureFlag::SessionRecording,
 ];
 
 /// Flags that we want to allow to switch at runtime (assuming RuntimeFeatureFlags is set)

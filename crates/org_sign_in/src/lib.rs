@@ -58,6 +58,17 @@ pub struct OrganizationConfig {
     pub sign_in: Option<OrganizationSignInConfig>,
     #[serde(default)]
     pub model_specs: Option<ModelSpecsConfig>,
+    #[serde(default)]
+    pub recording: RecordingConfig,
+}
+
+/// Session recording policy.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct RecordingConfig {
+    /// Extra regular expressions whose matches are replaced with `[REDACTED]` in recordings,
+    /// on top of the built-in set.
+    #[serde(default)]
+    pub redact_patterns: Vec<String>,
 }
 
 /// Where the model picker's intelligence, speed, and cost ratings come from.
@@ -135,6 +146,7 @@ impl OrganizationConfig {
                     artificial_analysis_api_key,
                     aliases: HashMap::new(),
                 }),
+            recording: RecordingConfig::default(),
         })
     }
 }

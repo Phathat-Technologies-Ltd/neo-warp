@@ -34,6 +34,7 @@ fn bundled_defaults_turn_off_backend_features() {
         ProductArea::CodebaseIndexing,
         ProductArea::AiPromptSuggestions,
         ProductArea::AiCommandSearch,
+        ProductArea::SessionRecording,
     ] {
         assert!(flags.is_enabled(area), "{area:?}");
     }

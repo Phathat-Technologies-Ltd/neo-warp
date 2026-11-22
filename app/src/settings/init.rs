@@ -58,6 +58,7 @@ pub struct UserDefaultsOnStartup {
 /// rendering config, or event subscriptions.
 pub fn register_all_settings(ctx: &mut AppContext) {
     BlockListSettings::register(ctx);
+    crate::terminal::session_recording::SessionRecordingSettings::register(ctx);
     BlockVisibilitySettings::register(ctx);
     DebugSettings::register(ctx);
     SessionSettings::register(ctx);

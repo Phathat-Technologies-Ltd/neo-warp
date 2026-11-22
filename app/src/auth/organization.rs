@@ -160,6 +160,7 @@ fn feature_flags_for(area: ProductArea) -> (FeatureFlag, &'static [FeatureFlag])
         ),
         ProductArea::AiPromptSuggestions => (FeatureFlag::AiPromptSuggestions, &[]),
         ProductArea::AiCommandSearch => (FeatureFlag::AiCommandSearch, &[]),
+        ProductArea::SessionRecording => (FeatureFlag::SessionRecording, &[]),
     }
 }
 
@@ -280,6 +281,14 @@ pub fn model_specs_config() -> Option<&'static org_sign_in::ModelSpecsConfig> {
     ORGANIZATION_CONFIG
         .get()
         .and_then(|config| config.model_specs.as_ref())
+}
+
+/// Admin-configured redaction patterns for session recordings.
+pub fn recording_redact_patterns() -> &'static [String] {
+    ORGANIZATION_CONFIG
+        .get()
+        .map(|config| config.recording.redact_patterns.as_slice())
+        .unwrap_or_default()
 }
 
 pub fn sign_in_config() -> Option<&'static OrganizationSignInConfig> {

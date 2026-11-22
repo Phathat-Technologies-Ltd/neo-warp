@@ -18,6 +18,7 @@ use mcp_servers_page::MCPServersSettingsPageView;
 use nav::{SettingsNavItem, SettingsUmbrella};
 use pathfinder_geometry::vector::Vector2F;
 use privacy_page::{PrivacyPageView, PrivacyPageViewEvent};
+use recordings_page::RecordingsPageView;
 use referrals_page::{ReferralsPageEvent, ReferralsPageView};
 use scripting_page::ScriptingSettingsPageView;
 use settings_file_footer::{SettingsFooterKind, SettingsFooterMouseStates, render_footer};
@@ -109,6 +110,7 @@ mod platform;
 mod platform_page;
 mod privacy;
 mod privacy_page;
+mod recordings_page;
 mod referrals_page;
 mod remove_custom_endpoint_confirmation_dialog;
 mod scripting_page;
@@ -336,6 +338,7 @@ pub enum SettingsSection {
     // ── Cloud platform umbrella subpages ──
     CloudEnvironments,
     WarpCloudAgentAPIKeys,
+    Recordings,
 }
 
 use std::fmt::{self, Display};
@@ -373,6 +376,7 @@ impl SettingsSection {
             Self::WarpDrive => Some(FeatureFlag::WarpDrive),
             Self::CloudEnvironments | Self::WarpCloudAgentAPIKeys => Some(FeatureFlag::CloudAgents),
             Self::CodeIndexing => Some(FeatureFlag::CodebaseIndexing),
+            Self::Recordings => Some(FeatureFlag::SessionRecording),
             Self::About
             | Self::Account
             | Self::Appearance
@@ -433,6 +437,7 @@ impl SettingsSection {
             // Keeps the "Oz" spelling the slug was seeded from; only the
             // Display label above dropped it.
             Self::WarpCloudAgentAPIKeys => "Oz Cloud API Keys",
+            Self::Recordings => "Recordings",
         }
     }
 
@@ -446,6 +451,7 @@ impl SettingsSection {
     pub fn from_slug(slug: &str) -> Option<Self> {
         let section = match slug {
             "About" => Self::About,
+            "Recordings" => Self::Recordings,
             "Account" => Self::Account,
             "Billing and usage" => Self::BillingAndUsage,
             "Appearance" => Self::Appearance,
@@ -1189,6 +1195,7 @@ macro_rules! update_page {
             SettingsPageViewHandle::CLIAgents(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::CloudEnvironments(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::About(handle) => $ctx.update_view(handle, $update),
+            SettingsPageViewHandle::Recordings(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::CodeIndexing(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::EditorAndCodeReview(handle) => {
                 $ctx.update_view(handle, $update)
@@ -1269,6 +1276,7 @@ impl SettingsView {
 
         // About page
         let about_page_handle = ctx.add_typed_action_view(AboutPageView::new);
+        let recordings_page_handle = ctx.add_typed_action_view(RecordingsPageView::new);
 
         // Warp Agent page
         let warp_agent_page_handle = ctx.add_typed_action_view(WarpAgentPageView::new);
@@ -1430,6 +1438,7 @@ impl SettingsView {
             SettingsPage::new(mcp_servers_page_handle),
             SettingsPage::new(environments_page_handle.clone()),
             SettingsPage::new(privacy_page_handle),
+            SettingsPage::new(recordings_page_handle),
             SettingsPage::new(about_page_handle),
         ]);
 
@@ -1471,6 +1480,7 @@ impl SettingsView {
             SettingsNavItem::Page(SettingsSection::SharedBlocks),
             SettingsNavItem::Page(SettingsSection::WarpDrive),
             SettingsNavItem::Page(SettingsSection::Privacy),
+            SettingsNavItem::Page(SettingsSection::Recordings),
             SettingsNavItem::Page(SettingsSection::About),
         ];
 
@@ -2169,6 +2179,7 @@ impl SettingsView {
             SettingsPageViewHandle::Appearance(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::BillingAndUsage(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::About(v) => v.as_ref(app).should_render(app),
+            SettingsPageViewHandle::Recordings(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::WarpCloudAgentAPIKeys(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::Privacy(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::Warpify(v) => v.as_ref(app).should_render(app),
