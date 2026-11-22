@@ -1,7 +1,7 @@
 use std::io::BufWriter;
 
 use super::*;
-use crate::terminal::session_recording::asciicast::{CastWriter, Header};
+use crate::asciicast::{CastWriter, Header};
 
 fn write_cast(dir: &Path, name: &str, timestamp: i64, title: Option<&str>, last_time: f64) {
     let header = Header {

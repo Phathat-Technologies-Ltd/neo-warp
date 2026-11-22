@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, TimeZone as _};
 
-use super::asciicast::{self, FILE_EXTENSION};
+use crate::asciicast::{self, FILE_EXTENSION};
 
 const MAX_TITLE_LEN: usize = 60;
 
@@ -164,5 +164,5 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 #[cfg(test)]
-#[path = "store_tests.rs"]
+#[path = "naming_tests.rs"]
 mod tests;

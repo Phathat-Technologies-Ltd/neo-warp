@@ -1,10 +1,10 @@
-//! Recording terminal panes to asciicast v2 files, and listing and replaying them.
+//! Recording terminal panes as asciicast v2 and listing and replaying the recordings. Capture and
+//! redaction happen here; storage is the server's `/recordings` API.
 
-pub mod asciicast;
+pub mod client;
 pub mod player;
 pub mod recorder;
-pub mod redact;
 pub mod settings;
-pub mod store;
 
+pub use ::session_recording::{asciicast, naming, redact};
 pub use settings::SessionRecordingSettings;

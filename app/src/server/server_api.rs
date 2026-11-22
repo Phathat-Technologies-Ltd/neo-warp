@@ -11,6 +11,7 @@ pub mod managed_secrets;
 pub mod object;
 pub(crate) mod presigned_upload;
 pub mod prewarmed_sandbox;
+pub(crate) mod recordings;
 pub mod referral;
 pub mod team;
 #[cfg(feature = "tui")]

@@ -26,6 +26,7 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
+        recordings: None,
     })
 }
 
@@ -557,6 +558,7 @@ fn embedded_server_answers_on_its_reported_port() {
         remote_server_artifacts: None,
         transcriber: None,
         codebase_index_dir: None,
+        recording_store: None,
     })
     .expect("embedded server should start");
     assert!(address.ip().is_loopback());
@@ -775,6 +777,7 @@ fn state_with_codebase_index(dir: &std::path::Path) -> Arc<AppState> {
             dir.to_owned(),
             None,
         ))),
+        recordings: None,
     })
 }
 

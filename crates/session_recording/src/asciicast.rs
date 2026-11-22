@@ -100,6 +100,19 @@ impl<W: Write> CastWriter<W> {
         })
     }
 
+    /// A writer for event lines only, for appending to a recording whose header was written
+    /// elsewhere.
+    pub fn events_only(out: W) -> Self {
+        Self {
+            out,
+            decoder: Utf8Decoder::default(),
+        }
+    }
+
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.out
+    }
+
     pub fn write_output(&mut self, time: f64, bytes: &[u8]) -> io::Result<()> {
         let text = self.decoder.decode(bytes);
         self.write_output_text(time, &text)
@@ -216,6 +229,18 @@ fn parse_event(line: &str) -> anyhow::Result<Option<Event>> {
         _ => return Ok(None),
     };
     Ok(Some(Event { time, data }))
+}
+
+/// Checks that every non-empty line of `lines` is an asciicast v2 event (`[time, code, data]`).
+pub fn validate_event_lines(lines: &str) -> anyhow::Result<()> {
+    for (index, line) in lines.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        serde_json::from_str::<(f64, String, Value)>(line)
+            .with_context(|| format!("invalid event on line {}", index + 1))?;
+    }
+    Ok(())
 }
 
 /// Reads only what a recordings list needs: the header and the last event time.

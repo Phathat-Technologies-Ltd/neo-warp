@@ -20,6 +20,9 @@ pub struct ServerConfig {
     /// Where codebase indexes are stored; unset turns codebase indexing off.
     #[serde(default)]
     pub codebase_index_dir: Option<PathBuf>,
+    /// Where session recordings are stored; unset turns `/recordings` off.
+    #[serde(default)]
+    pub recordings_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
