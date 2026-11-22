@@ -5,7 +5,9 @@ use settings::Setting;
 use warp_core::SessionId;
 use warpui::{App, AppContext, EntityId, SingletonEntity};
 
-use super::{HistoryScope, UpArrowHistoryConfig, prompt_history_for_terminal_surface};
+use super::{
+    HistoryScope, HistorySource, UpArrowHistoryConfig, prompt_history_for_terminal_surface,
+};
 use crate::ai::agent::AIAgentExchangeId;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::history_model::AIQueryHistoryOutputStatus;
@@ -98,6 +100,7 @@ fn combined_history(
                 include_commands: true,
                 include_prompts,
                 scope: HistoryScope::Host,
+                source: HistorySource::All,
             },
             app,
         )
@@ -361,6 +364,71 @@ fn combined_history_respects_agent_command_setting() {
                     .map(|item| item.text().to_owned())
                     .collect::<Vec<_>>(),
                 vec!["user command", "agent command"]
+            );
+        });
+    });
+}
+
+fn command_texts(
+    terminal_surface_id: EntityId,
+    session_id: SessionId,
+    source: HistorySource,
+    app: &AppContext,
+) -> Vec<String> {
+    History::handle(app)
+        .as_ref(app)
+        .up_arrow_suggestions_for_terminal_surface(
+            terminal_surface_id,
+            Some(session_id),
+            None,
+            UpArrowHistoryConfig {
+                include_commands: true,
+                include_prompts: false,
+                scope: HistoryScope::Host,
+                source,
+            },
+            app,
+        )
+        .into_iter()
+        .map(|suggestion| suggestion.normalized_text().to_owned())
+        .collect()
+}
+
+#[test]
+fn source_filters_commands_and_warp_helpers_are_never_listed() {
+    App::test((), |mut app| async move {
+        let terminal_surface_id = EntityId::new();
+        let session_id = SessionId::from(1);
+        app.add_singleton_model(|_| build_history_model(Vec::new()));
+        add_command_history(
+            &mut app,
+            session_id,
+            vec![
+                command_entry(session_id, "typed", 0, false, None),
+                command_entry(
+                    session_id,
+                    "warp_run_external_ctrl_r_widget 0",
+                    1,
+                    false,
+                    None,
+                ),
+                command_entry(session_id, "agent ran", 2, true, None),
+            ],
+        )
+        .await;
+
+        app.read(|ctx| {
+            assert_eq!(
+                command_texts(terminal_surface_id, session_id, HistorySource::All, ctx),
+                vec!["typed", "agent ran"]
+            );
+            assert_eq!(
+                command_texts(terminal_surface_id, session_id, HistorySource::Me, ctx),
+                vec!["typed"]
+            );
+            assert_eq!(
+                command_texts(terminal_surface_id, session_id, HistorySource::Agent, ctx),
+                vec!["agent ran"]
             );
         });
     });

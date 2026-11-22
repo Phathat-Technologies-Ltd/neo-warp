@@ -126,6 +126,7 @@ pub fn initialize_settings_for_tests_with_mode_and_headlessness(
         WarpifySettings::register(ctx);
     });
     SessionSettings::register(app);
+    crate::terminal::session_recording::SessionRecordingSettings::register(app);
     SshSettings::register(app);
     TabSettings::register(app);
     TerminalSettings::register(app);

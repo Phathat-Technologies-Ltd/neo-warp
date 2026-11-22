@@ -295,7 +295,7 @@ use crate::terminal::input::conversations::{
     InlineConversationMenuEvent, InlineConversationMenuView,
 };
 use crate::terminal::input::inline_history::{
-    HISTORY_SCOPE_CYCLE_KEYSTROKE, InlineHistoryMenuView,
+    HISTORY_SCOPE_CYCLE_KEYSTROKE, HISTORY_SOURCE_CYCLE_KEYSTROKE, InlineHistoryMenuView,
 };
 use crate::terminal::input::inline_menu::InlineMenuPositioner;
 use crate::terminal::input::models::{
@@ -1191,6 +1191,7 @@ pub enum InputAction {
     /// Deferred so Down does not update InlineHistoryMenuView while it is already checked out.
     SelectNextInlineHistoryItem,
     CycleHistoryScope,
+    CycleHistorySource,
     PageUp,
     PageDown,
     ClearScreen,
@@ -2150,6 +2151,11 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             HISTORY_SCOPE_CYCLE_KEYSTROKE,
             InputAction::CycleHistoryScope,
+            id!("Input") & id!(INLINE_HISTORY_MENU_OPEN_CONTEXT),
+        ),
+        FixedBinding::new(
+            HISTORY_SOURCE_CYCLE_KEYSTROKE,
+            InputAction::CycleHistorySource,
             id!("Input") & id!(INLINE_HISTORY_MENU_OPEN_CONTEXT),
         ),
         FixedBinding::custom(
@@ -17064,6 +17070,16 @@ impl TypedActionView for Input {
                 {
                     self.inline_history_menu_view
                         .update(ctx, |view, ctx| view.cycle_scope(ctx));
+                }
+            }
+            InputAction::CycleHistorySource => {
+                if self
+                    .suggestions_mode_model
+                    .as_ref(ctx)
+                    .is_inline_history_menu()
+                {
+                    self.inline_history_menu_view
+                        .update(ctx, |view, ctx| view.cycle_source(ctx));
                 }
             }
             InputAction::PageUp => self.editor_page_up(ctx),

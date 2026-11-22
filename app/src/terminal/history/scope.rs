@@ -85,6 +85,76 @@ impl HistoryScope {
     }
 }
 
+/// Who ran the commands a history list shows.
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "Whether the history menu shows commands typed by the user, run by the agent, or both.",
+    rename_all = "snake_case"
+)]
+pub enum HistorySource {
+    /// Commands typed by the user and commands run by the agent.
+    #[default]
+    All,
+    /// Only commands the user ran.
+    Me,
+    /// Only commands the agent ran.
+    Agent,
+}
+
+impl HistorySource {
+    /// Every source, in the order the history menu presents them.
+    pub const ALL: [HistorySource; 3] =
+        [HistorySource::All, HistorySource::Me, HistorySource::Agent];
+
+    /// The source after this one in [`Self::ALL`], wrapping around.
+    pub fn next(self) -> Self {
+        match self {
+            HistorySource::All => HistorySource::Me,
+            HistorySource::Me => HistorySource::Agent,
+            HistorySource::Agent => HistorySource::All,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HistorySource::All => "All",
+            HistorySource::Me => "Me",
+            HistorySource::Agent => "Agent",
+        }
+    }
+
+    pub fn includes(self, entry: &HistoryEntry) -> bool {
+        match self {
+            HistorySource::All => true,
+            HistorySource::Me => !entry.is_agent_executed,
+            HistorySource::Agent => entry.is_agent_executed,
+        }
+    }
+}
+
+/// Whether `command` invokes one of the helper functions Warp's shell integration defines (all
+/// named `warp_*`, `_warp_*`, or `__warp_*`). Shells record these in their history when Warp runs
+/// them, e.g. `warp_run_external_ctrl_r_widget 0`, but the user never typed them.
+pub fn is_warp_internal_command(command: &str) -> bool {
+    let first_word = command.split_whitespace().next().unwrap_or_default();
+    first_word
+        .trim_start_matches('_')
+        .strip_prefix("warp_")
+        .is_some_and(|rest| !rest.is_empty())
+}
+
 fn normalize_dir(dir: &str) -> &str {
     let trimmed = dir.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() { dir } else { trimmed }

@@ -22,7 +22,7 @@ use crate::workflows::{WorkflowId, WorkflowSource, WorkflowType};
 
 mod scope;
 mod up_arrow;
-pub use scope::HistoryScope;
+pub use scope::{HistoryScope, HistorySource, is_warp_internal_command};
 pub use up_arrow::UpArrowHistoryConfig;
 
 /// Data model for a history command persisted to sqlite, used as an intermediate representation
@@ -446,6 +446,9 @@ impl History {
             HashMap::<ShellHost, HashMap<String, HistoryEntry>>::new();
 
         for command in persisted_commands {
+            if is_warp_internal_command(&command.command) {
+                continue;
+            }
             if let Some(shell_host) = command.shell_host.as_ref() {
                 let summaries = persisted_commands_summary
                     .entry(shell_host.clone())
@@ -617,6 +620,10 @@ impl History {
         host: ShellHost,
         ctx: &mut ModelContext<Self>,
     ) {
+        let history_file_commands = history_file_commands
+            .into_iter()
+            .filter(|command| !is_warp_internal_command(command))
+            .collect();
         let deduped_history_file_commands = dedupe_from_last(history_file_commands);
 
         let mut start_index = deduped_history_file_commands.len();
@@ -728,7 +735,8 @@ impl History {
     /// If the read for the history file is still in progress, queues a background task to append
     /// the given commands once the read is complete. Otherwise, synchronously appends the given
     /// commands.
-    pub fn append_commands(&mut self, session_id: SessionId, commands: Vec<HistoryEntry>) {
+    pub fn append_commands(&mut self, session_id: SessionId, mut commands: Vec<HistoryEntry>) {
+        commands.retain(|command| !is_warp_internal_command(&command.command));
         let Some(shell_host) = self.session_id_to_shell_host.get(&session_id) else {
             log::warn!("ShellHost should be populated in the map for all bootstrapped sessions.");
             return;

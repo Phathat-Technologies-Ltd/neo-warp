@@ -84,6 +84,22 @@ menu queries.
   reruns the query with selection restore. The data source already reads the setting per query.
 - `AcceptHistoryItem::produce_inline_menu_message` appends the scope hint when the tabs carry type
   filters.
+- Source: `HistorySource` (`scope.rs`: `All`, `Me`, `Agent`, `includes` on
+  `HistoryEntry::is_agent_executed`, which comes from the block's requested-command action or the
+  persisted `is_agent_executed` column). `InputSettings::history_source`
+  (`terminal.input.history_source`, never synced). `UpArrowHistoryConfig::source` filters commands
+  in `up_arrow_suggestions_for_terminal_surface`; `All` still honors
+  `include_agent_commands_in_history`. The header always renders a `Source:` `ActionButton`
+  (before the scope selector, which only shows in the agent view). `InputAction::CycleHistorySource`
+  is bound to `ctrl-o` (`HISTORY_SOURCE_CYCLE_KEYSTROKE`) under the same context flag as scope;
+  `produce_inline_menu_message` always adds the source hint.
+- Internal commands: `is_warp_internal_command` (first word `warp_*` after stripping leading
+  underscores). `History` drops matches in `History::new` (persisted commands),
+  `load_history_file_commands`, and `append_commands`; the up-arrow combiner filters them too.
+- Rows: `InlineHistoryItem::row_layout` returns the columns (`HistoryRowLayout`); rendering uses a
+  `Start`-aligned row: right-aligned duration in a fixed `DURATION_COLUMN_EMS` box, the text in an
+  `Expanded` left-aligned box, and the time in a fixed right-aligned box. (A `SpaceBetween` row with
+  a shrinkable text centered the command.)
 - Rows: `CommandRun::from_entry` derives duration and success from `start_ts`, `completed_ts`, and
   `exit_code`; `InlineHistoryItem` renders it in a fixed-width column before the command.
 
@@ -107,8 +123,11 @@ menu queries.
 - `inline_history/view_tests.rs`: scope tabs outside the agent view, type tabs inside it, selector
   visibility, selector label, cycle order.
 - `inline_history/data_source_tests.rs`: footer scope hint keystroke and text.
-- `inline_history/search_item_tests.rs`: duration formatting and `CommandRun` from entries with and
-  without metadata.
+- `inline_history/search_item_tests.rs`: duration formatting, `CommandRun` from entries with and
+  without metadata, and `row_layout` columns for commands and prompts.
+- `history/scope_tests.rs`: `is_warp_internal_command`, `HistorySource::includes` and `next()`.
+- `history/up_arrow_tests.rs`: source filtering and helper commands never listed.
+- `inline_history/data_source_tests.rs`, `view_tests.rs`: source hint and selector label.
 - `warp_tui` `prompt_and_command_history_menu_tests.rs`: cycling refilters rows, moves the selected
   header tab, and persists the setting.
 

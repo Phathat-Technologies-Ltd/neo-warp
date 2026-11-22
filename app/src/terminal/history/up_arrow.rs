@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, EntityId, SingletonEntity};
 
-use super::{History, HistoryScope};
+use super::{History, HistoryScope, HistorySource, is_warp_internal_command};
 use crate::ai::blocklist::history_model::AIQueryHistory;
 use crate::ai::blocklist::{BlocklistAIHistoryModel, InputConfig};
 use crate::input_suggestions::HistoryInputSuggestion;
@@ -17,6 +17,7 @@ pub struct UpArrowHistoryConfig {
     pub include_commands: bool,
     pub include_prompts: bool,
     pub scope: HistoryScope,
+    pub source: HistorySource,
 }
 
 impl UpArrowHistoryConfig {
@@ -29,12 +30,14 @@ impl UpArrowHistoryConfig {
                 include_commands: input_config.is_shell(),
                 include_prompts: input_config.is_ai(),
                 scope: HistoryScope::Host,
+                source: HistorySource::All,
             }
         } else {
             Self {
                 include_commands: true,
                 include_prompts: true,
                 scope: HistoryScope::Host,
+                source: HistorySource::All,
             }
         }
     }
@@ -140,7 +143,13 @@ impl History {
                     !ignored_suggestions.is_ignored(&entry.command, SuggestionType::ShellCommand)
                 })
             })
-            .filter(move |entry| include_agent_commands || !entry.is_agent_executed)
+            .filter(|entry| !is_warp_internal_command(&entry.command))
+            .filter(move |entry| match config.source {
+                // Choosing the Agent source asks for agent commands explicitly, so it ignores the
+                // setting that hides them from the combined list.
+                HistorySource::All => include_agent_commands || !entry.is_agent_executed,
+                HistorySource::Me | HistorySource::Agent => config.source.includes(entry),
+            })
             .map(|entry| HistoryInputSuggestion::Command { entry });
 
         let should_include_prompts = config.include_prompts

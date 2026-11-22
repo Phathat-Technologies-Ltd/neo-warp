@@ -416,6 +416,7 @@ impl TuiPromptAndCommandHistoryMenuModel {
                 include_commands: true,
                 include_prompts,
                 scope: *InputSettings::as_ref(ctx).history_scope,
+                source: *InputSettings::as_ref(ctx).history_source,
             },
             ctx,
         )

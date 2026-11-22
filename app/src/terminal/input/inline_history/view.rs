@@ -20,9 +20,10 @@ use crate::search::data_source::{Query, QueryFilter};
 use crate::search::mixer::{SearchMixer, SearchMixerEvent};
 use crate::settings::{InputSettings, InputSettingsChangedEvent};
 use crate::settings_view::SettingsSection;
-use crate::terminal::history::{HistoryScope, LinkedWorkflowData};
+use crate::terminal::history::{HistoryScope, HistorySource, LinkedWorkflowData};
 use crate::terminal::input::InputAction;
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
+use crate::terminal::input::inline_history::HISTORY_SOURCE_CYCLE_KEYSTROKE;
 use crate::terminal::input::inline_history::data_source::{
     AcceptHistoryItem, InlineHistoryMenuDataSource,
 };
@@ -173,6 +174,11 @@ pub(super) fn scope_selector_label(scope: HistoryScope) -> String {
     format!("Scope: {}", scope.label())
 }
 
+/// Label of the header's source selector, which names the persisted source.
+pub(super) fn source_selector_label(source: HistorySource) -> String {
+    format!("Source: {}", source.label())
+}
+
 /// Whether the tabs select the item type, so scope needs its own selector in the header.
 pub(super) fn tabs_select_item_type(tab_configs: &[InlineMenuTabConfig<HistoryTab>]) -> bool {
     !tab_configs
@@ -189,6 +195,7 @@ pub struct InlineHistoryMenuView {
     caller_supplied_tabs: bool,
     pending_initial_buffer_sync: bool,
     scope_selector: Option<ViewHandle<ActionButton>>,
+    source_selector: Option<ViewHandle<ActionButton>>,
 }
 
 impl InlineHistoryMenuView {
@@ -290,6 +297,7 @@ impl InlineHistoryMenuView {
         });
 
         let mut scope_selector = None;
+        let mut source_selector = None;
         let menu_view = if FeatureFlag::InlineMenuHeaders.is_enabled() {
             let selector = ctx.add_view(|ctx| {
                 ActionButton::new(
@@ -302,6 +310,19 @@ impl InlineHistoryMenuView {
                 .on_click(|ctx| ctx.dispatch_typed_action(InputAction::CycleHistoryScope))
             });
             scope_selector = Some(selector.clone());
+            let source_button = ctx.add_view(|ctx| {
+                ActionButton::new(
+                    source_selector_label(*InputSettings::as_ref(ctx).history_source),
+                    ConfigureButtonTheme,
+                )
+                .with_size(ButtonSize::Small)
+                .with_menu(true)
+                .with_tooltip(format!(
+                    "Cycle history source ({HISTORY_SOURCE_CYCLE_KEYSTROKE})"
+                ))
+                .on_click(|ctx| ctx.dispatch_typed_action(InputAction::CycleHistorySource))
+            });
+            source_selector = Some(source_button.clone());
             let header_model = std::cell::OnceCell::<
                 ModelHandle<InlineMenuModel<AcceptHistoryItem, HistoryTab>>,
             >::new();
@@ -321,16 +342,14 @@ impl InlineHistoryMenuView {
             let header_config = InlineMenuHeaderConfig {
                 label: "History".to_string(),
                 trailing_element: Some(Box::new(move |app: &AppContext| {
-                    let configure = ChildView::new(&configure_button).finish();
-                    let shows_selector = header_model_for_render.get().is_some_and(|model| {
+                    let shows_scope_selector = header_model_for_render.get().is_some_and(|model| {
                         tabs_select_item_type(model.as_ref(app).tab_configs())
                     });
-                    if !shows_selector {
-                        return configure;
+                    let mut row = Flex::row().with_child(ChildView::new(&source_button).finish());
+                    if shows_scope_selector {
+                        row.add_child(ChildView::new(&selector).finish());
                     }
-                    Flex::row()
-                        .with_child(ChildView::new(&selector).finish())
-                        .with_child(configure)
+                    row.with_child(ChildView::new(&configure_button).finish())
                         .finish()
                 })),
             };
@@ -488,6 +507,12 @@ impl InlineHistoryMenuView {
             if matches!(event, InputSettingsChangedEvent::HistoryScopeSetting { .. }) {
                 me.sync_scope_selector_label(ctx);
             }
+            if matches!(
+                event,
+                InputSettingsChangedEvent::HistorySourceSetting { .. }
+            ) {
+                me.sync_source_selector_label(ctx);
+            }
         });
 
         let suggestions_mode_model = input_suggestions_model.clone();
@@ -516,7 +541,33 @@ impl InlineHistoryMenuView {
             caller_supplied_tabs,
             pending_initial_buffer_sync: false,
             scope_selector,
+            source_selector,
         }
+    }
+
+    /// Advances the persisted [`HistorySource`] and reruns the query so the command rows reflect
+    /// it. Prompt and conversation rows are not filtered by source.
+    pub fn cycle_source(&mut self, ctx: &mut ViewContext<Self>) {
+        let source = InputSettings::as_ref(ctx).history_source.next();
+        InputSettings::handle(ctx).update(ctx, |settings, ctx| {
+            report_if_error!(settings.history_source.set_value(source, ctx));
+        });
+        self.sync_source_selector_label(ctx);
+        self.pending_tab_switch_selection = self
+            .model
+            .as_ref(ctx)
+            .selected_item()
+            .map(HistoryItemIdentity::from_item);
+        self.rerun_query(ctx);
+        self.menu_view.update(ctx, |_, ctx| ctx.notify());
+    }
+
+    fn sync_source_selector_label(&self, ctx: &mut ViewContext<Self>) {
+        let Some(selector) = &self.source_selector else {
+            return;
+        };
+        let label = source_selector_label(*InputSettings::as_ref(ctx).history_source);
+        selector.update(ctx, |button, ctx| button.set_label(label, ctx));
     }
 
     /// Advances the persisted [`HistoryScope`] and reruns the query so the command rows reflect

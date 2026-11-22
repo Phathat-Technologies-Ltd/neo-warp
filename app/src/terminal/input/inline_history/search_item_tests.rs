@@ -1,6 +1,6 @@
 use chrono::{Duration, Local, TimeZone as _};
 
-use super::{CommandRun, format_command_duration};
+use super::{CommandRun, DurationColumn, InlineHistoryItem, format_command_duration};
 use crate::terminal::history::HistoryEntry;
 
 #[test]
@@ -37,4 +37,38 @@ fn command_run_needs_full_block_metadata() {
 
     entry.exit_code = Some(0.into());
     assert!(CommandRun::from_entry(&entry).unwrap().succeeded);
+}
+
+#[test]
+fn command_rows_always_reserve_the_duration_column() {
+    let now = Local::now();
+    let unknown = InlineHistoryItem::command("ls".into(), None, now).row_layout();
+    assert_eq!(
+        unknown.duration,
+        Some(DurationColumn {
+            label: String::new(),
+            succeeded: None,
+        })
+    );
+
+    let ran = InlineHistoryItem::command("make".into(), None, now)
+        .with_run(Some(CommandRun {
+            duration: Duration::seconds(4),
+            succeeded: true,
+        }))
+        .row_layout();
+    assert_eq!(
+        ran.duration,
+        Some(DurationColumn {
+            label: "4s".into(),
+            succeeded: Some(true),
+        })
+    );
+    assert!(!ran.relative_time.is_empty());
+}
+
+#[test]
+fn prompt_rows_have_no_duration_column() {
+    let layout = InlineHistoryItem::ai_prompt("fix it".into(), Local::now()).row_layout();
+    assert_eq!(layout.duration, None);
 }

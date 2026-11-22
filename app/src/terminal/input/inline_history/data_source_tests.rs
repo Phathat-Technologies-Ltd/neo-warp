@@ -2,7 +2,7 @@ use chrono::{Local, TimeZone as _};
 
 use super::{MenuEntry, MenuItem, interleave_conversations};
 use crate::input_suggestions::HistoryOrder;
-use crate::terminal::history::HistoryScope;
+use crate::terminal::history::{HistoryScope, HistorySource};
 use crate::terminal::input::message_bar::MessageItem;
 
 #[test]
@@ -117,5 +117,22 @@ fn scope_hint_shows_keystroke_and_current_scope() {
     match &items[1] {
         MessageItem::Text { content, .. } => assert_eq!(content, " to cycle scope (Session)"),
         _ => panic!("expected the scope hint text"),
+    }
+}
+
+#[test]
+fn source_hint_shows_keystroke_and_current_source() {
+    let items = super::source_hint_items(HistorySource::Agent);
+    assert_eq!(items.len(), 2);
+    match &items[0] {
+        MessageItem::Keystroke { keystroke, .. } => {
+            assert!(keystroke.ctrl);
+            assert_eq!(keystroke.key, "o");
+        }
+        _ => panic!("expected the ctrl-o keystroke first"),
+    }
+    match &items[1] {
+        MessageItem::Text { content, .. } => assert_eq!(content, " to cycle source (Agent)"),
+        _ => panic!("expected the source hint text"),
     }
 }
