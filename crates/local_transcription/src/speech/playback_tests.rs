@@ -121,10 +121,18 @@ impl Harness {
         outcome
     }
 
+    /// Requests approval `id` and lets the debounce pass so its prompt is issued.
+    fn request_approval(&mut self, id: u32, subject: &str, needs_screen: bool) {
+        self.controller
+            .approval_requested(id, subject, needs_screen, self.now);
+        self.advance(APPROVAL_DEBOUNCE);
+        let actions = self.controller.check_approval_due(self.now);
+        self.apply(actions);
+    }
+
     /// Speaks an approval prompt for `id` to the end and waits out the echo tail.
     fn play_approval_prompt(&mut self, id: u32, command: &str) {
-        let actions = self.controller.approval_requested(id, command, false);
-        self.apply(actions);
+        self.request_approval(id, command, false);
         self.run_synthesis();
         self.finish_playback();
         self.advance(ECHO_TAIL);
@@ -450,8 +458,7 @@ fn approval_prompt_is_spoken_and_answered_by_voice() {
     h.apply(actions);
     let actions = h.controller.reply_text("Let me check");
     h.apply(actions);
-    let actions = h.controller.approval_requested(9, "run cargo check", false);
-    h.apply(actions);
+    h.request_approval(9, "run cargo check", false);
     h.run_synthesis();
     h.finish_playback();
     h.run_synthesis();
@@ -483,8 +490,7 @@ fn approval_prompt_is_spoken_and_answered_by_voice() {
 fn approval_answers_need_speech_that_started_after_the_prompt() {
     let mut h = Harness::new();
     h.controller.set_headphones(true);
-    let actions = h.controller.approval_requested(4, "ls", false);
-    h.apply(actions);
+    h.request_approval(4, "ls", false);
     h.run_synthesis();
     // The user starts talking before the prompt ends; the final arrives afterwards.
     h.controller.speech_started(h.now);
@@ -505,8 +511,7 @@ fn approval_answers_need_speech_that_started_after_the_prompt() {
 #[test]
 fn an_unplayed_approval_prompt_is_never_answered_by_voice() {
     let mut h = Harness::new();
-    let actions = h.controller.approval_requested(2, "ls", false);
-    h.apply(actions);
+    h.request_approval(2, "ls", false);
     h.run_synthesis();
     // "Stop" silences the prompt before it finishes.
     assert_eq!(h.say("stop"), FinalOutcome::Stopped);
@@ -536,10 +541,7 @@ fn spoken_approvals_time_out_to_the_screen() {
 #[test]
 fn destructive_approvals_are_not_answered_by_voice() {
     let mut h = Harness::new();
-    let actions = h
-        .controller
-        .approval_requested(1, "run a command that deletes files", true);
-    h.apply(actions);
+    h.request_approval(1, "run a command that deletes files", true);
     assert_eq!(
         h.log,
         vec!["synth I want to run a command that deletes files. Approve on screen."]
@@ -697,8 +699,7 @@ fn mute_silences_readout_until_unmuted() {
     h.apply(actions);
     let actions = h.controller.speak("Ran cargo check: ok.".to_owned());
     h.apply(actions);
-    let actions = h.controller.approval_requested(1, "cargo test", false);
-    h.apply(actions);
+    h.request_approval(1, "cargo test", false);
     h.run_synthesis();
     assert_eq!(h.log, vec!["stop"]);
 
@@ -708,4 +709,117 @@ fn mute_silences_readout_until_unmuted() {
     h.apply(actions);
     h.run_synthesis();
     assert_eq!(h.log, vec!["stop", "synth Four.", "play Four."]);
+}
+
+#[test]
+fn approval_resolved_during_the_debounce_is_never_spoken() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    h.controller.approval_requested(1, "run ls", false, h.now);
+    h.advance(Duration::from_millis(500));
+    assert!(h.controller.check_approval_due(h.now).is_empty());
+    let actions = h.controller.approval_resolved(&1, h.now);
+    h.apply(actions);
+    assert_eq!(h.controller.approval_due_at(), None);
+    h.advance(APPROVAL_DEBOUNCE);
+    let actions = h.controller.check_approval_due(h.now);
+    h.apply(actions);
+    assert!(h.log.is_empty());
+    assert!(h.controller.approvals().pending().is_none());
+}
+
+#[test]
+fn approval_resolved_while_its_prompt_plays_stops_it() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    h.request_approval(1, "run ls", true);
+    h.run_synthesis();
+    assert_eq!(
+        h.log.last().map(String::as_str),
+        Some("play I want to run ls. Approve on screen.")
+    );
+    let actions = h.controller.approval_resolved(&1, h.now);
+    h.apply(actions);
+    assert_eq!(h.log.last().map(String::as_str), Some("stop"));
+    assert!(h.controller.approvals().pending().is_none());
+    assert!(!h.controller.is_speaking());
+    assert_eq!(h.controller.state(), ConversationState::Thinking);
+}
+
+#[test]
+fn approval_resolved_while_its_prompt_is_queued_drops_it() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("Let me check. ");
+    h.apply(actions);
+    h.run_synthesis();
+    h.request_approval(1, "run ls", false);
+    let actions = h.controller.approval_resolved(&1, h.now);
+    h.apply(actions);
+    h.finish_playback();
+    h.run_synthesis();
+    assert!(!h.log.iter().any(|line| line.starts_with("play I want to")));
+    assert!(h.playing.is_none());
+}
+
+#[test]
+fn quick_approval_requests_share_one_prompt() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    for id in 1..=3 {
+        h.controller.approval_requested(id, "run ls", false, h.now);
+        h.advance(Duration::from_millis(200));
+    }
+    h.advance(APPROVAL_DEBOUNCE);
+    let actions = h.controller.check_approval_due(h.now);
+    h.apply(actions);
+    assert_eq!(
+        h.log,
+        vec!["synth Three commands need your approval. Approve on screen."]
+    );
+    h.run_synthesis();
+    h.finish_playback();
+    h.advance(ECHO_TAIL);
+    assert_eq!(h.say("yes"), FinalOutcome::Ignored);
+    // Requests already announced are not announced again.
+    h.controller.approval_requested(2, "run ls", false, h.now);
+    assert_eq!(h.controller.approval_due_at(), None);
+}
+
+#[test]
+fn resolved_approvals_are_not_announced_again() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    h.play_approval_prompt(1, "run ls");
+    let actions = h.controller.approval_resolved(&1, h.now);
+    h.apply(actions);
+    h.controller.approval_requested(1, "run ls", false, h.now);
+    assert_eq!(h.controller.approval_due_at(), None);
+    // A new request after the resolved one is announced after the debounce, with no gap.
+    h.controller.approval_requested(2, "run pwd", false, h.now);
+    assert_eq!(
+        h.controller.approval_due_at(),
+        Some(h.now + APPROVAL_DEBOUNCE)
+    );
+}
+
+#[test]
+fn unresolved_approval_prompts_are_spaced_out() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let prompted_at = h.now + APPROVAL_DEBOUNCE;
+    h.request_approval(1, "run ls", true);
+    h.controller.approval_requested(2, "run pwd", true, h.now);
+    assert_eq!(
+        h.controller.approval_due_at(),
+        Some(prompted_at + APPROVAL_PROMPT_GAP)
+    );
+    h.advance(APPROVAL_DEBOUNCE);
+    assert!(h.controller.check_approval_due(h.now).is_empty());
 }

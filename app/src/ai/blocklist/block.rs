@@ -3636,6 +3636,12 @@ impl AIBlock {
             RequestedCommandViewEvent::EditorFocused => {
                 // Actions within the editor should clear all other text selections
                 self.clear_other_selections(Some(view.id()), ctx.window_id(), ctx);
+                // The user is editing the command on screen, so conversation mode stops asking.
+                #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+                crate::voice::conversation::ConversationSession::handle(ctx)
+                    .update(ctx, |conversation, ctx| {
+                        conversation.approval_resolved(action_id, ctx)
+                    });
             }
             RequestedCommandViewEvent::OpenActiveAgentProfileEditor => {
                 ctx.emit(AIBlockEvent::OpenActiveAgentProfileEditor);

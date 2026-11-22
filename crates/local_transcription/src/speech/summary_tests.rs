@@ -130,3 +130,15 @@ fn denylisted_readout_does_not_read_the_command() {
         "A command that deletes files is on the deny list, so it didn't run."
     );
 }
+
+#[test]
+fn grouped_approval_prompt_counts_commands() {
+    assert_eq!(
+        grouped_approval_prompt(2),
+        "Two commands need your approval. Approve on screen."
+    );
+    assert_eq!(
+        grouped_approval_prompt(12),
+        "Several commands need your approval. Approve on screen."
+    );
+}

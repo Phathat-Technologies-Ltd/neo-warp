@@ -79,6 +79,8 @@ pub struct ConversationSession {
     approval_timeout_at: Option<Instant>,
     /// When the progress line timer already waiting will fire.
     progress_timer_at: Option<Instant>,
+    /// When the approval announcement timer already waiting will fire.
+    approval_due_timer_at: Option<Instant>,
     finished_tx: mpsc::UnboundedSender<(u64, u64)>,
 }
 
@@ -132,6 +134,7 @@ impl ConversationSession {
             approval: None,
             approval_timeout_at: None,
             progress_timer_at: None,
+            approval_due_timer_at: None,
             finished_tx,
         }
     }
@@ -431,10 +434,29 @@ impl ConversationSession {
             action_model,
             conversation_id,
         });
-        let actions = self
-            .controller
-            .approval_requested(action_id, &command, needs_screen);
-        self.apply(actions, ctx);
+        self.controller
+            .approval_requested(action_id, &command, needs_screen, Instant::now());
+        self.schedule_approval_due(ctx);
+    }
+
+    /// Starts a timer for when the waiting approval requests are due to be announced.
+    fn schedule_approval_due(&mut self, ctx: &mut ModelContext<Self>) {
+        let Some(due) = self.controller.approval_due_at() else {
+            return;
+        };
+        if self.approval_due_timer_at.is_some_and(|at| at <= due) {
+            return;
+        }
+        self.approval_due_timer_at = Some(due);
+        ctx.spawn(
+            Timer::after(due.saturating_duration_since(Instant::now())),
+            |me, _, ctx| {
+                me.approval_due_timer_at = None;
+                let actions = me.controller.check_approval_due(Instant::now());
+                me.apply(actions, ctx);
+                me.schedule_approval_due(ctx);
+            },
+        );
     }
 
     /// An agent action of `surface` finished; a command's outcome gets a one-line note unless the
@@ -459,8 +481,12 @@ impl ConversationSession {
     }
 
     /// The action stopped waiting for approval (answered on screen, run, or cancelled).
-    pub fn approval_resolved(&mut self, action_id: &AIAgentActionId) {
-        self.controller.approval_resolved(action_id);
+    pub fn approval_resolved(&mut self, action_id: &AIAgentActionId, ctx: &mut ModelContext<Self>) {
+        let actions = self.controller.approval_resolved(action_id, Instant::now());
+        if self.controller.approvals().pending().is_none() {
+            self.approval_timeout_at = None;
+        }
+        self.apply(actions, ctx);
     }
 
     /// Lets conversation mode handle a final utterance before hands-free applies it. Returns
