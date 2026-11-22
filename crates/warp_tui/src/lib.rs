@@ -30,6 +30,7 @@ mod tui_builder;
 mod ui;
 
 mod anthropic_oauth;
+mod codex_login;
 mod completion_menu;
 mod conversation_menu;
 mod conversation_selection;

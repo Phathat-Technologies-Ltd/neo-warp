@@ -210,7 +210,7 @@ pub enum AIApiError {
     /// Synthesized client-side under organization sign-in when no model has a connected
     /// credential; there are no Warp-hosted models to fall back on.
     #[error(
-        "No model credential is connected. Type /api-keys to connect Claude, or add an Anthropic or Cerebras API key."
+        "No model credential is connected. Type /api-keys to connect Claude or ChatGPT, or add an Anthropic or Cerebras API key."
     )]
     NoModelCredential,
 }

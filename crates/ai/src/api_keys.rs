@@ -18,7 +18,6 @@ use warpui_extras::secure_storage::{self, AppContextExt};
 
 use crate::LLMProvider;
 pub use crate::aws_credentials::{AwsCredentials, AwsCredentialsState};
-use crate::cerebras;
 #[cfg(not(target_family = "wasm"))]
 pub use crate::geap_credentials::GeapRefreshOutcome;
 pub use crate::geap_credentials::{
@@ -29,6 +28,7 @@ use crate::telemetry::{
     AITelemetryEvent, ProviderCredentialTelemetryAction, ProviderCredentialTelemetryKind,
     ProviderCredentialTelemetryProvider,
 };
+use crate::{cerebras, codex_login};
 
 const SECURE_STORAGE_KEY: &str = "AiApiKeys";
 const CUSTOM_ENDPOINT_KEYS_SECURE_STORAGE_KEY: &str = "AiCustomEndpointKeys";
@@ -40,6 +40,7 @@ const LEGACY_ENDPOINT_PREFIX: &str = "legacy-";
 /// a refresh lifecycle, not a user-pasted static key.
 const GROK_SECURE_STORAGE_KEY: &str = "GrokOAuthTokens";
 const ANTHROPIC_SECURE_STORAGE_KEY: &str = "AnthropicOAuthTokens";
+const CODEX_SECURE_STORAGE_KEY: &str = "ChatGptCodexLoginTokens";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiKeyManagerEvent {
@@ -580,6 +581,17 @@ impl AnthropicTokens {
     }
 }
 
+/// Tokens from a ChatGPT plan login (`crate::codex_login`), persisted under
+/// [`CODEX_SECURE_STORAGE_KEY`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexTokens {
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<SystemTime>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnthropicRefreshOutcome {
     Refreshed,
@@ -623,6 +635,12 @@ pub struct ApiKeyManager {
     cerebras_models: Vec<String>,
     /// Counts Cerebras model-list fetches so only the latest one's answer is kept.
     cerebras_models_generation: u64,
+    codex_tokens: Option<CodexTokens>,
+    /// The models the ChatGPT login's account may pick, as ChatGPT last listed them.
+    codex_models: Vec<String>,
+    /// Counts ChatGPT model-list fetches so only the latest one's answer is kept.
+    codex_models_generation: u64,
+    codex_secure_storage_write_version: u64,
     /// OAuth tokens for a connected xAI/Grok subscription, if any. Persisted
     /// separately from `keys` under [`GROK_SECURE_STORAGE_KEY`];
     /// `crate::grok_subscription` keeps these fresh.
@@ -726,6 +744,7 @@ impl ApiKeyManager {
         let resolved_custom_endpoints = keys.custom_endpoints.clone();
         let grok_tokens = Self::load_grok_tokens_from_secure_storage(ctx);
         let anthropic_tokens = Self::load_anthropic_tokens_from_secure_storage(ctx);
+        let codex_tokens = Self::load_codex_tokens_from_secure_storage(ctx);
         let mut manager = Self {
             keys,
             custom_endpoints: CustomEndpointState {
@@ -736,6 +755,10 @@ impl ApiKeyManager {
             },
             cerebras_models: Vec::new(),
             cerebras_models_generation: 0,
+            codex_tokens,
+            codex_models: Vec::new(),
+            codex_models_generation: 0,
+            codex_secure_storage_write_version: 0,
             grok_tokens,
             anthropic_tokens,
             send_anthropic_oauth_as_api_key: false,
@@ -761,6 +784,9 @@ impl ApiKeyManager {
             anthropic_secure_storage_write_version: 0,
         };
         manager.refresh_cerebras_models(ctx);
+        manager.refresh_codex_models(ctx);
+        #[cfg(not(target_family = "wasm"))]
+        manager.schedule_codex_refresh(ctx);
         manager
     }
 
@@ -782,7 +808,77 @@ impl ApiKeyManager {
         {
             endpoints.push(cerebras::endpoint(key, &self.cerebras_models));
         }
+        if let Some(tokens) = &self.codex_tokens
+            && !self.codex_models.is_empty()
+        {
+            endpoints.push(codex_login::endpoint(
+                &tokens.access_token,
+                &self.codex_models,
+            ));
+        }
         endpoints
+    }
+
+    pub fn codex_tokens(&self) -> Option<&CodexTokens> {
+        self.codex_tokens.as_ref()
+    }
+
+    pub fn has_codex_login(&self) -> bool {
+        self.codex_tokens.is_some()
+    }
+
+    /// Replaces the ChatGPT login, persisting it and relisting the account's models.
+    pub fn set_codex_tokens(&mut self, tokens: Option<CodexTokens>, ctx: &mut ModelContext<Self>) {
+        if self.codex_tokens == tokens {
+            return;
+        }
+        let account_changed = match (&self.codex_tokens, &tokens) {
+            (Some(old), Some(new)) => !codex_login::same_account(old, new),
+            _ => true,
+        };
+        self.codex_tokens = tokens;
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+        self.write_codex_tokens_to_secure_storage(ctx);
+        if account_changed {
+            self.refresh_codex_models(ctx);
+        }
+    }
+
+    /// Lists the models the ChatGPT login's account may pick, replacing the previous list when
+    /// ChatGPT answers. Clears the list when there is no login.
+    pub fn refresh_codex_models(&mut self, ctx: &mut ModelContext<Self>) {
+        self.codex_models_generation += 1;
+        let Some(access_token) = self.codex_tokens.as_ref().map(|t| t.access_token.clone()) else {
+            if !self.codex_models.is_empty() {
+                self.codex_models.clear();
+                ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+            }
+            return;
+        };
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let generation = self.codex_models_generation;
+            ctx.spawn(
+                codex_login::oauth::fetch_models(access_token),
+                move |me, result, ctx| {
+                    if me.codex_models_generation != generation {
+                        return;
+                    }
+                    match result {
+                        Ok(models) => {
+                            log::info!("ChatGPT lists {} models for this login", models.len());
+                            if me.codex_models != models {
+                                me.codex_models = models;
+                                ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+                            }
+                        }
+                        Err(error) => log::warn!("Couldn't list ChatGPT models: {error:#}"),
+                    }
+                },
+            );
+        }
+        #[cfg(target_family = "wasm")]
+        let _ = access_token;
     }
 
     /// Lists the models the stored Cerebras key may use, replacing the previous list when
@@ -1004,6 +1100,7 @@ impl ApiKeyManager {
                 .any(|endpoint| !endpoint.api_key.trim().is_empty())
             || self.has_grok_subscription()
             || self.has_chatgpt_subscription()
+            || self.has_codex_login()
     }
 
     pub fn chatgpt_connection_status(&self) -> &ChatGPTConnectionStatus {
@@ -1604,6 +1701,64 @@ impl ApiKeyManager {
             }
         });
     }
+    fn load_codex_tokens_from_secure_storage(ctx: &mut ModelContext<Self>) -> Option<CodexTokens> {
+        let json = match ctx.secure_storage().read_value(CODEX_SECURE_STORAGE_KEY) {
+            Ok(json) => json,
+            Err(e) => {
+                if !matches!(e, secure_storage::Error::NotFound) {
+                    report_error!(
+                        anyhow::Error::new(e)
+                            .context("Failed to read the ChatGPT login from secure storage")
+                    );
+                }
+                return None;
+            }
+        };
+        match serde_json::from_str(&json) {
+            Ok(tokens) => Some(tokens),
+            Err(e) => {
+                report_error!(
+                    anyhow::Error::new(e).context("Failed to deserialize the ChatGPT login")
+                );
+                None
+            }
+        }
+    }
+
+    fn write_codex_tokens_to_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
+        let payload = match self.codex_tokens.as_ref().map(serde_json::to_string) {
+            Some(Ok(json)) => Some(json),
+            Some(Err(e)) => {
+                report_error!(
+                    anyhow::Error::new(e).context("Failed to serialize the ChatGPT login")
+                );
+                return;
+            }
+            None => None,
+        };
+        self.codex_secure_storage_write_version += 1;
+        let write_version = self.codex_secure_storage_write_version;
+        ctx.spawn(async move { payload }, move |me, payload, ctx| {
+            if write_version != me.codex_secure_storage_write_version {
+                return;
+            }
+            let result = match payload {
+                Some(ref json) => ctx
+                    .secure_storage()
+                    .write_value(CODEX_SECURE_STORAGE_KEY, json),
+                None => ctx.secure_storage().remove_value(CODEX_SECURE_STORAGE_KEY),
+            };
+            if let Err(e) = result
+                && !matches!(e, secure_storage::Error::NotFound)
+            {
+                report_error!(
+                    anyhow::Error::new(e)
+                        .context("Failed to persist the ChatGPT login to secure storage")
+                );
+            }
+        });
+    }
+
     fn load_grok_tokens_from_secure_storage(ctx: &mut ModelContext<Self>) -> Option<GrokTokens> {
         let json = match ctx.secure_storage().read_value(GROK_SECURE_STORAGE_KEY) {
             Ok(json) => json,

@@ -10,7 +10,8 @@ without Warp's service:
   terminal tools: shell commands, reading, editing, and searching files.
 - **Models** are called directly at the provider with each user's own credential: Claude at
   Anthropic (a Claude Console login, a Claude Code subscription login, or an Anthropic API key),
-  and Cerebras with a Cerebras API key.
+  ChatGPT models with a ChatGPT plan login (terminal app for now), and Cerebras with a Cerebras
+  API key.
 
 ## How it connects
 
@@ -18,7 +19,7 @@ without Warp's service:
 neo-warp (on the user's machine)
  ├─ sign-in ──────────────► your identity provider (e.g. login.microsoftonline.com)
  ├─ embedded server (127.0.0.1, in-process): sessions, model list, agent loop
- │    └─ model calls ─────► api.anthropic.com, api.cerebras.ai
+ │    └─ model calls ─────► api.anthropic.com, chatgpt.com, api.cerebras.ai
  └─ Claude login (once) ──► Anthropic sign-in pages, through the bundled `ant` CLI
 ```
 
@@ -71,11 +72,15 @@ Their current sign-in ends within 12 hours at most, and they can't sign in again
 
    For Cerebras, paste a `csk-...` key in the **Cerebras** field (desktop) or the
    **Cerebras API key** row (terminal).
+
+   For ChatGPT (terminal app), choose **ChatGPT plan (Codex sign-in)**: neo-warp opens
+   `auth.openai.com/codex/device` and shows a code to enter there.
 3. Press Esc and ask the agent something. It asks before running commands that change things.
 
 The model picker lists Claude Opus 5.5 (default), Sonnet 5.5, Haiku 5.5, and Fable 5.2. With a
 Cerebras key, it also lists every model Cerebras says that key may use, fetched from
-`api.cerebras.ai/v1/models` at launch and whenever the key changes.
+`api.cerebras.ai/v1/models` at launch and whenever the key changes. With a ChatGPT login, it
+lists the models that ChatGPT account offers.
 
 ## Security model
 
@@ -96,6 +101,12 @@ Cerebras key, it also lists every model Cerebras says that key may use, fetched 
 - The desktop app is macOS only so far; the terminal app runs on macOS and Linux.
 - In the desktop app, Claude logins use Console accounts; the Claude Code subscription login is
   terminal-only.
+- The ChatGPT login is an unsupported stopgap: it uses the Codex CLI's OAuth client and ChatGPT's
+  Codex backend (`chatgpt.com/backend-api/codex`), which OpenAI doesn't document for other apps,
+  and could stop working without notice. OpenAI's supported route, [Sign in with ChatGPT plan
+  usage](https://developers.openai.com/siwc/token-sharing-open-source), currently refuses
+  Business workspaces that haven't allowed third-party apps
+  (`3p_delegated_access_policy_denied`). neo-warp will move to it once OpenAI enables it.
 - No cloud agents, Warp Drive, shared sessions, or other features that need Warp's service.
 - Agent tools: shell commands, read/edit/write files, grep, and find files. MCP tools, plans,
   and subagents aren't wired to the agent yet.

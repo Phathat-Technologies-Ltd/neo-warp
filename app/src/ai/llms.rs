@@ -4,8 +4,8 @@ use std::sync::{Arc, OnceLock};
 use ai::api_keys::{
     ApiKeyManager, ApiKeyManagerEvent, ChatGPTConnectionStatus, CustomEndpoint, CustomEndpointModel,
 };
-use ai::cerebras;
 pub use ai::{LLMId, LLMProvider};
+use ai::{cerebras, codex_login};
 use parking_lot::FairMutex;
 use serde::{Deserialize, Serialize, de};
 use warp_core::features::FeatureFlag;
@@ -2554,6 +2554,12 @@ fn custom_llm_info_from(endpoint: &CustomEndpoint, model: &CustomEndpointModel) 
                 cerebras::DISPLAY_NAME.to_owned(),
                 LLMProvider::Cerebras,
                 false,
+            )
+        } else if codex_login::is_chatgpt_config_key(&model.config_key) {
+            (
+                codex_login::DISPLAY_NAME.to_owned(),
+                LLMProvider::Unknown,
+                true,
             )
         } else {
             (
