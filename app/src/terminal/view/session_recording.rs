@@ -69,6 +69,14 @@ impl CastRecordingState {
         }
     }
 
+    pub(crate) fn command_started(&self, command: &str) {
+        if let Some(active) = &self.active
+            && !command.trim().is_empty()
+        {
+            active.marker(command);
+        }
+    }
+
     pub(crate) fn on_password_prompt(&self) {
         if let Some(active) = &self.active {
             active.suppress_input_until_next_line();
@@ -139,6 +147,7 @@ impl TerminalView {
             header: Header {
                 timestamp: Some(now.timestamp()),
                 title: Some(title),
+                idle_time_limit: Some(settings.idle_time_limit()),
                 env: recording_env(),
                 ..Header::new(
                     clamp_u16(self.size_info.columns()),

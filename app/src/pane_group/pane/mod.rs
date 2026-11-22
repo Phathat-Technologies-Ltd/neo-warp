@@ -24,6 +24,7 @@ pub(super) mod get_started_view;
 pub(super) mod local_harness_launch;
 pub(super) mod network_log_pane;
 pub(super) mod notebook_pane;
+pub(super) mod recordings_pane;
 pub(super) mod settings_pane;
 pub(super) mod terminal_pane;
 pub mod view;
@@ -65,6 +66,7 @@ use crate::settings_view::SettingsView;
 use crate::settings_view::environments_page::EnvironmentsPageView;
 use crate::terminal::TerminalView;
 use crate::terminal::available_shells::AvailableShell;
+use crate::terminal::session_recording::recordings_view::RecordingsView;
 use crate::view_components::action_button::ActionButton;
 use crate::workflows::workflow_view::WorkflowView;
 
@@ -146,6 +148,7 @@ pub(crate) enum IPaneType {
     ExecutionProfileEditor,
     GetStarted,
     NetworkLog,
+    Recordings,
     DeferredPlaceholder,
     /// A pane type only for tests.
     #[cfg(test)]
@@ -170,6 +173,7 @@ impl Display for IPaneType {
             IPaneType::ExecutionProfileEditor => write!(f, "Execution Profile Editor"),
             IPaneType::GetStarted => write!(f, "GetStarted"),
             IPaneType::NetworkLog => write!(f, "Network Log"),
+            IPaneType::Recordings => write!(f, "Recordings"),
             IPaneType::DeferredPlaceholder => write!(f, "Placeholder"),
             #[cfg(test)]
             IPaneType::Dummy => write!(f, "Dummy"),
@@ -267,6 +271,10 @@ impl PaneId {
 
     pub fn from_get_started_pane_ctx(ctx: &ViewContext<PaneView<GetStartedView>>) -> Self {
         Self::new_from_ctx(IPaneType::GetStarted, ctx)
+    }
+
+    pub fn from_recordings_pane_ctx(ctx: &ViewContext<PaneView<RecordingsView>>) -> Self {
+        Self::new_from_ctx(IPaneType::Recordings, ctx)
     }
 
     /// Creates a [`PaneId`] from a [`ViewContext<PaneView<NetworkLogView>>`].
@@ -369,6 +377,12 @@ impl PaneId {
         get_started_pane_view: &ViewHandle<PaneView<GetStartedView>>,
     ) -> Self {
         Self::new(IPaneType::GetStarted, get_started_pane_view)
+    }
+
+    pub fn from_recordings_pane_view(
+        recordings_pane_view: &ViewHandle<PaneView<RecordingsView>>,
+    ) -> Self {
+        Self::new(IPaneType::Recordings, recordings_pane_view)
     }
 
     /// Creates a [`PaneId`] from a [`PaneView<NetworkLogView>`] entity ID.
@@ -496,6 +510,9 @@ impl PaneId {
             }
             IPaneType::NetworkLog => {
                 ChildView::<PaneView<NetworkLogView>>::with_id(self.0.pane_view_id).finish()
+            }
+            IPaneType::Recordings => {
+                ChildView::<PaneView<RecordingsView>>::with_id(self.0.pane_view_id).finish()
             }
             IPaneType::DeferredPlaceholder => warpui::elements::Empty::new().finish(),
             #[cfg(test)]

@@ -5,6 +5,7 @@ pub mod asciicast;
 mod local;
 pub mod naming;
 pub mod redact;
+pub mod sanitize;
 mod store;
 
 pub use local::LocalDirStore;

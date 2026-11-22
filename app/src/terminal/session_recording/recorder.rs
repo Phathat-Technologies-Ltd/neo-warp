@@ -21,6 +21,7 @@ use warpui::r#async::Timer;
 use super::asciicast::{CastWriter, Utf8Decoder};
 use super::client::RecordingsClient;
 use super::redact::Redactor;
+use super::sanitize::WarpSequenceFilter;
 
 /// Output ending like a password prompt; input after it is not recorded until the next line.
 static PASSWORD_PROMPT: LazyLock<Regex> = LazyLock::new(|| {
@@ -70,6 +71,8 @@ enum Control {
         rows: u16,
     },
     Input(Vec<u8>),
+    /// A command started; the label is redacted before it's written.
+    Marker(String),
     /// The terminal reported a password prompt (echo off), so skip input until the next line.
     SuppressInput,
     Stop,
@@ -132,6 +135,11 @@ impl ActiveRecording {
         let _ = self.control_tx.try_send(Control::Input(bytes.to_vec()));
     }
 
+    /// Writes a marker event, e.g. at the start of a command, so players can jump to it.
+    pub fn marker(&self, label: &str) {
+        let _ = self.control_tx.try_send(Control::Marker(label.to_owned()));
+    }
+
     pub fn suppress_input_until_next_line(&self) {
         let _ = self.control_tx.try_send(Control::SuppressInput);
     }
@@ -163,9 +171,11 @@ struct CaptureState {
     last_batch_at: Instant,
     record_input: bool,
     output_decoder: Utf8Decoder,
+    output_filter: WarpSequenceFilter,
     output_redactor: Redactor,
     input_decoder: Utf8Decoder,
     input_redactor: Redactor,
+    marker_redactor: Redactor,
     output_tail: String,
     is_input_suppressed: bool,
 }
@@ -184,9 +194,11 @@ impl CaptureState {
             last_batch_at: Instant::now(),
             record_input: options.record_input,
             output_decoder: Utf8Decoder::default(),
+            output_filter: WarpSequenceFilter::default(),
             output_redactor: Redactor::new(patterns()),
             input_decoder: Utf8Decoder::default(),
             input_redactor: Redactor::new(patterns()),
+            marker_redactor: Redactor::new(patterns()),
             output_tail: String::new(),
             is_input_suppressed: false,
         }
@@ -238,6 +250,7 @@ impl CaptureState {
                     self.write(|writer| writer.write_resize(time, cols, rows))
                 }
                 Next::Control(Control::Input(bytes)) => self.input(time, &bytes),
+                Next::Control(Control::Marker(label)) => self.marker(time, &label),
                 Next::Control(Control::SuppressInput) => self.is_input_suppressed = true,
                 Next::FlushDue => {}
                 Next::Control(Control::Stop) | Next::Done => break,
@@ -253,7 +266,9 @@ impl CaptureState {
             self.output(started_at.elapsed().as_secs_f64(), &bytes);
         }
         let time = started_at.elapsed().as_secs_f64();
-        let output = self.output_redactor.flush();
+        let held = self.output_filter.flush();
+        let mut output = self.output_redactor.push(&held);
+        output.push_str(&self.output_redactor.flush());
         self.write(|writer| writer.write_output_text(time, &output));
         if self.record_input {
             let input = self.input_redactor.flush();
@@ -293,11 +308,18 @@ impl CaptureState {
 
     fn output(&mut self, time: f64, bytes: &[u8]) {
         let text = self.output_decoder.decode(bytes);
+        let text = self.output_filter.push(&text);
         if self.record_input {
             self.track_password_prompt(&text);
         }
         let text = self.output_redactor.push(&text);
         self.write(|writer| writer.write_output_text(time, &text));
+    }
+
+    fn marker(&mut self, time: f64, label: &str) {
+        let mut label = self.marker_redactor.push(label.trim());
+        label.push_str(&self.marker_redactor.flush());
+        self.write(|writer| writer.write_marker(time, &label));
     }
 
     fn track_password_prompt(&mut self, text: &str) {

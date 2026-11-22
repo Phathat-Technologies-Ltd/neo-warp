@@ -34,6 +34,16 @@ define_settings_group!(SessionRecordingSettings, settings: [
         toml_path: "session_recording.redact_patterns",
         description: "Extra regular expressions, one per line, redacted from session recordings.",
     },
+    idle_time_limit: SessionRecordingIdleTimeLimit {
+        type: f32,
+        default: 2.0,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "session_recording.idle_time_limit",
+        description: "Pauses longer than this many seconds are shortened when playing a recording with Skip idle on.",
+    },
 ]);
 
 impl SessionRecordingSettings {
@@ -44,6 +54,16 @@ impl SessionRecordingSettings {
 }
 
 impl SessionRecordingSettings {
+    /// The idle time limit written to new recordings, in seconds.
+    pub fn idle_time_limit(&self) -> f64 {
+        let limit = f64::from(*self.idle_time_limit.value());
+        if limit.is_finite() && limit > 0. {
+            limit
+        } else {
+            2.
+        }
+    }
+
     /// The user's extra redaction patterns.
     pub fn user_redact_patterns(&self) -> Vec<String> {
         self.redact_patterns

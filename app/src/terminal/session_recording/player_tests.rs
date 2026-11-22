@@ -110,3 +110,93 @@ fn seek_keeps_playing_and_restart_plays() {
     assert_eq!(player.state(), PlaybackState::Playing);
     assert_eq!(player.position(), 0.);
 }
+
+fn marker(time: f64, label: &str) -> Event {
+    Event {
+        time,
+        data: EventData::Marker(label.to_owned()),
+    }
+}
+
+/// Commands at 1s and 31s with a 29.5s idle gap before the second.
+fn cast_with_markers() -> Cast {
+    Cast {
+        header: Header::new(20, 3),
+        events: vec![
+            marker(1., "ls"),
+            output(1.5, "a b\r\n"),
+            marker(31., "make test"),
+            output(32., "ok\r\n"),
+        ],
+    }
+}
+
+#[test]
+fn skip_idle_caps_gaps_at_the_limit() {
+    let mut player = Player::new(cast_with_markers());
+    assert!(player.skip_idle());
+    assert_eq!(player.idle_time_limit(), DEFAULT_IDLE_TIME_LIMIT);
+    // 1 + 0.5 + 2 (capped from 29.5) + 1
+    assert_eq!(player.duration(), 4.5);
+    player.set_skip_idle(false);
+    assert_eq!(player.duration(), 32.);
+
+    let mut header = Header::new(20, 3);
+    header.idle_time_limit = Some(0.5);
+    let player = Player::new(Cast {
+        header,
+        ..cast_with_markers()
+    });
+    assert_eq!(player.duration(), 2.);
+}
+
+#[test]
+fn toggling_skip_idle_keeps_the_place() {
+    let mut player = Player::new(cast_with_markers());
+    player.seek(3.5);
+    assert_eq!(visible_text(&player), "a b");
+    player.set_skip_idle(false);
+    assert_eq!(player.position(), 31.);
+    player.set_skip_idle(true);
+    assert_eq!(player.position(), 3.5);
+}
+
+#[test]
+fn chapters_navigate_between_commands() {
+    let mut player = Player::new(cast_with_markers());
+    let chapters: Vec<_> = player
+        .chapters()
+        .into_iter()
+        .map(|chapter| (chapter.label, chapter.time))
+        .collect();
+    assert_eq!(
+        chapters,
+        vec![("ls".to_owned(), 1.), ("make test".to_owned(), 3.5)]
+    );
+
+    assert!(player.next_chapter());
+    assert_eq!(player.position(), 1.);
+    assert!(player.next_chapter());
+    assert_eq!(player.position(), 3.5);
+    assert_eq!(visible_text(&player), "a b");
+    assert!(!player.next_chapter());
+
+    // Within a second of a command's start, previous goes to the command before it.
+    player.seek(4.);
+    player.previous_chapter();
+    assert_eq!(player.position(), 1.);
+    player.seek(3.);
+    player.previous_chapter();
+    assert_eq!(player.position(), 1.);
+    player.previous_chapter();
+    assert_eq!(player.position(), 0.);
+}
+
+#[test]
+fn recordings_without_markers_have_no_chapters() {
+    let mut player = Player::new(cast());
+    assert!(player.chapters().is_empty());
+    assert!(!player.next_chapter());
+    player.previous_chapter();
+    assert_eq!(player.position(), 0.);
+}

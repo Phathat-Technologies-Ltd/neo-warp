@@ -61,8 +61,8 @@ With other users present it leaves them and logs. Repeating it is a no-op.
 asciicast v2 (<https://docs.asciinema.org/manual/asciicast/v2/>): a JSON header line
 (`version`, `width`, `height`, `timestamp`, `title`, `env`), then one JSON array per event:
 `[time, code, data]`. `time` is seconds since the start, with microsecond precision. Codes used:
-`"o"` output, `"i"` input, `"r"` resize (`"COLSxROWS"`). The reader also accepts `"m"` markers
-and skips unknown codes. Event data must be a UTF-8 string, so PTY bytes go through an incremental
+`"o"` output, `"i"` input, `"r"` resize (`"COLSxROWS"`), `"m"` markers (command start). The
+header also carries `idle_time_limit`. The reader skips unknown codes. Event data must be a UTF-8 string, so PTY bytes go through an incremental
 decoder that holds a character split across reads and replaces invalid bytes with U+FFFD.
 
 Code: `crates/session_recording/src/asciicast.rs` (`CastWriter`, `Utf8Decoder`, `parse`,
@@ -80,7 +80,8 @@ runs two threads. The capture thread:
 
 - waits on either the PTY receiver or a control channel (resize, input, password prompt, stop),
 - timestamps each event with a monotonic `Instant` measured from the start,
-- decodes, redacts, and encodes event lines into a batch, cut when it reaches 64 KB or when both
+- decodes, strips Warp's shell-integration sequences, redacts, and encodes event lines into a
+  batch, cut when it reaches 64 KB or when both
   channels are idle and 200 ms have passed since the last batch,
 - on stop: flushes the redactors' held text into a last batch and exits.
 
@@ -100,6 +101,24 @@ little work per read, and any drop is logged.
 
 Recording is offered only for panes with a local PTY (`inactive_pty_reads_rx` is `Some`) and
 builds with `local_fs`.
+
+### Stripping Warp's sequences
+
+`crates/session_recording/src/sanitize.rs` (`WarpSequenceFilter`) is a small streaming state
+machine run on decoded output before redaction. It drops DCS sequences whose first byte after
+`ESC P` is `$` (the bootstrap scripts' `DCS_START`, hex-encoded JSON hooks) up to `ESC \`, and
+OSC 7, 133, and 9277-9280 up to BEL or `ESC \`. Everything else, including other DCS strings and
+OSC 0/1/2/8, passes through unchanged. A sequence split across reads is held in the filter state
+(at most the `ESC ]` plus a 4-digit code is buffered; dropped bodies are not buffered at all), and
+`flush` at stop returns a held non-Warp prefix and drops an unterminated Warp sequence.
+
+### Command markers
+
+`TerminalView` handles `ModelEvent::AfterBlockStarted` (skipping in-band commands) by calling
+`CastRecordingState::command_started`, which sends `Control::Marker(command)` to the capture
+thread. The thread redacts the label with its own `Redactor` (push then flush, so a marker is
+never held) and writes `[t, "m", label]`. Only starts are marked: the exit code arrives later and
+would add a second chapter per command.
 
 ## Input and password prompts
 
@@ -156,22 +175,45 @@ speed, position) that replays events into a `vt100::Parser` (vt100 0.16). The ca
 elapsed time, so tests don't sleep. Seeking backwards rebuilds the screen from the start; forwards
 applies events incrementally.
 
-The UI is the Recordings settings page (`app/src/settings_view/recordings_page.rs`), which shows
-the player above the list and advances it on a ~30 fps timer while playing.
+Playback runs on its own timeline: each event's playback time is the sum of the gaps before it,
+each capped at the header's `idle_time_limit` (default 2 s) when **Skip idle** is on. Toggling it
+maps the current position through the recording time, so the screen stays put. `chapters()`
+returns the markers at their playback times; `next_chapter` seeks to the first one after the
+position, `previous_chapter` to the last one more than 1 s before it (so pressing it at a
+command's start goes to the one before), or the beginning. No markers means no chapters.
 
-Why not replay into Warp's `TerminalModel` in a new pane type: the terminal model is wired to
-blocks, shell bootstrap, sessions, and a PTY event loop. A read-only pane would need a new
-`BackingView`, pane-group plumbing, and a fake manager, a much larger and riskier change. vt100 is
-a small, well-tested emulator, and rendering its screen as monospace text is enough for v1. The
-cost: no colors or styles in the in-app player yet. External players (asciinema) show them.
-Moving to a full pane with Warp's renderer is a follow-up.
+`screen_style.rs` turns the vt100 screen into per-row runs of equal style (foreground, optional
+background, bold, italic, underline), resolving default colors and the 16 ANSI colors from the
+theme's terminal colors, the 256-color cube and grays from the xterm formulas, and true color
+directly. Inverse swaps foreground and background; bold normal colors are drawn bright.
+
+### Recordings pane
+
+`app/src/terminal/session_recording/recordings_view.rs` (`RecordingsView`, a `BackingView`) and
+`app/src/pane_group/pane/recordings_pane.rs` (`RecordingsPane`, `IPaneType::Recordings`,
+`LeafContents::Recordings`, not persisted). It mirrors the network log pane:
+`RecordingsPaneManager` tracks one pane per window, and `Workspace::open_recordings_pane` focuses
+and refreshes an existing pane or splits one to the right. The list state (sorting, delete
+confirmation, rename rules, details text) is `list.rs` (`RecordingsList`) so it can be tested
+without a view. The screen is rendered as one `Text` per row with `HighlightedRange`s per run, and
+advanced on a ~30 fps timer while playing. Fixed bindings in the `RecordingsView` context: `n`,
+`p`, space, left, right.
+
+The Settings page (`app/src/settings_view/recordings_page.rs`) is configuration only: directory,
+input recording, `idle_time_limit`, and `redact_patterns` (a multi-line editor saved on blur).
+
+Why vt100 and not Warp's `TerminalModel`: the terminal model is wired to blocks, shell bootstrap,
+sessions, and a PTY event loop; replaying into it would need a fake event loop and would run the
+recorded shell integration again. vt100 plus styled text gives colors and styles with a small,
+well-tested emulator.
 
 ## Entry points
 
 - `TerminalAction::ToggleCastRecording`, handled in `terminal/view/session_recording.rs`.
 - Pane context menu (`pane_context_menu_items`) and pane header overflow menu.
-- Command palette binding `terminal:toggle_cast_recording` and
-  `workspace:show_settings_recordings_page`.
+- Command palette binding `terminal:toggle_cast_recording`, `workspace:open_recordings`
+  (`WorkspaceAction::OpenRecordingsPane`, also View > Recordings through
+  `CustomAction::OpenRecordings`), and `workspace:show_settings_recordings_page`.
 - Slash command `/record` (`SlashCommandKind::Record`, GUI only).
 - Pane header indicator: `render_recording_indicator`; `should_render_header` is true while
   recording.
@@ -199,7 +241,15 @@ Moving to a full pane with Warp's renderer is a follow-up.
 - `redact_tests.rs`: each built-in pattern, ordinary text untouched, secrets split across chunks
   (including one byte at a time), private-key blocks across chunks, held-word behavior, extra
   and invalid patterns.
-- `player_tests.rs`: paused start, timing, speed, end and replay, seek back and forward, restart.
+- `player_tests.rs`: paused start, timing, speed, end and replay, seek back and forward, restart,
+  idle capping (default and header limit), toggling skip idle in place, chapter navigation, files
+  without markers.
+- `sanitize_tests.rs`: hooks, private and integration OSCs, kept titles/colors/hyperlinks, other
+  DCS and long OSC codes kept, every split point of a mixed stream, flush.
+- `recorder_tests.rs` also: redacted command markers in order, hooks split across PTY reads.
+- `screen_style_tests.rs`: a small cast rendered to runs with ANSI, bright-bold, inverse, true-color
+  and 256-color background; blank rows.
+- `list_tests.rs`: newest first, errors, delete confirmation, rename rules.
 - `naming_tests.rs`: sanitizing, collision-free names, listing, missing directory, rename and
   delete, formatting.
 - `org_sign_in` reads `[recording] redact_patterns`; `org_flags` defaults include

@@ -12827,6 +12827,9 @@ impl TerminalView {
                 block_id,
                 ..
             } => {
+                if !*is_for_in_band_command {
+                    self.cast_recording.command_started(command);
+                }
                 let did_any_session_contains_remote_blocks =
                     self.any_session_contains_remote_blocks;
                 self.any_session_contains_remote_blocks |=

@@ -5,6 +5,19 @@ use super::asciicast::{Cast, EventData};
 
 pub const SPEEDS: [f64; 5] = [0.5, 1., 1.5, 2., 4.];
 const SCROLLBACK_LINES: usize = 0;
+/// Used when the recording's header has no `idle_time_limit`.
+pub const DEFAULT_IDLE_TIME_LIMIT: f64 = 2.;
+/// Going to the previous command within this many seconds of a command's start goes to the one
+/// before it, like a media player's previous-track button.
+const PREVIOUS_CHAPTER_GRACE: f64 = 1.;
+
+/// A command marker in the recording.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chapter {
+    pub label: String,
+    /// Playback time of the marker, in seconds.
+    pub time: f64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -15,6 +28,10 @@ pub enum PlaybackState {
 
 pub struct Player {
     cast: Cast,
+    /// Playback time of each event, with idle gaps capped when skipping idle.
+    times: Vec<f64>,
+    duration: f64,
+    skip_idle: bool,
     screen: vt100::Parser,
     next_event: usize,
     /// Seconds into the recording.
@@ -27,14 +44,130 @@ impl Player {
     /// A player paused at the start.
     pub fn new(cast: Cast) -> Self {
         let screen = new_screen(&cast);
-        Self {
+        let mut player = Self {
             cast,
+            times: Vec::new(),
+            duration: 0.,
+            skip_idle: true,
             screen,
             next_event: 0,
             position: 0.,
             speed: 1.,
             state: PlaybackState::Paused,
+        };
+        player.rebuild_timeline();
+        player
+    }
+
+    pub fn idle_time_limit(&self) -> f64 {
+        self.cast
+            .header
+            .idle_time_limit
+            .filter(|limit| limit.is_finite() && *limit > 0.)
+            .unwrap_or(DEFAULT_IDLE_TIME_LIMIT)
+    }
+
+    pub fn skip_idle(&self) -> bool {
+        self.skip_idle
+    }
+
+    /// Turns idle capping on or off, keeping the same point in the recording.
+    pub fn set_skip_idle(&mut self, skip_idle: bool) {
+        if skip_idle == self.skip_idle {
+            return;
         }
+        let raw = self.recording_time_of(self.position);
+        self.skip_idle = skip_idle;
+        self.rebuild_timeline();
+        let position = self.playback_time_of(raw).min(self.duration);
+        self.position = position;
+    }
+
+    /// The recording's command markers, in order.
+    pub fn chapters(&self) -> Vec<Chapter> {
+        self.cast
+            .events
+            .iter()
+            .zip(&self.times)
+            .filter_map(|(event, time)| match &event.data {
+                EventData::Marker(label) => Some(Chapter {
+                    label: label.clone(),
+                    time: *time,
+                }),
+                EventData::Output(_) | EventData::Input(_) | EventData::Resize { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Seeks to the first command after the current position. Returns whether there was one.
+    pub fn next_chapter(&mut self) -> bool {
+        let position = self.position;
+        match self
+            .chapters()
+            .into_iter()
+            .find(|chapter| chapter.time > position + 1e-6)
+        {
+            Some(chapter) => {
+                self.seek(chapter.time);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Seeks to the start of the current command, or the previous one when already near its
+    /// start, or the beginning of the recording.
+    pub fn previous_chapter(&mut self) {
+        let position = self.position;
+        let time = self
+            .chapters()
+            .into_iter()
+            .rev()
+            .find(|chapter| chapter.time < position - PREVIOUS_CHAPTER_GRACE)
+            .map_or(0., |chapter| chapter.time);
+        self.seek(time);
+    }
+
+    fn rebuild_timeline(&mut self) {
+        let limit = self.skip_idle.then(|| self.idle_time_limit());
+        let cap = |gap: f64| limit.map_or(gap, |limit| gap.min(limit)).max(0.);
+        self.times.clear();
+        let (mut raw_prev, mut time) = (0., 0.);
+        for event in &self.cast.events {
+            time += cap(event.time - raw_prev);
+            raw_prev = event.time;
+            self.times.push(time);
+        }
+        self.duration = time + cap(self.cast.duration() - raw_prev);
+    }
+
+    /// Maps playback time to recording time.
+    fn recording_time_of(&self, time: f64) -> f64 {
+        self.map_time(time, &self.times, |index| self.cast.events[index].time)
+    }
+
+    /// Maps recording time to playback time.
+    fn playback_time_of(&self, raw: f64) -> f64 {
+        let raw_times: Vec<f64> = self.cast.events.iter().map(|event| event.time).collect();
+        self.map_time(raw, &raw_times, |index| self.times[index])
+    }
+
+    /// Finds the last event at or before `time` on the `from` timeline and returns the
+    /// corresponding time on the other timeline, plus the remaining offset capped at the gap.
+    fn map_time(&self, time: f64, from: &[f64], to: impl Fn(usize) -> f64) -> f64 {
+        let index = from.partition_point(|event_time| *event_time <= time);
+        if index == 0 {
+            return time.min(self.cast.events.first().map_or(time, |_| to(0)));
+        }
+        let base_from = from[index - 1];
+        let base_to = to(index - 1);
+        let offset = time - base_from;
+        let gap_to = if index < from.len() {
+            to(index) - base_to
+        } else {
+            f64::INFINITY
+        };
+        base_to + offset.min(gap_to)
     }
 
     pub fn state(&self) -> PlaybackState {
@@ -46,7 +179,7 @@ impl Player {
     }
 
     pub fn duration(&self) -> f64 {
-        self.cast.duration()
+        self.duration
     }
 
     pub fn speed(&self) -> f64 {
@@ -151,7 +284,7 @@ impl Player {
 
     fn apply_until(&mut self, target: f64) {
         while let Some(event) = self.cast.events.get(self.next_event) {
-            if event.time > target {
+            if self.times[self.next_event] > target {
                 break;
             }
             match &event.data {

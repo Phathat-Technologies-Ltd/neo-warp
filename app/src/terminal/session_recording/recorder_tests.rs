@@ -341,3 +341,45 @@ fn records_input_but_not_passwords() {
         .collect();
     assert_eq!(input, "sudo ls [REDACTED]\r\r\rexit\r");
 }
+
+#[test]
+fn writes_redacted_command_markers_in_order() {
+    let events = record(output_only(), |tx, recording| {
+        recording.marker("  curl -H 'Authorization: Bearer abcdefghijklmnop' x ");
+        pause();
+        tx.try_broadcast(Arc::new(b"out\n".to_vec())).unwrap();
+        wait_until_read(tx);
+        pause();
+        recording.marker("ls");
+        pause();
+    });
+    assert_eq!(
+        events,
+        vec![
+            EventData::Marker("curl -H 'Authorization: Bearer [REDACTED]' x".to_owned()),
+            EventData::Output("out\n".to_owned()),
+            EventData::Marker("ls".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn strips_warp_hooks_split_across_reads() {
+    let events = record(output_only(), |tx, _| {
+        tx.try_broadcast(Arc::new(b"\x1b]0;title\x07$ \x1bP$d7b22".to_vec()))
+            .unwrap();
+        wait_until_read(tx);
+        pause();
+        tx.try_broadcast(Arc::new(b"686f6f6b227d\x1b\\ls\n".to_vec()))
+            .unwrap();
+        pause();
+    });
+    let output: String = events
+        .iter()
+        .filter_map(|event| match event {
+            EventData::Output(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(output, "\x1b]0;title\x07$ ls\n");
+}
