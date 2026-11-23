@@ -301,6 +301,8 @@ pub enum VoiceControlsAction {
     ToggleModeMenu,
     SetDictationMode(DictationMode),
     ToggleConversation,
+    ChooseMicrophoneMode,
+    DismissVoiceIsolationHint,
 }
 
 pub struct VoiceControls {
@@ -313,6 +315,9 @@ pub struct VoiceControls {
     mode_menu: ViewHandle<Menu<VoiceControlsAction>>,
     mode_menu_open: bool,
     conversation_button: ViewHandle<ActionButton>,
+    voice_isolation_button: ViewHandle<ActionButton>,
+    dismiss_voice_isolation_button: ViewHandle<ActionButton>,
+    show_voice_isolation_hint: bool,
     menu_positioning_provider: Arc<dyn MenuPositioningProvider>,
 }
 
@@ -353,6 +358,36 @@ impl VoiceControls {
                 .on_click(|ctx| ctx.dispatch_typed_action(VoiceControlsAction::ToggleConversation))
         });
 
+        let voice_isolation_button = ctx.add_typed_action_view(|_| {
+            style
+                .new_button()
+                .with_tooltip("Choose the macOS microphone mode")
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(VoiceControlsAction::ChooseMicrophoneMode)
+                })
+        });
+        voice_isolation_button.update(ctx, |button, ctx| {
+            button.set_label("Turn on Voice Isolation for better results", ctx)
+        });
+        let dismiss_voice_isolation_button = ctx.add_typed_action_view(|_| {
+            style
+                .new_button()
+                .with_icon(Icon::X)
+                .with_tooltip("Don't suggest Voice Isolation again")
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(VoiceControlsAction::DismissVoiceIsolationHint)
+                })
+        });
+        ctx.spawn_stream_local(
+            voice_input::microphone_mode::changes(),
+            |me, (), ctx| me.refresh(ctx),
+            |_, _| {},
+        );
+        ctx.spawn_stream_local(
+            voice_input::backend_changes(),
+            |me, (), ctx| me.refresh(ctx),
+            |_, _| {},
+        );
         ctx.subscribe_to_model(&HandsFreeSession::handle(ctx), |me, _, _, ctx| {
             me.refresh(ctx)
         });
@@ -373,6 +408,9 @@ impl VoiceControls {
             mode_menu,
             mode_menu_open: false,
             conversation_button,
+            voice_isolation_button,
+            dismiss_voice_isolation_button,
+            show_voice_isolation_hint: false,
             menu_positioning_provider,
         };
         me.refresh(ctx);
@@ -428,6 +466,13 @@ impl VoiceControls {
             button.set_label(visual.label, ctx);
             button.set_tooltip(Some(visual.tooltip), ctx);
         });
+
+        self.show_voice_isolation_hint = hands_free_state.is_mic_on()
+            && voice_input::microphone_mode::should_suggest_voice_isolation(
+                voice_input::microphone_mode::microphone_mode(),
+                voice_input::microphone_mode::capture_backend(),
+                *AISettings::as_ref(ctx).voice_isolation_hint_dismissed,
+            );
 
         let items = mode_menu_items(mode);
         self.mode_menu
@@ -505,6 +550,11 @@ impl View for VoiceControls {
         if is_conversation_enabled() {
             row = row.with_child(ChildView::new(&self.conversation_button).finish());
         }
+        if self.show_voice_isolation_hint {
+            row = row
+                .with_child(ChildView::new(&self.voice_isolation_button).finish())
+                .with_child(ChildView::new(&self.dismiss_voice_isolation_button).finish());
+        }
         row.finish()
     }
 }
@@ -526,6 +576,20 @@ impl TypedActionView for VoiceControls {
             }
             VoiceControlsAction::ToggleConversation => {
                 toggle_conversation(ctx.window_id(), ctx);
+            }
+            VoiceControlsAction::ChooseMicrophoneMode => {
+                voice_input::microphone_mode::show_microphone_mode_picker();
+            }
+            VoiceControlsAction::DismissVoiceIsolationHint => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    if let Err(error) = settings.voice_isolation_hint_dismissed.set_value(true, ctx)
+                    {
+                        log::warn!(
+                            "Could not remember the Voice Isolation hint dismissal: {error}"
+                        );
+                    }
+                });
+                self.refresh(ctx);
             }
         }
     }

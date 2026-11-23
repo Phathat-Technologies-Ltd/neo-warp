@@ -19,6 +19,7 @@ use warpui_core::platform::MicrophoneAccessState;
 use warpui_core::{Entity, ModelContext, SingletonEntity};
 
 mod live;
+pub mod microphone_mode;
 pub use live::{LinearResampler, LiveCapture, LiveChunk};
 pub mod recovery;
 mod speaker_output;

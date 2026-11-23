@@ -208,6 +208,11 @@ impl CaptureRegistration {
     }
 }
 
+/// Whether any microphone stream is open.
+pub(crate) fn has_open_captures() -> bool {
+    !CAPTURES.lock().is_empty()
+}
+
 impl Drop for CaptureRegistration {
     fn drop(&mut self) {
         CAPTURES.lock().retain(|(id, _)| *id != self.0);

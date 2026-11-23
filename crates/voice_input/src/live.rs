@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use anyhow::Context as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+use crate::microphone_mode;
 use crate::recovery::{Heartbeat, RecoveryTiming, Signal, StreamFault, supervise};
 use crate::voice_processing::system_aec::{self, SystemCaptureLease};
 use crate::voice_processing::{
@@ -97,6 +98,7 @@ where
         match system_aec::acquire_capture(Box::new(move |mono: &[f32]| on_mono(mono))) {
             Ok(lease) => {
                 log::info!("Hands-free microphone: using system-wide echo cancellation");
+                microphone_mode::set_capture_backend(AudioBackend::SystemAec);
                 return Ok(CaptureStream::SystemAec(lease));
             }
             Err(error) => {
@@ -118,7 +120,15 @@ where
     })?;
     if backend == AudioBackend::VoiceProcessing {
         log::info!("Hands-free microphone: using the echo-cancelling voice-processing unit");
+        if let Some(state) = microphone_mode::microphone_mode() {
+            log::info!(
+                "Microphone mode: active {}, preferred {}",
+                state.active.label(),
+                state.preferred.label()
+            );
+        }
     }
+    microphone_mode::set_capture_backend(backend);
     Ok(stream)
 }
 
