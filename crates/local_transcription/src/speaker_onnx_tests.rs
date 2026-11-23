@@ -40,7 +40,7 @@ fn empty_audio_is_rejected() {
 #[test]
 fn missing_model_is_not_installed() {
     let dir = tempfile::tempdir().unwrap();
-    let store = ModelStore::new(dir.path(), crate::campplus_en_voxceleb());
+    let store = ModelStore::new(dir.path(), crate::campplus_zh_en_advanced());
     assert!(matches!(
         OnnxSpeakerEmbedder::load(&store),
         Err(TranscribeError::ModelNotInstalled)
@@ -48,7 +48,7 @@ fn missing_model_is_not_installed() {
 }
 
 /// Measures the real model on WAV files. Set `SPEAKER_BENCH_DIR` to a directory with
-/// `campplus_en_voxceleb_16k.onnx` and 16 kHz WAVs named `<speaker>_<n>.wav`, then run with
+/// `campplus_zh_en_advanced_16k.onnx` and 16 kHz WAVs named `<speaker>_<n>.wav`, then run with
 /// `--ignored --nocapture`.
 #[test]
 #[ignore]

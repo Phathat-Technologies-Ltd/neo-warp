@@ -10,12 +10,21 @@ use crate::TranscribeError;
 pub const MAX_EMBED_SAMPLES: usize = 3 * 16_000;
 /// Shorter audio is tiled up to this length, so short words still fill the model's context.
 pub const MIN_EMBED_SAMPLES: usize = 16_000;
-/// Phrases read during enrollment.
-pub const ENROLLMENT_PHRASES: [&str; 3] = [
-    "Hey Warp, show me what changed in this repository today.",
-    "Run the tests again and tell me which ones are failing.",
-    "Open a new tab and list the files in my home directory.",
+/// Phrases read during enrollment: long enough for five to eight seconds of speech each, with
+/// varied vowels and consonants.
+pub const ENROLLMENT_PHRASES: [&str; 6] = [
+    "Hey Warp, show me what changed in this repository today, and summarize the biggest \
+     differences for me.",
+    "Run the whole test suite again, then tell me which tests are failing and why they broke.",
+    "Open a new tab, move into my home directory, and list every file sorted by size.",
+    "Could you check whether the build server is still running, and restart it if it froze?",
+    "Search the project for the word timeout, then explain how each of those values is used.",
+    "Thanks, that looks good. Please commit these changes with a short, clear message.",
 ];
+/// The current [`Voiceprint::version`]; voiceprints of another version ask for re-enrollment.
+pub const VOICEPRINT_VERSION: u32 = 2;
+/// Live embeddings folded into a voiceprint, most recent kept.
+pub const MAX_ADAPTED_EMBEDDINGS: usize = 8;
 
 /// Turns 16 kHz mono speech into an L2-normalized voice embedding. Implementations are blocking
 /// and CPU-bound.
@@ -75,9 +84,9 @@ impl Sensitivity {
     /// The lowest cosine similarity accepted.
     pub fn threshold(self) -> f32 {
         match self {
-            Sensitivity::Strict => 0.62,
-            Sensitivity::Normal => 0.52,
-            Sensitivity::Loose => 0.42,
+            Sensitivity::Strict => 0.52,
+            Sensitivity::Normal => 0.44,
+            Sensitivity::Loose => 0.36,
         }
     }
 
@@ -99,12 +108,23 @@ pub enum EnrollError {
     MismatchedDimensions,
 }
 
-/// The enrolled user's voice: the mean of the normalized enrollment embeddings, renormalized.
+/// The enrolled user's voice: the renormalized mean of the normalized enrollment embeddings and
+/// the most recent confidently matched live embeddings, so it learns the user's everyday
+/// microphone and room.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Voiceprint {
     /// The [`crate::ModelSpec`] id of the embedder, so a model change asks for re-enrollment.
     pub model_id: String,
+    /// Bumped when the audio pipeline or features change; see [`VOICEPRINT_VERSION`].
+    #[serde(default)]
+    pub version: u32,
+    /// The embedding utterances are compared with.
     pub embedding: Vec<f32>,
+    #[serde(default)]
+    pub enrollment: Vec<Vec<f32>>,
+    /// At most [`MAX_ADAPTED_EMBEDDINGS`], oldest first.
+    #[serde(default)]
+    pub adapted: Vec<Vec<f32>>,
 }
 
 impl Voiceprint {
@@ -116,19 +136,57 @@ impl Voiceprint {
         if dim == 0 || embeddings.iter().any(|embedding| embedding.len() != dim) {
             return Err(EnrollError::MismatchedDimensions);
         }
+        let enrollment = embeddings
+            .iter()
+            .map(|embedding| {
+                let mut normalized = embedding.clone();
+                l2_normalize(&mut normalized);
+                normalized
+            })
+            .collect();
+        let mut print = Self {
+            model_id: model_id.to_owned(),
+            version: VOICEPRINT_VERSION,
+            embedding: Vec::new(),
+            enrollment,
+            adapted: Vec::new(),
+        };
+        print.recompute();
+        Ok(print)
+    }
+
+    /// Whether this voiceprint was made with `model_id` and the current pipeline.
+    pub fn is_current(&self, model_id: &str) -> bool {
+        self.model_id == model_id && self.version == VOICEPRINT_VERSION
+    }
+
+    /// Folds a confidently matched live embedding into the voiceprint, dropping the oldest once
+    /// [`MAX_ADAPTED_EMBEDDINGS`] are kept. Embeddings of another size are ignored.
+    pub fn adapt(&mut self, embedding: &[f32]) {
+        if embedding.len() != self.embedding.len() {
+            return;
+        }
+        let mut normalized = embedding.to_vec();
+        l2_normalize(&mut normalized);
+        if self.adapted.len() == MAX_ADAPTED_EMBEDDINGS {
+            self.adapted.remove(0);
+        }
+        self.adapted.push(normalized);
+        self.recompute();
+    }
+
+    fn recompute(&mut self) {
+        let Some(dim) = self.enrollment.first().map(Vec::len) else {
+            return;
+        };
         let mut mean = vec![0.0f32; dim];
-        for embedding in embeddings {
-            let mut normalized = embedding.clone();
-            l2_normalize(&mut normalized);
-            for (sum, value) in mean.iter_mut().zip(&normalized) {
+        for embedding in self.enrollment.iter().chain(&self.adapted) {
+            for (sum, value) in mean.iter_mut().zip(embedding) {
                 *sum += value;
             }
         }
         l2_normalize(&mut mean);
-        Ok(Self {
-            model_id: model_id.to_owned(),
-            embedding: mean,
-        })
+        self.embedding = mean;
     }
 
     pub fn similarity(&self, embedding: &[f32]) -> f32 {
