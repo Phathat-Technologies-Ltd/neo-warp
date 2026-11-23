@@ -3282,12 +3282,10 @@ impl TypedActionView for WarpAgentPageView {
             WarpAgentPageAction::CycleConversationSpeechEngine => {
                 use crate::voice::local_model::SpeechOutputEngine;
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let next = match SpeechOutputEngine::from_setting(
-                        &settings.conversation_speech_engine,
-                    ) {
-                        SpeechOutputEngine::Kokoro => "tiny_voca",
-                        SpeechOutputEngine::TinyVoca => "kokoro",
-                    };
+                    let next =
+                        SpeechOutputEngine::from_setting(&settings.conversation_speech_engine)
+                            .next()
+                            .setting_value();
                     report_if_error!(
                         settings
                             .conversation_speech_engine
@@ -5153,7 +5151,9 @@ impl VoiceWidget {
         appearance: &Appearance,
         app: &AppContext,
     ) {
-        use crate::voice::local_model::SpeechOutputModel;
+        use local_transcription::speech::POCKET_ATTRIBUTION;
+
+        use crate::voice::local_model::{SpeechOutputEngine, SpeechOutputModel};
 
         let model = SpeechOutputModel::as_ref(app);
         column.add_child(self.render_model_row(
@@ -5176,30 +5176,44 @@ impl VoiceWidget {
             .find(|(id, _)| *id == settings.conversation_voice.as_str())
             .or_else(|| voices.first())
             .map_or("Default", |(_, name)| *name);
+        let engine = SpeechOutputEngine::from_setting(&settings.conversation_speech_engine);
+        let engine_help = match engine {
+            SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => {
+                "Kokoro sounds best; tiny-voca is a smaller download; Pocket TTS (Kyutai, \
+                 English, one voice) is another option."
+                    .to_owned()
+            }
+            SpeechOutputEngine::Pocket => format!(
+                "Pocket TTS (Kyutai, English, one voice) has a single voice and a fixed speaking \
+                 rate. {POCKET_ATTRIBUTION}"
+            ),
+        };
         column.add_child(render_cycle_row(
             "Speech Output Engine",
-            "Kokoro sounds best; tiny-voca is a smaller download.",
-            &model.display_name(),
+            &engine_help,
+            &engine_label(engine, &model.display_name()),
             WarpAgentPageAction::CycleConversationSpeechEngine,
             self.conversation_engine_button.clone(),
             appearance,
         ));
-        column.add_child(render_cycle_row(
-            "Conversation Voice",
-            "The voice that reads agent replies aloud.",
-            voice,
-            WarpAgentPageAction::CycleConversationVoice,
-            self.conversation_voice_button.clone(),
-            appearance,
-        ));
-        column.add_child(render_cycle_row(
-            "Speaking Rate",
-            "How fast agent replies are read.",
-            &format!("{:.1}x", settings.conversation_speech_rate()),
-            WarpAgentPageAction::CycleConversationSpeechRate,
-            self.conversation_rate_button.clone(),
-            appearance,
-        ));
+        if engine.has_voice_and_rate_controls() {
+            column.add_child(render_cycle_row(
+                "Conversation Voice",
+                "The voice that reads agent replies aloud.",
+                voice,
+                WarpAgentPageAction::CycleConversationVoice,
+                self.conversation_voice_button.clone(),
+                appearance,
+            ));
+            column.add_child(render_cycle_row(
+                "Speaking Rate",
+                "How fast agent replies are read.",
+                &format!("{:.1}x", settings.conversation_speech_rate()),
+                WarpAgentPageAction::CycleConversationSpeechRate,
+                self.conversation_rate_button.clone(),
+                appearance,
+            ));
+        }
         column.add_child(render_ai_setting_toggle::<ConversationReadCodeSummaries>(
             "Read Code Summaries",
             WarpAgentPageAction::ToggleConversationReadCodeSummaries,
@@ -5574,6 +5588,19 @@ struct ModelRow {
     remove: WarpAgentPageAction,
 }
 
+/// The picker label for `engine`, whose model is named `display_name`.
+#[cfg(not(target_family = "wasm"))]
+fn engine_label(
+    engine: crate::voice::local_model::SpeechOutputEngine,
+    display_name: &str,
+) -> String {
+    use crate::voice::local_model::SpeechOutputEngine;
+    match engine {
+        SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => display_name.to_owned(),
+        SpeechOutputEngine::Pocket => "Pocket TTS (Kyutai, English, one voice)".to_owned(),
+    }
+}
+
 /// Speaking rates offered, in percent.
 #[cfg(not(target_family = "wasm"))]
 const CONVERSATION_RATES: [u32; 5] = [80, 100, 120, 135, 150];
@@ -5581,12 +5608,13 @@ const CONVERSATION_RATES: [u32; 5] = [80, 100, 120, 135, 150];
 /// The voices of the engine named by the `conversation_speech_engine` setting, as (id, name).
 #[cfg(not(target_family = "wasm"))]
 fn conversation_voices(engine: &str) -> &'static [(&'static str, &'static str)] {
-    use local_transcription::speech::{KOKORO_VOICES, TINY_VOCA_VOICES};
+    use local_transcription::speech::{KOKORO_VOICES, POCKET_VOICES, TINY_VOCA_VOICES};
 
     use crate::voice::local_model::SpeechOutputEngine;
     match SpeechOutputEngine::from_setting(engine) {
         SpeechOutputEngine::Kokoro => KOKORO_VOICES,
         SpeechOutputEngine::TinyVoca => TINY_VOCA_VOICES,
+        SpeechOutputEngine::Pocket => POCKET_VOICES,
     }
 }
 
@@ -5685,7 +5713,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

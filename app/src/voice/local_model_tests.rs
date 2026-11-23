@@ -108,3 +108,60 @@ fn model_lives_under_the_data_dir() {
     assert!(store.model_dir().starts_with(warp_core::paths::data_dir()));
     assert_eq!(store.spec(), &parakeet_tdt_0_6b_v3());
 }
+
+#[test]
+fn pocket_engine_round_trips_through_the_setting() {
+    for engine in [
+        SpeechOutputEngine::Kokoro,
+        SpeechOutputEngine::TinyVoca,
+        SpeechOutputEngine::Pocket,
+    ] {
+        assert_eq!(
+            SpeechOutputEngine::from_setting(engine.setting_value()),
+            engine
+        );
+    }
+    assert_eq!(
+        SpeechOutputEngine::from_setting("pocket"),
+        SpeechOutputEngine::Pocket
+    );
+    assert_eq!(
+        SpeechOutputEngine::from_setting("unknown"),
+        SpeechOutputEngine::Kokoro
+    );
+    assert_eq!(SpeechOutputEngine::Pocket.spec().display_name, "Pocket TTS");
+}
+
+#[test]
+fn engine_picker_cycles_through_every_engine() {
+    let mut engine = SpeechOutputEngine::Kokoro;
+    let mut seen = vec![engine];
+    for _ in 0..2 {
+        engine = engine.next();
+        seen.push(engine);
+    }
+    assert_eq!(
+        seen,
+        [
+            SpeechOutputEngine::Kokoro,
+            SpeechOutputEngine::TinyVoca,
+            SpeechOutputEngine::Pocket
+        ]
+    );
+    assert_eq!(engine.next(), SpeechOutputEngine::Kokoro);
+}
+
+#[test]
+fn failed_engines_fall_back_to_kokoro() {
+    assert_eq!(
+        SpeechOutputEngine::Pocket.fallback(),
+        Some(SpeechOutputEngine::Kokoro)
+    );
+    assert_eq!(
+        SpeechOutputEngine::TinyVoca.fallback(),
+        Some(SpeechOutputEngine::Kokoro)
+    );
+    assert_eq!(SpeechOutputEngine::Kokoro.fallback(), None);
+    assert!(!SpeechOutputEngine::Pocket.has_voice_and_rate_controls());
+    assert!(SpeechOutputEngine::Kokoro.has_voice_and_rate_controls());
+}

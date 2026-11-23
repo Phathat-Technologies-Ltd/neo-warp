@@ -18,3 +18,17 @@ fn replies_follow_the_hands_free_target() {
     assert!(!surface_changes(Some(left), Some(left)));
     assert!(!surface_changes(Some(left), None));
 }
+
+#[test]
+fn pocket_speaks_with_its_only_voice() {
+    let voices = new_speaker(SpeechOutputEngine::Pocket).voices();
+    assert_eq!(
+        choose_voice(&voices, "af_heart").map(|voice| voice.as_str().to_owned()),
+        Some("alba".to_owned())
+    );
+    let kokoro = new_speaker(SpeechOutputEngine::Kokoro).voices();
+    assert_eq!(
+        choose_voice(&kokoro, "").map(|voice| voice.as_str().to_owned()),
+        kokoro.first().map(|voice| voice.id.as_str().to_owned())
+    );
+}

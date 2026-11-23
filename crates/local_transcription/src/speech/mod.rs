@@ -8,6 +8,8 @@ pub mod g2p;
 #[cfg(feature = "kokoro")]
 mod kokoro;
 pub mod playback;
+#[cfg(feature = "pocket")]
+mod pocket;
 pub mod spoken;
 pub mod summary;
 #[cfg(feature = "tiny_voca")]
@@ -16,6 +18,8 @@ pub mod tts_text;
 
 #[cfg(feature = "kokoro")]
 pub use kokoro::{KOKORO_VOICES, KokoroSpeaker};
+#[cfg(feature = "pocket")]
+pub use pocket::{POCKET_ATTRIBUTION, POCKET_VOICES, PocketSpeaker};
 #[cfg(feature = "tiny_voca")]
 pub use tiny_voca::{TINY_VOCA_VOICES, TinyVocaSpeaker};
 
