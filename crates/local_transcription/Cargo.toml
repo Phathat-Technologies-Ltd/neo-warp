@@ -13,6 +13,8 @@ parakeet = ["dep:parakeet-rs", "dep:realfft"]
 silero = ["dep:parakeet-rs"]
 # Speaks with Kokoro-82M v1.0 on the same ONNX Runtime.
 kokoro = ["dep:parakeet-rs"]
+# Speaks with Kyutai Pocket TTS on the same ONNX Runtime.
+pocket = ["dep:parakeet-rs"]
 # Speaks with tiny-voca on the same ONNX Runtime.
 tiny_voca = ["dep:parakeet-rs"]
 # Embeds speakers' voices with CAM++ on the same ONNX Runtime.
@@ -51,3 +53,7 @@ required-features = ["parakeet"]
 [[example]]
 name = "eot_eval"
 required-features = ["kokoro", "silero", "smart_turn"]
+
+[[example]]
+name = "tts_bench"
+required-features = ["kokoro", "pocket", "tiny_voca"]

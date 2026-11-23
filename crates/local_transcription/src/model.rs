@@ -216,6 +216,65 @@ pub fn tiny_voca() -> ModelSpec {
     }
 }
 
+const POCKET_REPO: &str = "https://huggingface.co/soniqo/Pocket-TTS-100M-ONNX-INT8/resolve/68ab0441c6bba7228fd88041c8f2c909f1913d1a";
+
+/// Kyutai Pocket TTS (CC BY 4.0), int8 ONNX export with the baked-in `alba` voice (Alba
+/// MacKenna, CC BY 4.0), whose attribution ships in the bundled `LICENSE`.
+pub fn pocket_tts_int8() -> ModelSpec {
+    let file = |name: &str, size, sha256: &str| ModelFile {
+        name: name.to_owned(),
+        url: format!("{POCKET_REPO}/{name}"),
+        size,
+        sha256: sha256.to_owned(),
+    };
+    ModelSpec {
+        id: "pocket-tts-100m-int8-68ab044".to_owned(),
+        display_name: "Pocket TTS".to_owned(),
+        files: vec![
+            file(
+                "lm_main.int8.onnx",
+                76_341_079,
+                "bfc0c7e7e3d72864fa3bb2ee499f62f21ddc1474b885f5f3ca570f8be73e787e",
+            ),
+            file(
+                "lm_flow.int8.onnx",
+                9_962_530,
+                "8d627d235c44a597da908e1085ebe241cbbe358964c502c5a5063d18851a5529",
+            ),
+            file(
+                "decoder.int8.onnx",
+                22_695_710,
+                "ed8d050fc5da275cfca88224b7d2cc29fde7c23e133618f346e98ac505b3d862",
+            ),
+            file(
+                "encoder.onnx",
+                512_407,
+                "2194513df47271ece9f8d2d571facd57b24d96a1d912fdc13bf0e10c69318e85",
+            ),
+            file(
+                "text_conditioner.onnx",
+                16_388_498,
+                "5217b8474621af91127cfef891714337ae8cba106710ce04a426ec4bd56bbd1e",
+            ),
+            file(
+                "vocab.json",
+                69_479,
+                "a2673c232cf49dd6eb1ad850e7c7682f6443c2ab64040d1150e9d8f2a7e3587b",
+            ),
+            file(
+                "token_scores.json",
+                123_617,
+                "3baa6ef7d57bac245271e33f96161f3ac60038d753f13f3fdbe24a7d2422ad6b",
+            ),
+            file(
+                "LICENSE",
+                18_657,
+                "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411",
+            ),
+        ],
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelStatus {
     NotInstalled,

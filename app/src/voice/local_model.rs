@@ -11,7 +11,7 @@ use futures::channel::mpsc;
 use local_transcription::{
     DownloadError, DownloadProgress, ModelAction, ModelBundle, ModelEvent, ModelSpec, ModelState,
     ModelStore, ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8,
-    parakeet_tdt_0_6b_v3, silero_vad_v5, smart_turn_v3_2, tiny_voca,
+    parakeet_tdt_0_6b_v3, pocket_tts_int8, silero_vad_v5, smart_turn_v3_2, tiny_voca,
 };
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
@@ -64,6 +64,7 @@ fn model_bundle() -> ModelBundle {
 pub enum SpeechOutputEngine {
     Kokoro,
     TinyVoca,
+    Pocket,
 }
 
 impl SpeechOutputEngine {
@@ -71,7 +72,45 @@ impl SpeechOutputEngine {
     pub fn from_setting(value: &str) -> Self {
         match value {
             "tiny_voca" => SpeechOutputEngine::TinyVoca,
+            "pocket" => SpeechOutputEngine::Pocket,
             _ => SpeechOutputEngine::Kokoro,
+        }
+    }
+
+    /// The value stored in the `conversation_speech_engine` setting.
+    pub fn setting_value(self) -> &'static str {
+        match self {
+            SpeechOutputEngine::Kokoro => "kokoro",
+            SpeechOutputEngine::TinyVoca => "tiny_voca",
+            SpeechOutputEngine::Pocket => "pocket",
+        }
+    }
+
+    /// The engine the settings picker switches to after this one.
+    pub fn next(self) -> Self {
+        match self {
+            SpeechOutputEngine::Kokoro => SpeechOutputEngine::TinyVoca,
+            SpeechOutputEngine::TinyVoca => SpeechOutputEngine::Pocket,
+            SpeechOutputEngine::Pocket => SpeechOutputEngine::Kokoro,
+        }
+    }
+
+    /// The engine to speak with when this one's model fails to load.
+    pub fn fallback(self) -> Option<Self> {
+        match self {
+            SpeechOutputEngine::Kokoro => None,
+            SpeechOutputEngine::TinyVoca | SpeechOutputEngine::Pocket => {
+                Some(SpeechOutputEngine::Kokoro)
+            }
+        }
+    }
+
+    /// Whether the user can pick a voice and a speaking rate. Pocket TTS ships one voice and
+    /// can't change its speed.
+    pub fn has_voice_and_rate_controls(self) -> bool {
+        match self {
+            SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => true,
+            SpeechOutputEngine::Pocket => false,
         }
     }
 
@@ -79,6 +118,7 @@ impl SpeechOutputEngine {
         match self {
             SpeechOutputEngine::Kokoro => kokoro_82m_v1_int8(),
             SpeechOutputEngine::TinyVoca => tiny_voca(),
+            SpeechOutputEngine::Pocket => pocket_tts_int8(),
         }
     }
 }

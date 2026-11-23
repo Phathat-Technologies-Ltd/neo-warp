@@ -14,7 +14,9 @@ use local_transcription::speech::playback::{
     BARGE_IN_POLL, BARGE_IN_VERDICT_TIMEOUT, BargeInSpeaker, ConversationController,
     ConversationState, FinalOutcome, PlaybackAction, is_headphone_device_name,
 };
-use local_transcription::speech::{KokoroSpeaker, Speaker, TinyVocaSpeaker, VoiceId};
+use local_transcription::speech::{
+    KokoroSpeaker, PocketSpeaker, Speaker, TinyVocaSpeaker, VoiceId, VoiceInfo,
+};
 use voice_input::SpeechOutput;
 use warpui::r#async::Timer;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity, WindowId};
@@ -197,20 +199,14 @@ impl ConversationSession {
     fn start(&mut self, window_id: WindowId, ctx: &mut ModelContext<Self>) -> Result<(), String> {
         let settings = AISettings::as_ref(ctx);
         let engine = SpeechOutputEngine::from_setting(&settings.conversation_speech_engine);
-        let store = speech_output_store(engine);
-        let speaker: Arc<dyn Speaker> = match engine {
-            SpeechOutputEngine::Kokoro => Arc::new(KokoroSpeaker::new(store)),
-            SpeechOutputEngine::TinyVoca => Arc::new(TinyVocaSpeaker::new(store)),
-        };
-        let voices = speaker.voices();
-        let chosen = settings.conversation_voice.as_str();
-        self.voice = voices
-            .iter()
-            .find(|voice| voice.id.as_str() == chosen)
-            .or_else(|| voices.first())
-            .map(|voice| voice.id.clone())
+        let speaker = new_speaker(engine);
+        self.voice = choose_voice(&speaker.voices(), settings.conversation_voice.as_str())
             .ok_or_else(|| "The speech output model has no voices".to_owned())?;
-        self.rate = settings.conversation_speech_rate();
+        self.rate = if engine.has_voice_and_rate_controls() {
+            settings.conversation_speech_rate()
+        } else {
+            1.0
+        };
         let options = ChunkerOptions {
             read_code_summaries: *settings.conversation_read_code_summaries,
         };
@@ -229,9 +225,13 @@ impl ConversationSession {
         // Loading the model takes seconds, so do it now rather than on the first sentence.
         let warm = speaker.clone();
         let voice = self.voice.clone();
+        let (tx, rx) = oneshot::channel();
         std::thread::spawn(move || {
-            if let Err(error) = warm.synthesize("Ready.", &voice, 1.0) {
-                log::warn!("Couldn't load the speech output model: {error}");
+            let _ = tx.send(warm.synthesize("Ready.", &voice, 1.0).err());
+        });
+        ctx.spawn(rx, move |me, error, ctx| {
+            if let Ok(Some(error)) = error {
+                me.speech_model_failed(engine, error.to_string(), ctx);
             }
         });
         self.speaker = Some(speaker);
@@ -243,6 +243,46 @@ impl ConversationSession {
         ctx.emit(ConversationEvent::StateChanged);
         ctx.notify();
         Ok(())
+    }
+
+    /// Switches to the fallback engine when `engine`'s model couldn't load, so replies are still
+    /// read aloud.
+    fn speech_model_failed(
+        &mut self,
+        engine: SpeechOutputEngine,
+        error: String,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        log::warn!("Couldn't load the speech output model: {error}");
+        let Some(fallback) = engine.fallback() else {
+            return;
+        };
+        if !self.is_active() {
+            return;
+        }
+        let speaker = new_speaker(fallback);
+        let message = if speaker.is_ready() {
+            log::warn!("Falling back from {engine:?} to {fallback:?} for speech output");
+            self.voice = choose_voice(&speaker.voices(), "").unwrap_or_else(|| self.voice.clone());
+            self.rate = 1.0;
+            self.speaker = Some(speaker);
+            format!(
+                "Couldn't load {}, so replies are read with {} instead.",
+                engine.spec().display_name,
+                fallback.spec().display_name
+            )
+        } else {
+            format!(
+                "Couldn't load {}. Download {} in Settings to have replies read aloud.",
+                engine.spec().display_name,
+                fallback.spec().display_name
+            )
+        };
+        if let Some(window_id) = self.window_id {
+            ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+                stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+            });
+        }
     }
 
     pub fn stop(&mut self, ctx: &mut ModelContext<Self>) {
@@ -650,6 +690,24 @@ pub fn toggle_conversation(window_id: WindowId, ctx: &mut AppContext) {
             stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
         });
     }
+}
+
+fn new_speaker(engine: SpeechOutputEngine) -> Arc<dyn Speaker> {
+    let store = speech_output_store(engine);
+    match engine {
+        SpeechOutputEngine::Kokoro => Arc::new(KokoroSpeaker::new(store)),
+        SpeechOutputEngine::TinyVoca => Arc::new(TinyVocaSpeaker::new(store)),
+        SpeechOutputEngine::Pocket => Arc::new(PocketSpeaker::new(store)),
+    }
+}
+
+/// The voice named `chosen`, or the engine's default when it doesn't offer that one.
+fn choose_voice(voices: &[VoiceInfo], chosen: &str) -> Option<VoiceId> {
+    voices
+        .iter()
+        .find(|voice| voice.id.as_str() == chosen)
+        .or_else(|| voices.first())
+        .map(|voice| voice.id.clone())
 }
 
 #[cfg(test)]
