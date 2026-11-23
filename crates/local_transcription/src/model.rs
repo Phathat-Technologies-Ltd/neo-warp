@@ -81,6 +81,22 @@ pub fn silero_vad_v5() -> ModelSpec {
     }
 }
 
+/// Pipecat Smart Turn v3.2 (BSD-2-Clause), the int8 CPU build: decides from the sound of an
+/// utterance whether the speaker finished their turn. Pinned to a Hugging Face revision.
+pub fn smart_turn_v3_2() -> ModelSpec {
+    ModelSpec {
+        id: "smart-turn-v3.2-cpu".to_owned(),
+        display_name: "Smart Turn v3.2".to_owned(),
+        files: vec![ModelFile {
+            name: "smart-turn-v3.2-cpu.onnx".to_owned(),
+            url: "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx"
+                .to_owned(),
+            size: 8_679_182,
+            sha256: "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f".to_owned(),
+        }],
+    }
+}
+
 /// CAM++ speaker embedding model (3D-Speaker, Apache-2.0) trained on VoxCeleb, as exported to
 /// ONNX by sherpa-onnx. The release asset isn't immutable, so the SHA-256 pins it.
 pub fn campplus_en_voxceleb() -> ModelSpec {

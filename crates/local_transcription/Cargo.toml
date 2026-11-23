@@ -17,6 +17,8 @@ kokoro = ["dep:parakeet-rs"]
 tiny_voca = ["dep:parakeet-rs"]
 # Embeds speakers' voices with CAM++ on the same ONNX Runtime.
 speaker_id = ["dep:parakeet-rs"]
+# Detects the end of a speaker's turn with Smart Turn v3 on the same ONNX Runtime.
+smart_turn = ["dep:parakeet-rs"]
 # Suppresses background noise with RNNoise (pure Rust).
 denoise = ["dep:nnnoiseless"]
 
@@ -28,6 +30,7 @@ instant.workspace = true
 log.workspace = true
 nnnoiseless = { version = "0.5.2", default-features = false, optional = true }
 parakeet-rs = { version = "0.4.4", default-features = false, features = ["cpu", "ort-defaults", "api-28"], optional = true }
+rustfft = "6.2.0"
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -39,3 +42,7 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 axum.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+
+[[example]]
+name = "eot_eval"
+required-features = ["kokoro", "silero", "smart_turn"]

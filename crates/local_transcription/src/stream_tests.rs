@@ -170,7 +170,8 @@ fn protocol_messages_match_the_spec() {
         ClientMessage::Config {
             language: Some("en".to_owned()),
             vad: Some(VadOptions {
-                min_silence_ms: Some(300)
+                min_silence_ms: Some(300),
+                smart_end_of_turn: None,
             }),
         }
     );
@@ -190,4 +191,102 @@ fn protocol_messages_match_the_spec() {
         serde_json::to_string(&ServerMessage::SpeechStart).unwrap(),
         r#"{"type":"speech_start"}"#
     );
+}
+
+/// Answers a fixed completion probability and counts its calls.
+struct FakeTurnDetector {
+    probability: Result<f32, ()>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl TurnDetector for FakeTurnDetector {
+    fn completion_probability(&mut self, _audio: &[f32]) -> Result<f32, TranscribeError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.probability
+            .map_err(|()| TranscribeError::Engine("broken".to_owned()))
+    }
+}
+
+fn smart_stream(
+    probability: Result<f32, ()>,
+) -> (
+    UtteranceStream,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let calls = std::sync::Arc::default();
+    let detector = FakeTurnDetector {
+        probability,
+        calls: std::sync::Arc::clone(&calls),
+    };
+    (stream().with_turn_detector(Box::new(detector)), calls)
+}
+
+/// Frames of silence after speech until the utterance ends, or `None` within `limit` frames.
+fn silence_frames_until_end(stream: &mut UtteranceStream, limit: usize) -> Option<usize> {
+    stream.push_samples(&frames(0.5, 10)).unwrap();
+    (1..=limit).find(|_| {
+        let outputs = stream.push_samples(&frames(0.0, 1)).unwrap();
+        messages(&outputs).contains(&ServerMessage::SpeechEnd)
+    })
+}
+
+#[test]
+fn complete_turn_ends_at_the_probe() {
+    let (mut stream, calls) = smart_stream(Ok(0.9));
+    // 200 ms probe at 32 ms frames.
+    assert_eq!(silence_frames_until_end(&mut stream, 100), Some(7));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn incomplete_turn_waits_for_the_long_timeout() {
+    let (mut stream, calls) = smart_stream(Ok(0.1));
+    // 2000 ms at 32 ms frames.
+    assert_eq!(silence_frames_until_end(&mut stream, 100), Some(63));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn speech_after_an_incomplete_pause_continues_the_utterance() {
+    let (mut stream, calls) = smart_stream(Ok(0.1));
+    stream.push_samples(&frames(0.5, 10)).unwrap();
+    let outputs = stream.push_samples(&frames(0.0, 20)).unwrap();
+    assert!(!messages(&outputs).contains(&ServerMessage::SpeechEnd));
+    assert_eq!(silence_frames_until_end(&mut stream, 100), Some(63));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn disabled_smart_end_of_turn_uses_the_fixed_timeout() {
+    let (mut stream, calls) = smart_stream(Ok(0.1));
+    stream.set_smart_end_of_turn(false);
+    assert!(!stream.uses_turn_detector());
+    // 300 ms at 32 ms frames.
+    assert_eq!(silence_frames_until_end(&mut stream, 100), Some(10));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn failing_detector_falls_back_to_the_fixed_timeout() {
+    let (mut stream, calls) = smart_stream(Err(()));
+    assert_eq!(silence_frames_until_end(&mut stream, 100), Some(10));
+    assert!(!stream.uses_turn_detector());
+    assert_eq!(silence_frames_until_end(&mut stream, 100), Some(10));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn partial_ending_mid_thought_holds_the_turn_open() {
+    let (mut stream, _) = smart_stream(Ok(0.9));
+    stream.push_samples(&frames(0.5, 10)).unwrap();
+    stream.note_partial(1, "list the files in");
+    assert_eq!(silence_frames_until_end(&mut stream, 100), Some(63));
+}
+
+#[test]
+fn partials_of_older_utterances_are_ignored() {
+    let (mut stream, _) = smart_stream(Ok(0.9));
+    stream.push_samples(&frames(0.5, 10)).unwrap();
+    stream.note_partial(0, "list the files in");
+    assert_eq!(silence_frames_until_end(&mut stream, 100), Some(7));
 }

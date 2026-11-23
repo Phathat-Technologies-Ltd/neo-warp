@@ -542,14 +542,17 @@ impl HandsFreeSession {
         self.gate = SpeakerGate::default();
         self.tap = tap;
         self.rejected_until = None;
-        let language = settings.voice_input_language_code().map(str::to_owned);
+        let config = stream_config(
+            settings.voice_input_language_code().map(str::to_owned),
+            *settings.voice_smart_end_of_turn,
+        );
 
         let server_api = ServerApiProvider::as_ref(ctx).get();
         let generation = self.generation;
         ctx.spawn(
             run_socket(
                 server_api,
-                language,
+                config,
                 audio_rx,
                 self.audio_paused.clone(),
                 update_tx,
@@ -603,7 +606,7 @@ impl HandsFreeSession {
 /// Connects to the server, then streams audio to it until the session ends.
 async fn run_socket(
     server_api: Arc<crate::server::server_api::ServerApi>,
-    language: Option<String>,
+    config: ClientMessage,
     audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
     audio_paused: Arc<AtomicBool>,
     update_tx: mpsc::UnboundedSender<SocketUpdate>,
@@ -615,7 +618,19 @@ async fn run_socket(
             return;
         }
     };
-    stream_session(socket, language, audio_rx, audio_paused, update_tx).await;
+    stream_session(socket, config, audio_rx, audio_paused, update_tx).await;
+}
+
+/// The stream's opening config. Without smart end-of-turn (or its model), a 300 ms pause ends
+/// each utterance.
+fn stream_config(language: Option<String>, smart_end_of_turn: bool) -> ClientMessage {
+    ClientMessage::Config {
+        language,
+        vad: Some(VadOptions {
+            min_silence_ms: Some(300),
+            smart_end_of_turn: Some(smart_end_of_turn),
+        }),
+    }
 }
 
 /// How many audio chunks pass between progress logs (about ten seconds of audio).
@@ -625,18 +640,12 @@ const CHUNKS_PER_LOG: u64 = 1000;
 /// socket, or either direction fails.
 async fn stream_session(
     socket: websocket::WebSocket,
-    language: Option<String>,
+    config: ClientMessage,
     mut audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
     audio_paused: Arc<AtomicBool>,
     update_tx: mpsc::UnboundedSender<SocketUpdate>,
 ) {
     let (mut sink, mut stream) = socket.split().await;
-    let config = ClientMessage::Config {
-        language,
-        vad: Some(VadOptions {
-            min_silence_ms: Some(300),
-        }),
-    };
     let text = |message: &ClientMessage| {
         websocket::Message::new_text(serde_json::to_string(message).expect("messages serialize"))
     };

@@ -1525,6 +1525,16 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.denoise",
         description: "Whether hands-free voice input suppresses background noise before detecting speech.",
     },
+    voice_smart_end_of_turn: VoiceSmartEndOfTurn {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.smart_end_of_turn",
+        description: "Whether hands-free voice input listens to how you speak to tell a finished request from a mid-thought pause, replying sooner when you're done and waiting longer when you pause. Off, any 300 ms pause ends what you said.",
+    },
     conversation_echo_cancellation: ConversationEchoCancellation {
         type: bool,
         default: false,

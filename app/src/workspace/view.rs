@@ -27016,6 +27016,9 @@ impl View for Workspace {
         if *AISettings::as_ref(app).system_echo_cancellation {
             context.set.insert(flags::SYSTEM_ECHO_CANCELLATION_FLAG);
         }
+        if *AISettings::as_ref(app).voice_smart_end_of_turn {
+            context.set.insert(flags::SMART_END_OF_TURN_FLAG);
+        }
 
         if self
             .active_tab_pane_group()

@@ -24,6 +24,7 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
         remote_server_artifacts: None,
         transcriber: None,
         vad: None,
+        turn_detector: None,
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
@@ -559,6 +560,7 @@ fn embedded_server_answers_on_its_reported_port() {
         remote_server_artifacts: None,
         transcriber: None,
         vad: None,
+        turn_detector: None,
         codebase_index_dir: None,
         recording_store: None,
     })
@@ -774,6 +776,7 @@ fn state_with_codebase_index(dir: &std::path::Path) -> Arc<AppState> {
         remote_server_artifacts: None,
         transcriber: None,
         vad: None,
+        turn_detector: None,
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: Some(Arc::new(CodebaseIndex::with_zvec_grep_binary(

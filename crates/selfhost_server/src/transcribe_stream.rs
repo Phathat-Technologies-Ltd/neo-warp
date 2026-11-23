@@ -12,10 +12,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures::{Sink, SinkExt as _, Stream, StreamExt as _};
 use local_transcription::stream::{
-    ClientMessage, DecodeQueue, DecodeRequest, ServerMessage, StreamConfig, StreamOutput,
-    UtteranceStream,
+    ClientMessage, DecodeKind, DecodeQueue, DecodeRequest, ServerMessage, StreamConfig,
+    StreamOutput, UtteranceStream,
 };
-use local_transcription::{TranscribeError, Transcriber, VadFactory};
+use local_transcription::{TranscribeError, Transcriber, TurnDetectorFactory, VadFactory};
 
 use crate::{AppState, bearer_token};
 
@@ -41,6 +41,7 @@ pub(crate) async fn transcribe_stream(
         Ok(upgrade) => upgrade,
         Err(rejection) => return rejection.into_response(),
     };
+    let turn_detector = state.turn_detector.clone();
     upgrade
         .on_upgrade(move |socket| async move {
             let (sink, stream) = socket.split();
@@ -52,7 +53,14 @@ pub(crate) async fn transcribe_stream(
                     Frame::Close => Message::Close(None),
                 })
             });
-            run_session(Box::pin(stream), Box::pin(sink), transcriber, vad).await;
+            run_session(
+                Box::pin(stream),
+                Box::pin(sink),
+                transcriber,
+                vad,
+                turn_detector,
+            )
+            .await;
         })
         .into_response()
 }
@@ -86,11 +94,23 @@ pub(crate) async fn run_session<In, Out>(
     mut outgoing: Out,
     transcriber: Arc<dyn Transcriber>,
     vad: VadFactory,
+    turn_detector: Option<TurnDetectorFactory>,
 ) where
     In: Stream<Item = Frame> + Unpin,
     Out: Sink<Frame> + Unpin,
 {
-    let detector = match tokio::task::spawn_blocking(move || vad()).await {
+    let loaded = tokio::task::spawn_blocking(move || {
+        let turn_detector = turn_detector.and_then(|factory| match factory() {
+            Ok(detector) => Some(detector),
+            Err(error) => {
+                log::info!("Hands-free stream: no turn detector, ending turns on silence: {error}");
+                None
+            }
+        });
+        vad().map(|detector| (detector, turn_detector))
+    })
+    .await;
+    let (detector, turn_detector) = match loaded {
         Ok(Ok(detector)) => detector,
         Ok(Err(error)) => {
             log::warn!("Hands-free stream: couldn't load the voice activity detector: {error}");
@@ -106,6 +126,9 @@ pub(crate) async fn run_session<In, Out>(
     };
     log::info!("Hands-free stream: session started, voice activity detector loaded");
     let mut utterances = UtteranceStream::new(detector, StreamConfig::default());
+    if let Some(turn_detector) = turn_detector {
+        utterances = utterances.with_turn_detector(turn_detector);
+    }
     let mut audio_frames: u64 = 0;
     let mut audio_bytes: u64 = 0;
     let mut queue = DecodeQueue::default();
@@ -169,8 +192,12 @@ pub(crate) async fn run_session<In, Out>(
                         if new_language.is_some() {
                             language = new_language;
                         }
-                        if let Some(min_silence_ms) = vad.and_then(|vad| vad.min_silence_ms) {
+                        let vad = vad.unwrap_or_default();
+                        if let Some(min_silence_ms) = vad.min_silence_ms {
                             utterances.set_min_silence_ms(min_silence_ms.clamp(100, 5000));
+                        }
+                        if let Some(enabled) = vad.smart_end_of_turn {
+                            utterances.set_smart_end_of_turn(enabled);
                         }
                     }
                     Ok(ClientMessage::Flush) => outputs = utterances.flush(),
@@ -194,6 +221,9 @@ pub(crate) async fn run_session<In, Out>(
                 running = None;
                 let message = match result {
                     Ok((request, Ok(text))) => {
+                        if request.kind == DecodeKind::Partial {
+                            utterances.note_partial(request.utterance, &text);
+                        }
                         log::info!(
                             "Hands-free stream: decoded {:?} of utterance {} ({} chars)",
                             request.kind,

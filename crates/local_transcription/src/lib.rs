@@ -18,13 +18,16 @@ mod model;
     feature = "silero",
     feature = "kokoro",
     feature = "tiny_voca",
-    feature = "speaker_id"
+    feature = "speaker_id",
+    feature = "smart_turn"
 ))]
 mod ort_env;
 #[cfg(feature = "parakeet")]
 mod parakeet;
 #[cfg(feature = "silero")]
 mod silero;
+#[cfg(feature = "smart_turn")]
+mod smart_turn;
 pub mod speaker;
 #[cfg(feature = "speaker_id")]
 mod speaker_onnx;
@@ -32,22 +35,29 @@ pub mod speech;
 mod state;
 pub mod stream;
 pub mod terminal_text;
+pub mod turn;
 mod vad;
 mod voice_command;
+pub mod whisper_mel;
 
 pub use audio::{Audio, decode_wav};
 pub use model::{
     DownloadError, DownloadProgress, ModelBundle, ModelFile, ModelSpec, ModelStatus, ModelStore,
     ProgressThrottle, campplus_en_voxceleb, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3,
-    silero_vad_v5, tiny_voca,
+    silero_vad_v5, smart_turn_v3_2, tiny_voca,
 };
 #[cfg(feature = "parakeet")]
 pub use parakeet::ParakeetTranscriber;
 #[cfg(feature = "silero")]
 pub use silero::SileroVad;
+#[cfg(feature = "smart_turn")]
+pub use smart_turn::{SMART_TURN_FILE, SmartTurnDetector, smart_turn_features};
 #[cfg(feature = "speaker_id")]
 pub use speaker_onnx::{OnnxSpeakerEmbedder, SPEAKER_MODEL_FILE};
 pub use state::{ModelAction, ModelEvent, ModelState};
+pub use turn::{
+    EndOfTurn, EndOfTurnConfig, TurnDecision, TurnDetector, TurnDetectorFactory, ends_mid_thought,
+};
 pub use vad::{
     SegmentEvent, Segmenter, SegmenterConfig, VAD_FRAME_SAMPLES, VAD_SAMPLE_RATE, VadFactory,
     VoiceActivityDetector,
