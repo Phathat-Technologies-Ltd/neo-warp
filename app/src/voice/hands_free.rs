@@ -83,6 +83,8 @@ pub struct HandsFreeSession {
     watching_app: bool,
     /// The newest utterance id the server has sent.
     latest_utterance: Option<u64>,
+    /// The utterance whose final the speaker check last matched to the user.
+    verified_utterance: Option<u64>,
     /// The utterance id of the speech the VAD last heard start, once the server names it.
     speech_utterance: Option<u64>,
     /// Counts speech starts so barge-in checks of earlier speech are dropped.
@@ -265,6 +267,11 @@ impl HandsFreeSession {
         for step in steps {
             match step {
                 GateStep::Deliver(message) => self.handle_message(message, ctx),
+                GateStep::Verified(utterance) => self.verified_utterance = Some(utterance),
+                GateStep::Reject(utterance) => {
+                    let effects = self.controller.reject(utterance);
+                    self.apply_effects(effects, ctx);
+                }
                 GateStep::Verify(request) => self.run_check(request, false, ctx),
                 GateStep::EarlyVerify(request) => self.run_check(request, true, ctx),
             }
@@ -383,7 +390,9 @@ impl HandsFreeSession {
         if let ServerMessage::Error { message } = &message {
             self.show_error(format!("Hands-free voice input: {message}"), ctx);
         }
-        let message = self.route_to_conversation(message, ctx);
+        let Some(message) = self.route_to_conversation(message, ctx) else {
+            return;
+        };
         let before = self.controller.state();
         let is_transcript = matches!(
             message,
@@ -397,6 +406,21 @@ impl HandsFreeSession {
                 self.controller.state()
             );
         }
+        self.apply_effects_since(before, effects, ctx);
+    }
+
+    fn apply_effects(&mut self, effects: Vec<HandsFreeEffect>, ctx: &mut ModelContext<Self>) {
+        let before = self.controller.state();
+        self.apply_effects_since(before, effects, ctx);
+    }
+
+    /// Emits `effects`, and a state change when the controller left `before`.
+    fn apply_effects_since(
+        &mut self,
+        before: HandsFreeState,
+        effects: Vec<HandsFreeEffect>,
+        ctx: &mut ModelContext<Self>,
+    ) {
         for effect in effects {
             ctx.emit(HandsFreeEvent::Effect(effect));
         }
@@ -408,12 +432,13 @@ impl HandsFreeSession {
     }
 
     /// Tells conversation mode about speech so it can stop talking, and lets it take finals that
-    /// answer it ("stop", or an approval answer), which then only clear their partial.
+    /// answer it ("stop", or an approval answer, or echo), which then only clear their partial.
+    /// Returns `None` once such a final has been handled.
     fn route_to_conversation(
         &mut self,
         message: ServerMessage,
         ctx: &mut ModelContext<Self>,
-    ) -> ServerMessage {
+    ) -> Option<ServerMessage> {
         let conversation = ConversationSession::handle(ctx);
         match message {
             ServerMessage::SpeechStart => {
@@ -424,23 +449,26 @@ impl HandsFreeSession {
                 if verify {
                     self.schedule_barge_in_check(ctx);
                 }
-                ServerMessage::SpeechStart
+                Some(ServerMessage::SpeechStart)
             }
             ServerMessage::SpeechEnd => {
                 conversation.update(ctx, |conversation, _| conversation.speech_ended());
-                ServerMessage::SpeechEnd
+                Some(ServerMessage::SpeechEnd)
             }
             ServerMessage::Final { utterance, text } => {
+                let speaker_verified = self.verified_utterance.take() == Some(utterance);
                 let consumed = !self.controller.is_paused()
                     && conversation.update(ctx, |conversation, ctx| {
-                        conversation.intercept_final(&text, ctx)
+                        conversation.intercept_final(&text, speaker_verified, ctx)
                     });
-                ServerMessage::Final {
-                    utterance,
-                    text: if consumed { String::new() } else { text },
+                if consumed {
+                    let effects = self.controller.reject(utterance);
+                    self.apply_effects(effects, ctx);
+                    return None;
                 }
+                Some(ServerMessage::Final { utterance, text })
             }
-            ServerMessage::Partial { utterance, text } => ServerMessage::Partial {
+            ServerMessage::Partial { utterance, text } => Some(ServerMessage::Partial {
                 utterance,
                 text: if conversation.update(ctx, |conversation, ctx| {
                     conversation.barge_in_transcript(&text, ctx);
@@ -450,8 +478,8 @@ impl HandsFreeSession {
                 } else {
                     text
                 },
-            },
-            message @ ServerMessage::Error { .. } => message,
+            }),
+            message @ ServerMessage::Error { .. } => Some(message),
         }
     }
 
@@ -618,6 +646,7 @@ impl HandsFreeSession {
         self.verify_speaker = verify_speaker;
         self.sensitivity = sensitivity;
         self.gate = SpeakerGate::default();
+        self.verified_utterance = None;
         self.tap = tap;
         self.rejected_until = None;
         let config = stream_config(
@@ -669,6 +698,7 @@ impl HandsFreeSession {
         self.capture = None;
         self.generation += 1;
         self.gate = SpeakerGate::default();
+        self.verified_utterance = None;
         self.rejected_until = None;
         if let Ok(mut tap) = self.tap.lock() {
             *tap = AudioTap::default();

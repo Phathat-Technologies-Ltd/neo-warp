@@ -72,7 +72,10 @@ fn a_matching_final_is_delivered() {
     assert!(!rejected);
     assert_eq!(
         steps,
-        vec![GateStep::Deliver(final_message(1, "list files"))]
+        vec![
+            GateStep::Verified(1),
+            GateStep::Deliver(final_message(1, "list files"))
+        ]
     );
 }
 
@@ -82,7 +85,7 @@ fn a_rejected_final_clears_its_partial() {
     gate.push(final_message(1, "list files"), 50_000, true);
     let (steps, rejected) = gate.verdict(Verdict::NoMatch, 50_000, true);
     assert!(rejected);
-    assert_eq!(steps, vec![GateStep::Deliver(final_message(1, ""))]);
+    assert_eq!(steps, vec![GateStep::Reject(1)]);
 }
 
 #[test]
@@ -132,12 +135,18 @@ fn messages_behind_a_check_keep_their_order() {
     let (steps, _) = gate.verdict(Verdict::NoMatch, 60_000, true);
     // The partial is held for its own early check, which the final overtakes.
     assert_eq!(steps.len(), 3);
-    assert_eq!(steps[0], GateStep::Deliver(final_message(1, "")));
+    assert_eq!(steps[0], GateStep::Reject(1));
     assert_eq!(steps[1], GateStep::Deliver(ServerMessage::SpeechStart));
     assert!(matches!(&steps[2], GateStep::Verify(request) if request.text == "second"));
 
     let (steps, _) = gate.verdict(Verdict::Match, 60_000, true);
-    assert_eq!(steps, vec![GateStep::Deliver(final_message(2, "second"))]);
+    assert_eq!(
+        steps,
+        vec![
+            GateStep::Verified(2),
+            GateStep::Deliver(final_message(2, "second"))
+        ]
+    );
 }
 
 #[test]
@@ -208,7 +217,7 @@ fn an_early_mismatch_suppresses_the_utterance_and_clears_it() {
     start_early_check(&mut gate);
     let (steps, rejected) = gate.early_verdict(1, Verdict::NoMatch);
     assert!(rejected);
-    assert_eq!(steps, vec![GateStep::Deliver(final_message(1, ""))]);
+    assert_eq!(steps, vec![GateStep::Reject(1)]);
     assert!(gate.push(partial(1, "list files"), 34_000, true).is_empty());
     assert_eq!(gate.push(ServerMessage::SpeechEnd, 36_000, true).len(), 1);
     assert!(

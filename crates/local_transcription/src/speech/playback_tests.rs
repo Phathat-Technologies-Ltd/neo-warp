@@ -311,6 +311,28 @@ fn speech_under_way_when_playback_starts_is_echo() {
     assert_eq!(outcome, FinalOutcome::Echo);
 }
 
+/// A long utterance often overlaps a reply sentence that starts playing while the user talks; once
+/// its speaker check matched the user, it reaches the input instead of being dropped as echo.
+#[test]
+fn a_speaker_verified_long_utterance_over_playback_is_not_echo() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    let actions = h.controller.reply_text("Here is the plan. ");
+    h.apply(actions);
+    h.controller.speech_started(h.now);
+    h.run_synthesis();
+    h.finish_playback();
+    h.advance(Duration::from_secs(11));
+    h.controller.speech_ended();
+    let (outcome, _) = h.controller.on_final_from(
+        "please refactor the parser so it handles nested quotes and then run the tests",
+        true,
+        h.now,
+    );
+    assert_eq!(outcome, FinalOutcome::NotConsumed);
+}
+
 #[test]
 fn a_final_without_speech_start_during_the_tail_is_echo() {
     let mut h = Harness::new();

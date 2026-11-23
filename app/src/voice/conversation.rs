@@ -473,10 +473,23 @@ impl ConversationSession {
 
     /// Lets conversation mode handle a final utterance before hands-free applies it. Returns
     /// whether it was consumed ("stop", or an approval answer) and must not reach the input.
-    pub fn intercept_final(&mut self, text: &str, ctx: &mut ModelContext<Self>) -> bool {
+    pub fn intercept_final(
+        &mut self,
+        text: &str,
+        speaker_verified: bool,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
         self.refresh_echo_cancellation();
-        let (outcome, actions) = self.controller.on_final(text, Instant::now());
+        let (outcome, actions) =
+            self.controller
+                .on_final_from(text, speaker_verified, Instant::now());
         self.apply(actions, ctx);
+        if !matches!(outcome, FinalOutcome::NotConsumed) {
+            log::info!(
+                "Voice conversation took the final ({})",
+                outcome_label(&outcome)
+            );
+        }
         match outcome {
             FinalOutcome::NotConsumed => false,
             FinalOutcome::Stopped | FinalOutcome::Ignored | FinalOutcome::Echo => true,
@@ -723,6 +736,16 @@ fn choose_voice(voices: &[VoiceInfo], chosen: &str) -> Option<VoiceId> {
         .find(|voice| voice.id.as_str() == chosen)
         .or_else(|| voices.first())
         .map(|voice| voice.id.clone())
+}
+
+fn outcome_label<Id>(outcome: &FinalOutcome<Id>) -> &'static str {
+    match outcome {
+        FinalOutcome::NotConsumed => "not consumed",
+        FinalOutcome::Stopped => "stop phrase",
+        FinalOutcome::Ignored => "ignored approval answer",
+        FinalOutcome::Echo => "echo",
+        FinalOutcome::Answered(..) => "approval answer",
+    }
 }
 
 #[cfg(test)]

@@ -115,8 +115,8 @@ pub struct HandsFreeController {
     options: HandsFreeOptions,
     /// Set while the user types; transcripts are ignored until the input is cleared or sent.
     paused: bool,
-    /// The utterance whose partials are on screen.
-    showing: Option<u64>,
+    /// The utterance whose partials are on screen, with the latest partial's text.
+    showing: Option<(u64, String)>,
     auto_send_at: Option<Instant>,
 }
 
@@ -203,7 +203,7 @@ impl HandsFreeController {
                 if self.paused {
                     return Vec::new();
                 }
-                self.showing = Some(utterance);
+                self.showing = Some((utterance, text.clone()));
                 vec![HandsFreeEffect::ShowPartial(text)]
             }
             ServerMessage::Final { utterance, text } => {
@@ -213,7 +213,11 @@ impl HandsFreeController {
                 if self.paused {
                     return Vec::new();
                 }
-                let shown = self.showing.take() == Some(utterance);
+                let shown = self
+                    .showing
+                    .take()
+                    .filter(|(id, _)| *id == utterance)
+                    .map(|(_, partial)| partial);
                 self.final_effects(&text, shown, now)
             }
             ServerMessage::Error { message } => {
@@ -226,15 +230,47 @@ impl HandsFreeController {
         }
     }
 
-    fn final_effects(&mut self, text: &str, shown: bool, now: Instant) -> Vec<HandsFreeEffect> {
+    /// Drops `utterance` without applying it (its speaker isn't the user, or conversation mode
+    /// took it), removing its partial if shown.
+    pub fn reject(&mut self, utterance: u64) -> Vec<HandsFreeEffect> {
+        if !self.state.is_mic_on() {
+            return Vec::new();
+        }
+        if self.state == HandsFreeState::Transcribing {
+            self.state = HandsFreeState::Listening;
+        }
+        if self
+            .showing
+            .as_ref()
+            .is_some_and(|(id, _)| *id == utterance)
+        {
+            self.showing = None;
+            return vec![HandsFreeEffect::DiscardPartial];
+        }
+        Vec::new()
+    }
+
+    /// `shown` is the latest partial of the final's utterance, if it is on screen.
+    fn final_effects(
+        &mut self,
+        text: &str,
+        shown: Option<String>,
+        now: Instant,
+    ) -> Vec<HandsFreeEffect> {
+        // Rejected utterances arrive through [`Self::reject`], so an empty final for speech whose
+        // partial is on screen is a transcription that lost its text: keep what the user saw.
+        let text = match &shown {
+            Some(partial) if text.trim().is_empty() => partial.as_str(),
+            _ => text,
+        };
         let (text, command) = if self.options.voice_commands {
             split_voice_command(text)
         } else {
             (text.trim().to_owned(), None)
         };
+        let shown = shown.is_some();
         let mut effects = Vec::new();
-        // An empty final (rejected speaker, or taken by conversation mode) only removes its
-        // partial: it must not route, correct, or schedule a send of what is already typed.
+        // An empty final must not route, correct, or schedule a send of what is already typed.
         if text.is_empty() && command.is_none() {
             if shown {
                 effects.push(HandsFreeEffect::DiscardPartial);

@@ -899,13 +899,26 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         text: &str,
         now: Instant,
     ) -> (FinalOutcome<Id>, Vec<PlaybackAction<A>>) {
+        self.on_final_from(text, false, now)
+    }
+
+    /// Like [`Self::on_final`], for a final whose speaker check matched the enrolled user when
+    /// `speaker_verified`. Such a final is the user's own voice, so overlapping the assistant's
+    /// speech doesn't make it echo; long utterances overlap a streaming reply or its echo tail
+    /// often.
+    pub fn on_final_from(
+        &mut self,
+        text: &str,
+        speaker_verified: bool,
+        now: Instant,
+    ) -> (FinalOutcome<Id>, Vec<PlaybackAction<A>>) {
         // A stop phrase is handled below without counting as an interruption.
         let mut actions = if is_stop_phrase(text) {
             Vec::new()
         } else {
             self.barge_in_transcript(text, now)
         };
-        let (outcome, more) = self.interpret_final(text, now);
+        let (outcome, more) = self.interpret_final(text, speaker_verified, now);
         actions.extend(more);
         (outcome, actions)
     }
@@ -913,13 +926,15 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     fn interpret_final(
         &mut self,
         text: &str,
+        speaker_verified: bool,
         now: Instant,
     ) -> (FinalOutcome<Id>, Vec<PlaybackAction<A>>) {
         let utterance = self.utterance.take();
         if !self.is_on() {
             let overlapped =
                 utterance.is_some_and(|utterance| utterance.overlapped) || self.is_audible(now);
-            let echo = (overlapped && !self.headphones) || self.repeats_recent_speech(text, now);
+            let echo = (overlapped && !self.headphones && !speaker_verified)
+                || self.repeats_recent_speech(text, now);
             let outcome = if echo {
                 FinalOutcome::Echo
             } else {
@@ -945,7 +960,11 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             self.state = ConversationState::Listening;
             return (FinalOutcome::Stopped, actions);
         }
-        if overlapped && !self.headphones && (self.is_half_duplex() || !barged_in) {
+        if overlapped
+            && !self.headphones
+            && !speaker_verified
+            && (self.is_half_duplex() || !barged_in)
+        {
             return (FinalOutcome::Echo, Vec::new());
         }
         let started_at = utterance.map(|utterance| utterance.started_at);
