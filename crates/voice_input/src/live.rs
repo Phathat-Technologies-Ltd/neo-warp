@@ -1,7 +1,7 @@
 //! Continuous microphone capture for hands-free input: 16 kHz mono PCM delivered in small chunks
 //! as it is recorded, with nothing kept in memory or written to disk.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::Context as _;
@@ -25,6 +25,55 @@ pub struct LiveChunk {
     pub pcm: Vec<u8>,
     /// Root-mean-square level of the chunk in `[0, 1]`, for a level meter.
     pub level: f32,
+}
+
+/// A smoothed microphone level in `[0, 1]` for a level meter, written from the audio thread and
+/// read by the UI. It rises quickly with speech and falls back slowly, so a meter polled at a
+/// few tens of hertz neither misses syllables nor flickers.
+#[derive(Debug, Clone, Default)]
+pub struct MicLevel(Arc<AtomicU32>);
+
+/// Levels at or below this many decibels show as silence.
+const METER_FLOOR_DB: f32 = -55.0;
+/// Levels at or above this many decibels fill the meter.
+const METER_CEILING_DB: f32 = -12.0;
+const METER_ATTACK: f32 = 0.6;
+const METER_RELEASE: f32 = 0.12;
+
+impl MicLevel {
+    /// Feeds the RMS level of a captured chunk.
+    pub fn push(&self, rms: f32) {
+        let current = self.get();
+        let next = smooth_level(current, meter_position(rms));
+        self.0.store(next.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn reset(&self) {
+        self.0.store(0f32.to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// Maps an RMS level onto the meter's perceptual (decibel) scale in `[0, 1]`.
+pub fn meter_position(rms: f32) -> f32 {
+    if !rms.is_finite() || rms <= 0.0 {
+        return 0.0;
+    }
+    let db = 20.0 * rms.log10();
+    ((db - METER_FLOOR_DB) / (METER_CEILING_DB - METER_FLOOR_DB)).clamp(0.0, 1.0)
+}
+
+fn smooth_level(current: f32, target: f32) -> f32 {
+    let rate = if target > current {
+        METER_ATTACK
+    } else {
+        METER_RELEASE
+    };
+    let next = current + (target - current) * rate;
+    if next < 1e-3 { 0.0 } else { next }
 }
 
 /// An open microphone; dropping it closes the microphone. The stream lives on a supervisor thread

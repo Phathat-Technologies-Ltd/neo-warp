@@ -2905,6 +2905,8 @@ pub enum WarpAgentPageAction {
     CycleConversationVoice,
     /// Switches conversation mode to the next speaking rate.
     CycleConversationSpeechRate,
+    /// Switches conversation mode to the next idle timeout.
+    CycleConversationIdleTimeout,
     ToggleConversationReadCodeSummaries,
     ToggleVoiceDenoise,
     /// Switches on-device transcription between automatic acceleration and the CPU.
@@ -3337,6 +3339,18 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(not(target_family = "wasm"))]
+            WarpAgentPageAction::CycleConversationIdleTimeout => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let next = next_idle_timeout(*settings.conversation_idle_timeout_minutes);
+                    report_if_error!(
+                        settings
+                            .conversation_idle_timeout_minutes
+                            .set_value(next, ctx)
+                    );
+                });
+                ctx.notify();
+            }
+            #[cfg(not(target_family = "wasm"))]
             WarpAgentPageAction::ToggleConversationReadCodeSummaries => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(
@@ -3527,6 +3541,7 @@ impl TypedActionView for WarpAgentPageView {
             | WarpAgentPageAction::CycleConversationSpeechEngine
             | WarpAgentPageAction::CycleConversationVoice
             | WarpAgentPageAction::CycleConversationSpeechRate
+            | WarpAgentPageAction::CycleConversationIdleTimeout
             | WarpAgentPageAction::ToggleConversationReadCodeSummaries => {}
             WarpAgentPageAction::VoiceCorrection(action) => {
                 Self::handle_voice_correction_action(action, ctx);
@@ -4947,6 +4962,7 @@ struct VoiceWidget {
     conversation_engine_button: MouseStateHandle,
     conversation_voice_button: MouseStateHandle,
     conversation_rate_button: MouseStateHandle,
+    conversation_idle_button: MouseStateHandle,
     conversation_code_summaries_toggle: SwitchStateHandle,
     denoise_toggle: SwitchStateHandle,
     transcription_acceleration_button: MouseStateHandle,
@@ -5264,6 +5280,15 @@ impl VoiceWidget {
                 appearance,
             ));
         }
+        let idle_minutes = *settings.conversation_idle_timeout_minutes;
+        column.add_child(render_cycle_row(
+            "Turn Off After Silence",
+            "Ends voice conversation after this long without your speech or agent activity.",
+            &idle_timeout_label(idle_minutes),
+            WarpAgentPageAction::CycleConversationIdleTimeout,
+            self.conversation_idle_button.clone(),
+            appearance,
+        ));
         column.add_child(render_ai_setting_toggle::<ConversationReadCodeSummaries>(
             "Read Code Summaries",
             WarpAgentPageAction::ToggleConversationReadCodeSummaries,
@@ -5655,6 +5680,30 @@ fn engine_label(
 /// Speaking rates offered, in percent.
 #[cfg(not(target_family = "wasm"))]
 const CONVERSATION_RATES: [u32; 5] = [80, 100, 120, 135, 150];
+
+/// Idle timeouts the voice conversation setting cycles through, in minutes; 0 is never.
+#[cfg(not(target_family = "wasm"))]
+const CONVERSATION_IDLE_TIMEOUTS: [u32; 6] = [2, 5, 10, 15, 30, 0];
+
+#[cfg(not(target_family = "wasm"))]
+fn next_idle_timeout(current: u32) -> u32 {
+    let index = CONVERSATION_IDLE_TIMEOUTS
+        .iter()
+        .position(|minutes| *minutes == current);
+    match index {
+        Some(index) => CONVERSATION_IDLE_TIMEOUTS[(index + 1) % CONVERSATION_IDLE_TIMEOUTS.len()],
+        None => CONVERSATION_IDLE_TIMEOUTS[0],
+    }
+}
+
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+fn idle_timeout_label(minutes: u32) -> String {
+    match minutes {
+        0 => "Never".to_owned(),
+        1 => "1 minute".to_owned(),
+        minutes => format!("{minutes} minutes"),
+    }
+}
 
 /// The voices of the engine named by the `conversation_speech_engine` setting, as (id, name).
 #[cfg(not(target_family = "wasm"))]

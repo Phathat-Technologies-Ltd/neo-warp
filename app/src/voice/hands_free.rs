@@ -17,7 +17,7 @@ use local_transcription::speech::playback::{
 };
 use local_transcription::stream::{ClientMessage, ServerMessage, VadOptions};
 use settings::Setting as _;
-use voice_input::{LiveCapture, LiveChunk};
+use voice_input::{LiveCapture, LiveChunk, MicLevel};
 use warpui::r#async::Timer;
 use warpui::platform::MicrophoneAccessState;
 use warpui::windowing::state::ApplicationStage;
@@ -93,6 +93,8 @@ pub struct HandsFreeSession {
     bias_terms: Vec<BiasTerm>,
     /// Bias terms the socket writer has yet to send.
     pending_bias_terms: PendingBiasTerms,
+    /// The microphone's smoothed input level, fed by the capture thread.
+    mic_level: MicLevel,
 }
 
 /// Bias terms handed from the session to its socket writer, which sends them before the next
@@ -110,6 +112,15 @@ impl HandsFreeSession {
     /// Whether the session is on, including while paused because Warp isn't the active app.
     pub fn is_active(&self) -> bool {
         self.controller.state().is_on()
+    }
+
+    /// The smoothed microphone level in `[0, 1]`; silent unless the microphone is live.
+    pub fn mic_level(&self) -> f32 {
+        if self.controller.state().is_mic_on() {
+            self.mic_level.get()
+        } else {
+            0.0
+        }
     }
 
     /// Sets the terms utterances are biased toward; the server gets them before the next audio.
@@ -579,6 +590,7 @@ impl HandsFreeSession {
         // remaining messages, including the open utterance's final.
         self.capture = None;
         self.generation += 1;
+        self.mic_level.reset();
         for effect in self.controller.pause() {
             ctx.emit(HandsFreeEvent::Effect(effect));
         }
@@ -617,8 +629,11 @@ impl HandsFreeSession {
         let verify_speaker = profile.is_verifying(ctx);
         let tap = Arc::new(Mutex::new(AudioTap::default()));
         let capture_tap = verify_speaker.then(|| tap.clone());
+        self.mic_level.reset();
+        let mic_level = self.mic_level.clone();
         let capture = LiveCapture::start(
             move |mut chunk| {
+                mic_level.push(chunk.level);
                 // Speaker checks embed the audio before denoising: enrollment records it that way,
                 // and RNNoise reshapes the voice's spectrum enough to cost the user ~0.1 in score.
                 if let Some(tap) = &capture_tap
@@ -697,6 +712,7 @@ impl HandsFreeSession {
         // socket.
         self.capture = None;
         self.generation += 1;
+        self.mic_level.reset();
         self.gate = SpeakerGate::default();
         self.verified_utterance = None;
         self.rejected_until = None;

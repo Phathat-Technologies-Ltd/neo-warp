@@ -120,7 +120,7 @@ use crate::view_components::action_button::{
     ActionButton, ActionButtonTheme, AdjoinedSide, ButtonSize, KeystrokeSource, TooltipAlignment,
 };
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
-use crate::voice::footer_controls::{VoiceControls, VoiceControlsStyle};
+use crate::voice::footer_controls::VoiceControls;
 use crate::workspace::ToastStack;
 #[cfg(not(target_family = "wasm"))]
 use crate::workspace::WorkspaceAction;
@@ -425,16 +425,7 @@ impl AgentInputFooter {
         #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
         let voice_controls = {
             let mic_button = mic_button.clone();
-            let menu_positioning_provider = menu_positioning_provider.clone();
-            ctx.add_typed_action_view(|ctx| {
-                VoiceControls::new(
-                    VoiceControlsStyle::AgentFooter,
-                    terminal_view_id,
-                    mic_button,
-                    menu_positioning_provider,
-                    ctx,
-                )
-            })
+            ctx.add_view(|ctx| VoiceControls::new(mic_button, ctx))
         };
 
         #[cfg(all(target_family = "wasm", feature = "voice_input"))]

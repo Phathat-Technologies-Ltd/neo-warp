@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use futures::channel::{mpsc, oneshot};
 use instant::Instant;
@@ -49,6 +50,33 @@ pub fn surface_changes(current: Option<EntityId>, target: Option<EntityId>) -> b
     target.is_some() && current != target
 }
 
+/// The idle timeout set in minutes; 0 never times out.
+pub fn idle_timeout(minutes: u32) -> Option<Duration> {
+    (minutes > 0).then(|| Duration::from_secs(u64::from(minutes) * 60))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleCheck {
+    Expired,
+    /// Not idle long enough yet; check again at this time.
+    CheckAt(Instant),
+}
+
+pub fn check_idle(last_activity: Instant, timeout: Duration, now: Instant) -> IdleCheck {
+    let deadline = last_activity + timeout;
+    if now >= deadline {
+        IdleCheck::Expired
+    } else {
+        IdleCheck::CheckAt(deadline)
+    }
+}
+
+/// The toast shown when conversation mode turns itself off.
+pub fn idle_ended_message(minutes: u32) -> String {
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    format!("Voice conversation ended after {minutes} {unit} without speech")
+}
+
 /// The action model and conversation of the approval being asked about.
 struct ApprovalTarget {
     action_model: ModelHandle<BlocklistAIActionModel>,
@@ -83,6 +111,10 @@ pub struct ConversationSession {
     /// When the approval announcement timer already waiting will fire.
     approval_due_timer_at: Option<Instant>,
     finished_tx: mpsc::UnboundedSender<(u64, u64)>,
+    /// The last user speech, prompt, agent reply, or approval, which the idle timeout counts from.
+    last_activity: Instant,
+    /// Counts idle timers so only the newest one acts.
+    idle_timer_generation: u64,
 }
 
 impl ConversationSession {
@@ -127,7 +159,10 @@ impl ConversationSession {
                 me.handle_history_event(event, ctx);
             },
         );
-        ctx.subscribe_to_model(&AISettings::handle(ctx), |_, _, _, ctx| {
+        ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, _, ctx| {
+            if me.is_active() {
+                me.schedule_idle_check(ctx);
+            }
             let engine = SpeechOutputEngine::from_setting(
                 &AISettings::as_ref(ctx).conversation_speech_engine,
             );
@@ -147,6 +182,68 @@ impl ConversationSession {
             approval_timeout_at: None,
             approval_due_timer_at: None,
             finished_tx,
+            last_activity: Instant::now(),
+            idle_timer_generation: 0,
+        }
+    }
+
+    /// Counts user speech, prompts, agent replies, and approvals as activity for the idle timeout.
+    fn note_activity(&mut self) {
+        self.last_activity = Instant::now();
+    }
+
+    fn idle_timeout_minutes(&self, ctx: &AppContext) -> u32 {
+        *AISettings::as_ref(ctx).conversation_idle_timeout_minutes
+    }
+
+    /// Starts a timer for when conversation mode will have been idle for the timeout, replacing
+    /// any earlier one.
+    fn schedule_idle_check(&mut self, ctx: &mut ModelContext<Self>) {
+        self.idle_timer_generation += 1;
+        let Some(timeout) = idle_timeout(self.idle_timeout_minutes(ctx)) else {
+            return;
+        };
+        let generation = self.idle_timer_generation;
+        let wait = (self.last_activity + timeout).saturating_duration_since(Instant::now());
+        ctx.spawn(Timer::after(wait), move |me, _, ctx| {
+            if me.idle_timer_generation == generation {
+                me.check_idle(ctx);
+            }
+        });
+    }
+
+    fn check_idle(&mut self, ctx: &mut ModelContext<Self>) {
+        if !self.is_active() {
+            return;
+        }
+        let minutes = self.idle_timeout_minutes(ctx);
+        let Some(timeout) = idle_timeout(minutes) else {
+            return;
+        };
+        // The agent working, speaking, or waiting on an approval isn't idleness.
+        let agent_busy = matches!(
+            self.controller.state(),
+            ConversationState::Thinking | ConversationState::Speaking
+        ) || self.controller.approvals().pending().is_some();
+        if agent_busy {
+            self.note_activity();
+        }
+        match check_idle(self.last_activity, timeout, Instant::now()) {
+            IdleCheck::CheckAt(_) => self.schedule_idle_check(ctx),
+            IdleCheck::Expired => {
+                log::info!("Voice conversation: ending after {minutes} idle minutes");
+                if let Some(window_id) = self.window_id {
+                    let message = idle_ended_message(minutes);
+                    ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+                        stack.add_ephemeral_toast(
+                            DismissibleToast::default(message),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                }
+                self.stop(ctx);
+            }
         }
     }
 
@@ -243,6 +340,8 @@ impl ConversationSession {
         self.controller.start(options);
         self.controller.set_headphones(headphones);
         self.refresh_echo_cancellation();
+        self.note_activity();
+        self.schedule_idle_check(ctx);
         VOICE_CONVERSATION_ACTIVE.store(true, Ordering::Relaxed);
         ctx.emit(ConversationEvent::StateChanged);
         ctx.notify();
@@ -304,8 +403,14 @@ impl ConversationSession {
         self.reply = None;
         self.approval = None;
         self.approval_timeout_at = None;
+        self.idle_timer_generation += 1;
         ctx.emit(ConversationEvent::StateChanged);
         ctx.notify();
+        // Conversation mode off means the microphone off, whoever turned hands-free on.
+        let hands_free = HandsFreeSession::handle(ctx);
+        if hands_free.as_ref(ctx).is_active() {
+            hands_free.update(ctx, |hands_free, ctx| hands_free.stop(ctx));
+        }
     }
 
     /// Reads replies only from the hands-free target's pane: when the target moves to another
@@ -332,6 +437,7 @@ impl ConversationSession {
         if !self.is_in_window(window_id) {
             return;
         }
+        self.note_activity();
         self.surface = Some(surface);
         self.reply = None;
         self.approval = None;
@@ -363,6 +469,7 @@ impl ConversationSession {
         if !self.is_active() || self.surface != Some(surface) {
             return;
         }
+        self.note_activity();
         let history = BlocklistAIHistoryModel::as_ref(ctx);
         let Some(exchange) = history
             .conversation(&conversation_id)
@@ -431,6 +538,7 @@ impl ConversationSession {
         if !self.is_active() || self.surface != Some(surface) {
             return;
         }
+        self.note_activity();
         let Some((command, needs_screen)) = action_model
             .as_ref(ctx)
             .get_pending_action_by_id(&action_id)
@@ -469,6 +577,7 @@ impl ConversationSession {
 
     /// The action stopped waiting for approval (answered on screen, run, or cancelled).
     pub fn approval_resolved(&mut self, action_id: &AIAgentActionId, ctx: &mut ModelContext<Self>) {
+        self.note_activity();
         let actions = self.controller.approval_resolved(action_id, Instant::now());
         if self.controller.approvals().pending().is_none() {
             self.approval_timeout_at = None;
@@ -524,6 +633,7 @@ impl ConversationSession {
         if !self.is_active() {
             return;
         }
+        self.note_activity();
         self.refresh_echo_cancellation();
         self.controller.set_verify_barge_in(verify_speaker);
         self.controller.speech_started(Instant::now());
@@ -713,7 +823,8 @@ pub fn toggle_conversation(window_id: WindowId, surface: Option<EntityId>, ctx: 
     if !ensure_speech_output_ready(window_id, ctx) {
         return;
     }
-    if !HandsFreeSession::as_ref(ctx).is_active() {
+    let started_hands_free = !HandsFreeSession::as_ref(ctx).is_active();
+    if started_hands_free {
         toggle_hands_free(window_id, ctx);
         if !HandsFreeSession::as_ref(ctx).is_active() {
             return;
@@ -725,6 +836,10 @@ pub fn toggle_conversation(window_id: WindowId, surface: Option<EntityId>, ctx: 
         });
     }
     if let Err(message) = session.update(ctx, |session, ctx| session.start(window_id, ctx)) {
+        // Hands-free turned on only for this conversation goes off with it.
+        if started_hands_free {
+            HandsFreeSession::handle(ctx).update(ctx, |hands_free, ctx| hands_free.stop(ctx));
+        }
         ToastStack::handle(ctx).update(ctx, |stack, ctx| {
             stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
         });

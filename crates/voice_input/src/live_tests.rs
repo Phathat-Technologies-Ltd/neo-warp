@@ -40,3 +40,31 @@ fn integer_samples_downmix_to_mono_floats() {
     assert!((mono[0] - 0.5).abs() < 0.01);
     assert!((mono[1] + 1.0).abs() < 0.01);
 }
+
+#[test]
+fn meter_position_spans_the_speech_range() {
+    assert_eq!(meter_position(0.0), 0.0);
+    assert_eq!(meter_position(f32::NAN), 0.0);
+    assert_eq!(meter_position(0.0001), 0.0);
+    assert_eq!(meter_position(1.0), 1.0);
+    let speech = meter_position(0.05);
+    assert!(speech > 0.3 && speech < 1.0, "{speech}");
+}
+
+#[test]
+fn mic_level_rises_fast_and_falls_slowly_to_silence() {
+    let level = MicLevel::default();
+    level.push(0.1);
+    let risen = level.get();
+    assert!(risen > 0.4, "{risen}");
+    level.push(0.0);
+    let falling = level.get();
+    assert!(falling < risen && falling > 0.5 * risen, "{falling}");
+    for _ in 0..200 {
+        level.push(0.0);
+    }
+    assert_eq!(level.get(), 0.0);
+    level.push(0.1);
+    level.reset();
+    assert_eq!(level.get(), 0.0);
+}

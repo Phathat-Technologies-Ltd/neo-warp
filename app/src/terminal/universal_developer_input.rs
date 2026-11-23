@@ -66,7 +66,7 @@ use crate::view_components::action_button::{
     ActionButton, ActionButtonTheme, ButtonSize, NakedTheme, TooltipAlignment,
 };
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
-use crate::voice::footer_controls::{VoiceControls, VoiceControlsStyle};
+use crate::voice::footer_controls::VoiceControls;
 use crate::workspaces::user_workspaces::{TeamScope, UserWorkspaces};
 
 pub enum AtContextMenuDisabledReason {
@@ -367,16 +367,7 @@ impl UniversalDeveloperInputButtonBar {
         #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
         let voice_controls = {
             let mic_button = mic_button_view.clone();
-            let menu_positioning_provider = menu_positioning_provider.clone();
-            ctx.add_typed_action_view(|ctx| {
-                VoiceControls::new(
-                    VoiceControlsStyle::UniversalInput,
-                    terminal_view_id,
-                    mic_button,
-                    menu_positioning_provider,
-                    ctx,
-                )
-            })
+            ctx.add_view(|ctx| VoiceControls::new(mic_button, ctx))
         };
 
         let at_button_view = ctx.add_typed_action_view(|_ctx| {

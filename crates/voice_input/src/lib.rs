@@ -20,7 +20,7 @@ use warpui_core::{Entity, ModelContext, SingletonEntity};
 
 mod live;
 pub mod microphone_mode;
-pub use live::{LinearResampler, LiveCapture, LiveChunk};
+pub use live::{LinearResampler, LiveCapture, LiveChunk, MicLevel, meter_position};
 pub mod recovery;
 mod speaker_output;
 pub use speaker_output::SpeechOutput;

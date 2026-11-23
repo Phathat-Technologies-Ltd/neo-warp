@@ -37,8 +37,6 @@ pub(super) struct WorkspaceMouseStates {
     pub(super) settings_icon: MouseStateHandle,
     pub(super) dismiss_banner_button: MouseStateHandle,
     pub(super) offline_icon: MouseStateHandle,
-    pub(super) voice_stop_speaking_button: MouseStateHandle,
-    pub(super) voice_mute_button: MouseStateHandle,
     pub(super) avatar_icon: MouseStateHandle,
     pub(super) header_dimming: MouseStateHandle,
     pub(super) right_panel_icon: MouseStateHandle,
