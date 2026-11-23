@@ -469,6 +469,10 @@ impl EditorView {
                     let team_scope = RequestTeamScope::from_scope(
                         &UserWorkspaces::as_ref(ctx).team_context_for_view(ctx),
                     );
+                    #[cfg(not(target_family = "wasm"))]
+                    let bias_terms = self.voice_bias_terms_for_request();
+                    #[cfg(target_family = "wasm")]
+                    let bias_terms = Vec::new();
                     if !state.lifecycle.begin_transcribing() {
                         return;
                     }
@@ -480,7 +484,7 @@ impl EditorView {
                     state.transcription_handle = Some(ctx.spawn(
                         async move {
                             transcriber
-                                .transcribe(wav_base64, language, team_scope)
+                                .transcribe(wav_base64, language, bias_terms, team_scope)
                                 .await
                         },
                         EditorView::apply_transcribed_voice_input,

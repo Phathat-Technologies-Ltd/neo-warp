@@ -27,6 +27,7 @@ impl VoiceActivityDetector for LoudnessVad {
 #[derive(Default)]
 struct FakeTranscriber {
     languages: Mutex<Vec<Option<String>>>,
+    bias_terms: Mutex<Vec<Vec<String>>>,
 }
 
 impl Transcriber for FakeTranscriber {
@@ -39,6 +40,19 @@ impl Transcriber for FakeTranscriber {
             "{} frames",
             audio.samples.len() / VAD_FRAME_SAMPLES
         ))
+    }
+
+    fn transcribe_with_context(
+        &self,
+        audio: &Audio,
+        language: Option<&str>,
+        terms: &[BiasTerm],
+    ) -> Result<String, TranscribeError> {
+        self.bias_terms
+            .lock()
+            .unwrap()
+            .push(terms.iter().map(|term| term.text.clone()).collect());
+        self.transcribe(audio, language)
     }
 
     fn is_ready(&self) -> bool {
@@ -126,6 +140,39 @@ async fn streams_partials_and_finals() {
             .iter()
             .all(|language| language.as_deref() == Some("en"))
     );
+}
+
+#[tokio::test]
+async fn context_terms_bias_later_utterances() {
+    let transcriber = Arc::new(FakeTranscriber::default());
+    run(
+        vec![
+            text(&ClientMessage::Context {
+                terms: vec![BiasTerm::new("SAST-AI"), BiasTerm::trusted("kubectl")],
+            }),
+            pcm(0.5, 5),
+            text(&ClientMessage::End),
+        ],
+        transcriber.clone(),
+    )
+    .await;
+    let seen = transcriber.bias_terms.lock().unwrap();
+    assert!(!seen.is_empty());
+    assert!(seen.iter().all(|terms| terms == &["SAST-AI", "kubectl"]));
+}
+
+#[test]
+fn context_message_is_backward_compatible_json() {
+    let message: ClientMessage =
+        serde_json::from_str(r#"{"type":"context","terms":[{"text":"SAST-AI"}]}"#).unwrap();
+    assert_eq!(
+        message,
+        ClientMessage::Context {
+            terms: vec![BiasTerm::new("SAST-AI")]
+        }
+    );
+    let config: ClientMessage = serde_json::from_str(r#"{"type":"config"}"#).unwrap();
+    assert!(matches!(config, ClientMessage::Config { .. }));
 }
 
 #[tokio::test]

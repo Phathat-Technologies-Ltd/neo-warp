@@ -304,6 +304,7 @@ impl Stream {
             input.context.as_ref(),
             spoken_summary,
             prompt::is_dictated(request.metadata.as_ref()),
+            prompt::wants_voice_terms(request.metadata.as_ref()),
         );
 
         let provider = make_provider(&endpoint).map_err(|error| internal(format!("{error:#}")))?;

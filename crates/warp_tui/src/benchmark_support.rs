@@ -514,6 +514,7 @@ fn completed_text_status(text: String) -> AIBlockOutputStatus {
                 message: AIAgentOutputMessageType::Text(AIAgentText {
                     sections: vec![AIAgentTextSection::PlainText { text: text.into() }],
                     spoken: None,
+                    voice_terms: Vec::new(),
                 }),
                 citations: Vec::new(),
             }],

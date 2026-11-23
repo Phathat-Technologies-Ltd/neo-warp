@@ -122,3 +122,27 @@ fn finds_a_spoken_block_at_the_end_of_the_reply() {
     assert_eq!(spoken.as_deref(), Some("Said."));
     assert_eq!(display, "Before.\n\nAfter.");
 }
+
+#[test]
+fn terms_block_is_parsed_and_hidden_anywhere_in_the_reply() {
+    let (terms, display) =
+        split_terms_block("Done.\n\n<terms>SAST-AI, kubectl, `pyproject.toml`</terms>");
+    assert_eq!(terms, ["SAST-AI", "kubectl", "pyproject.toml"]);
+    assert_eq!(display, "Done.");
+    let (terms, display) = split_terms_block("<terms>a1b, Cerebras</terms>\nHello");
+    assert_eq!(terms, ["a1b", "Cerebras"]);
+    assert_eq!(display, "Hello");
+}
+
+#[test]
+fn streaming_terms_block_is_held_back_without_terms() {
+    let (terms, display) = split_terms_block("Done. <terms>SAST-AI, kube");
+    assert!(terms.is_empty());
+    assert_eq!(display, "Done.");
+    let (terms, display) = split_terms_block("Done. <ter");
+    assert!(terms.is_empty());
+    assert_eq!(display, "Done.");
+    let (terms, display) = split_terms_block("No block here.");
+    assert!(terms.is_empty());
+    assert_eq!(display, "No block here.");
+}

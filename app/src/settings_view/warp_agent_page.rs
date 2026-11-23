@@ -111,9 +111,9 @@ use crate::settings::{
     NaturalLanguageAutosuggestionsEnabled, OrchestrationMessageDisplayMode, PromptSubmissionMode,
     SharedBlockTitleGenerationEnabled, ShouldRenderUseAgentToolbarForUserCommands,
     ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
-    SystemEchoCancellation, ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceContextCorrection,
-    VoiceDenoise, VoiceInputEnabled, VoiceInputLanguage, VoiceInputToggleKey,
-    VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
+    SystemEchoCancellation, ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceContextBiasing,
+    VoiceContextCorrection, VoiceDenoise, VoiceInputEnabled, VoiceInputLanguage,
+    VoiceInputToggleKey, VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
 };
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -497,6 +497,21 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 )),
                 &(context.clone() & id!(flags::IS_ANY_AI_ENABLED)),
                 flags::IS_VOICE_INPUT_ENABLED,
+            )
+            .with_group(bindings::BindingGroup::WarpAi)
+            .with_enabled(|| cfg!(feature = "voice_input")),
+        ],
+        app,
+    );
+    ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
+        vec![
+            ToggleSettingActionPair::new(
+                "voice context biasing",
+                builder(SettingsAction::WarpAgent(
+                    WarpAgentPageAction::ToggleVoiceContextBiasing,
+                )),
+                &(context.clone() & id!(flags::IS_VOICE_INPUT_ENABLED)),
+                flags::VOICE_CONTEXT_BIASING_FLAG,
             )
             .with_group(bindings::BindingGroup::WarpAi)
             .with_enabled(|| cfg!(feature = "voice_input")),
@@ -2865,6 +2880,7 @@ pub enum WarpAgentPageAction {
     ToggleConversationReadCodeSummaries,
     ToggleVoiceDenoise,
     ToggleSystemEchoCancellation,
+    ToggleVoiceContextBiasing,
     ToggleVoiceSpeakerId,
     /// Switches "Recognize my voice" to the next sensitivity.
     CycleVoiceSpeakerSensitivity,
@@ -3299,6 +3315,13 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::ToggleVoiceContextBiasing => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.voice_context_biasing.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             WarpAgentPageAction::ToggleSystemEchoCancellation => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.system_echo_cancellation.toggle_and_save_value(ctx));
@@ -3403,6 +3426,7 @@ impl TypedActionView for WarpAgentPageView {
             #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
             WarpAgentPageAction::ToggleVoiceDenoise
             | WarpAgentPageAction::ToggleSystemEchoCancellation
+            | WarpAgentPageAction::ToggleVoiceContextBiasing
             | WarpAgentPageAction::ToggleVoiceSpeakerId
             | WarpAgentPageAction::CycleVoiceSpeakerSensitivity
             | WarpAgentPageAction::EnrollVoice
@@ -4857,6 +4881,7 @@ struct VoiceWidget {
     delete_voiceprint_button: MouseStateHandle,
     sensitivity_button: MouseStateHandle,
     context_correction_toggle: SwitchStateHandle,
+    context_biasing_toggle: SwitchStateHandle,
     correction_buttons: CorrectionButtons,
 }
 
@@ -5262,6 +5287,15 @@ impl VoiceWidget {
     ) {
         use crate::voice::context_correction::VoiceCorrections;
 
+        column.add_child(render_ai_setting_toggle::<VoiceContextBiasing>(
+            "Favor On-Screen Terms While Transcribing",
+            WarpAgentPageAction::ToggleVoiceContextBiasing,
+            *AISettings::as_ref(app).voice_context_biasing,
+            true,
+            self.context_biasing_toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        ));
         let enabled = *AISettings::as_ref(app).voice_context_correction;
         column.add_child(render_ai_setting_toggle::<VoiceContextCorrection>(
             "Correct Transcripts From Screen",
@@ -5555,7 +5589,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary biasing bias favor on-screen terms"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

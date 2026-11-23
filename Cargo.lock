@@ -8204,6 +8204,7 @@ dependencies = [
  "log",
  "nnnoiseless",
  "parakeet-rs",
+ "realfft",
  "reqwest",
  "serde",
  "serde_json",

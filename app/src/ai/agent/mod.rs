@@ -1790,6 +1790,9 @@ pub struct AIAgentText {
     /// The `<spoken>` summary that opens the reply in voice conversation mode. It is read aloud
     /// and kept out of `sections`, which are shown on screen.
     pub spoken: Option<String>,
+    /// Terms from the reply's hidden `<terms>` block: uncommon words the agent expects the user
+    /// to say next, which voice transcription is biased toward.
+    pub voice_terms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]

@@ -64,7 +64,7 @@ fn is_identifier_shaped(term: &str) -> bool {
             .any(|word| word.chars().skip(1).any(char::is_uppercase))
 }
 
-fn is_common_word(word: &str) -> bool {
+pub(crate) fn is_common_word(word: &str) -> bool {
     COMMON_WORDS.contains(&word.to_lowercase().as_str())
 }
 
@@ -384,6 +384,24 @@ pub fn correct(
     while index < words.len() {
         let mut best: Option<(usize, String, f32, bool)> = None;
         let longest = MAX_SPAN_WORDS.min(words.len() - index);
+        // A span that already spells a term (as biased decoding writes them) is kept, so the
+        // two never fight over it.
+        let exact = (1..=longest).rev().find(|&len| {
+            len > 1
+                && vocabulary.contains(
+                    words[index..index + len]
+                        .join(" ")
+                        .trim_end_matches([',', '.', '?', '!', ';']),
+                )
+        });
+        if let Some(len) = exact {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&words[index..index + len].join(" "));
+            index += len;
+            continue;
+        }
         for len in (1..=longest).rev() {
             let heard = keys[index..index + len].join(" ");
             if heard.is_empty() {
@@ -407,7 +425,11 @@ pub fn correct(
                     continue;
                 }
                 // A word already on screen is what the user meant, and an everyday word is speech.
-                if len == 1 && (vocabulary.contains(words[index]) || is_common_word(&heard)) {
+                if len == 1
+                    && (vocabulary
+                        .contains(words[index].trim_end_matches([',', '.', '?', '!', ';']))
+                        || is_common_word(&heard))
+                {
                     continue;
                 }
                 let all_common = span.iter().all(|word| is_common_word(word));

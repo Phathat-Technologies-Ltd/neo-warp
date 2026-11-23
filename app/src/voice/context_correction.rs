@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use local_transcription::bias::{BiasCandidate, BiasTerm, rank_bias_terms, salient_tokens};
 use local_transcription::context_correction::{
     self, Correction, CorrectionContext, CorrectionLog, DEFAULT_THRESHOLD, LogEntry, Vocabulary,
     identifier_tokens,
@@ -13,6 +14,7 @@ use local_transcription::context_correction::{
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
+use crate::ai::agent::{AIAgentOutput, AIAgentOutputMessageType, AIAgentTextSection};
 use crate::settings::AISettings;
 
 const LOG_FILE_NAME: &str = "voice_corrections.json";
@@ -50,6 +52,15 @@ pub struct PaneContext {
     pub history: Vec<String>,
     /// The latest block output and agent reply.
     pub screen_text: String,
+    /// Recent agent replies in the active conversation, newest first.
+    pub agent_replies: Vec<AgentReply>,
+}
+
+/// An agent reply's text and the terms of its hidden `<terms>` block.
+#[derive(Debug, Clone, Default)]
+pub struct AgentReply {
+    pub text: String,
+    pub terms: Vec<String>,
 }
 
 impl PaneContext {
@@ -79,6 +90,10 @@ pub fn build_vocabulary(pane: &PaneContext) -> Vocabulary {
         vocabulary.extend(identifier_tokens(command));
     }
     vocabulary.extend(identifier_tokens(&pane.screen_text));
+    for reply in &pane.agent_replies {
+        vocabulary.extend(reply.terms.iter().map(String::as_str));
+        vocabulary.extend(identifier_tokens(&reply.text));
+    }
     if let Some(cwd) = &pane.cwd {
         if let Ok(entries) = std::fs::read_dir(cwd) {
             for entry in entries.flatten().take(MAX_DIRECTORY_ENTRIES) {
@@ -99,6 +114,112 @@ pub fn build_vocabulary(pane: &PaneContext) -> Vocabulary {
         }
     }
     vocabulary
+}
+
+impl AgentReply {
+    /// The prose, code, and `<terms>` of `output`'s text messages.
+    pub fn from_output(output: &AIAgentOutput) -> Self {
+        let mut reply = Self::default();
+        for message in &output.messages {
+            let AIAgentOutputMessageType::Text(text) = &message.message else {
+                continue;
+            };
+            reply.terms.extend(text.voice_terms.iter().cloned());
+            for section in &text.sections {
+                match section {
+                    AIAgentTextSection::PlainText { text } => reply.push_text(text.text()),
+                    AIAgentTextSection::Code { code, .. } => reply.push_text(code),
+                    AIAgentTextSection::Table { .. }
+                    | AIAgentTextSection::Image { .. }
+                    | AIAgentTextSection::MermaidDiagram { .. } => {}
+                }
+            }
+        }
+        reply
+    }
+
+    fn push_text(&mut self, text: &str) {
+        if self.text.len() < MAX_SCREEN_BYTES {
+            self.text.push('\n');
+            self.text.push_str(text);
+        }
+    }
+}
+
+/// Agent replies read for bias terms, newest first.
+pub const MAX_AGENT_REPLIES: usize = 12;
+/// Ranking weight per source; newer replies and history entries count more.
+const AGENT_TERMS_SCORE: f32 = 10.;
+const AGENT_PROSE_SCORE: f32 = 6.;
+const SCREEN_SCORE: f32 = 5.;
+const HISTORY_SCORE: f32 = 4.;
+const DIRECTORY_SCORE: f32 = 3.;
+/// How much each older reply's terms count relative to the next newer one.
+const REPLY_DECAY: f32 = 0.85;
+
+/// Ranks the terms the user is likely to say for biased transcription: terms the agent listed in
+/// `<terms>` blocks first (trusted), then names in agent replies, the screen, recent commands,
+/// and the directory and repository. `PATH` executables are left out: there are thousands, most
+/// never said, and each one adds false alarms. Does blocking I/O; call it off the UI thread.
+pub fn build_bias_terms(pane: &PaneContext, cap: usize) -> Vec<BiasTerm> {
+    let mut candidates = Vec::new();
+    let mut push = |text: &str, score: f32, trusted: bool| {
+        candidates.push(BiasCandidate {
+            text: text.to_owned(),
+            score,
+            trusted,
+        });
+    };
+    for (age, reply) in pane
+        .agent_replies
+        .iter()
+        .take(MAX_AGENT_REPLIES)
+        .enumerate()
+    {
+        let recency = REPLY_DECAY.powi(age as i32);
+        for term in &reply.terms {
+            push(term, AGENT_TERMS_SCORE * recency, true);
+        }
+        for token in salient_tokens(&reply.text) {
+            push(&token, AGENT_PROSE_SCORE * recency, false);
+        }
+    }
+    for token in salient_tokens(&pane.screen_text) {
+        push(&token, SCREEN_SCORE, false);
+    }
+    for (index, command) in pane.history.iter().take(MAX_HISTORY_COMMANDS).enumerate() {
+        let recency = 1. - index as f32 / MAX_HISTORY_COMMANDS as f32;
+        let mut words = command.split_whitespace();
+        if let Some(first) = words.next() {
+            push(first, HISTORY_SCORE * recency, false);
+            if let Some(second) = words.next().filter(|w| !w.starts_with('-')) {
+                push(&format!("{first} {second}"), HISTORY_SCORE * recency, false);
+            }
+        }
+        for token in identifier_tokens(command) {
+            push(token, HISTORY_SCORE * recency * 0.9, false);
+        }
+    }
+    if let Some(cwd) = &pane.cwd {
+        if let Ok(entries) = std::fs::read_dir(cwd) {
+            for entry in entries.flatten().take(MAX_DIRECTORY_ENTRIES) {
+                if let Some(name) = entry.file_name().to_str()
+                    && !name.starts_with('.')
+                {
+                    push(name, DIRECTORY_SCORE, false);
+                }
+            }
+        }
+        for term in git_terms(cwd) {
+            push(&term, DIRECTORY_SCORE, false);
+        }
+    }
+    rank_bias_terms(candidates, cap)
+}
+
+/// Whether transcription should be biased toward on-screen terms.
+pub fn is_biasing_enabled(app: &AppContext) -> bool {
+    FeatureFlag::VoiceInput.is_enabled() && *AISettings::as_ref(app).voice_context_biasing
 }
 
 /// The current branch, local branches, and remotes of the repository containing `cwd`, read

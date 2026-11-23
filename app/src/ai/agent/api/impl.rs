@@ -23,6 +23,13 @@ pub static VOICE_CONVERSATION_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// The request metadata key that tells the agent the prompt came from speech recognition.
 pub const DICTATED_METADATA_KEY: &str = "dictated";
 
+/// The request metadata key that asks the agent to end each reply with a `<terms>` list of words
+/// the user may say next.
+pub const VOICE_TERMS_METADATA_KEY: &str = "voice_terms";
+
+/// Whether hands-free voice input with context biasing is on, so agent requests ask for terms.
+pub static VOICE_TERMS_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// Set when hands-free voice submits an agent prompt; the next agent request consumes it.
 pub static NEXT_PROMPT_DICTATED: AtomicBool = AtomicBool::new(false);
 
@@ -68,6 +75,15 @@ pub async fn generate_multi_agent_output(
     if VOICE_CONVERSATION_ACTIVE.load(Ordering::Relaxed) {
         logging_metadata.insert(
             VOICE_CONVERSATION_METADATA_KEY.to_owned(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::BoolValue(true)),
+            },
+        );
+    }
+
+    if VOICE_TERMS_ACTIVE.load(Ordering::Relaxed) {
+        logging_metadata.insert(
+            VOICE_TERMS_METADATA_KEY.to_owned(),
             prost_types::Value {
                 kind: Some(prost_types::value::Kind::BoolValue(true)),
             },

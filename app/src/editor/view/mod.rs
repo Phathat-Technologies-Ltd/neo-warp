@@ -1893,6 +1893,10 @@ pub struct EditorView {
     #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
     voice_vocabulary: Option<crate::voice::context_correction::SharedVocabulary>,
 
+    /// Terms local transcription of voice input into this editor is biased toward.
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    voice_bias_terms: Vec<local_transcription::bias::BiasTerm>,
+
     #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
     voice_corrections_subscribed: bool,
 
@@ -3259,6 +3263,8 @@ impl EditorView {
             voice_transcription_options: Self::voice_options(ctx),
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             voice_vocabulary: None,
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            voice_bias_terms: Vec::new(),
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             voice_corrections_subscribed: false,
             #[cfg(feature = "voice_input")]

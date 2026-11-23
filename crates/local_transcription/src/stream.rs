@@ -19,6 +19,12 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         vad: Option<VadOptions>,
     },
+    /// Terms the user is likely to say (on screen, in recent agent replies), most relevant
+    /// first. Replaces the previous list; utterances decoded from now on are biased toward it.
+    Context {
+        #[serde(default)]
+        terms: Vec<crate::bias::BiasTerm>,
+    },
     /// Ends the open utterance now, as if the speaker paused.
     Flush,
     /// Ends the stream once pending transcripts are sent.

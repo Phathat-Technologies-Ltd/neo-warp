@@ -45,6 +45,18 @@ folder\"). When something fails, say what happened and what the user should do n
 ask the user a question, keep the spoken part to one sentence. After the closing tag, write the \
 full answer as usual; it is shown on screen and not read aloud.";
 
+/// The request metadata key the client sets while voice input is on, so replies list the terms the
+/// user may say next.
+pub const VOICE_TERMS_METADATA_KEY: &str = "voice_terms";
+
+const VOICE_TERMS_INSTRUCTIONS: &str = "\n\n# Voice input vocabulary
+The user talks to you through speech recognition. End every reply, including replies after tool \
+calls, with one hidden line <terms>term1, term2, ...</terms> listing up to 20 uncommon words or \
+names the user is likely to say next: names of people, projects, and products, identifiers, file, \
+branch, and package names, CLI tools, and acronyms that came up in this turn. Write each exactly \
+as it is written (for example SAST-AI, kubectl, pyproject.toml). Never list common English words. \
+The line is not shown to the user; leave it out only if there is nothing to list.";
+
 const DICTATED_INSTRUCTIONS: &str = "\n\n# Dictated input
 The user's message came from speech recognition and may contain mis-heard words, missing \
 punctuation, or spelled-out symbols (\"dash dash\", \"dot txt\"). Interpret the intended request, \
@@ -64,6 +76,11 @@ pub fn wants_spoken_summary(metadata: Option<&api::request::Metadata>) -> bool {
     logging_flag(metadata, VOICE_CONVERSATION_METADATA_KEY)
 }
 
+/// Whether the request's metadata says voice input is on, so replies end with a `<terms>` list.
+pub fn wants_voice_terms(metadata: Option<&api::request::Metadata>) -> bool {
+    logging_flag(metadata, VOICE_TERMS_METADATA_KEY)
+}
+
 /// Whether the request's metadata says the user's prompt was dictated.
 pub fn is_dictated(metadata: Option<&api::request::Metadata>) -> bool {
     logging_flag(metadata, DICTATED_METADATA_KEY)
@@ -79,6 +96,7 @@ pub fn system_prompt(
     context: Option<&api::InputContext>,
     spoken_summary: bool,
     dictated: bool,
+    voice_terms: bool,
 ) -> String {
     let mut prompt = INSTRUCTIONS.to_owned();
     if spoken_summary {
@@ -86,6 +104,9 @@ pub fn system_prompt(
     }
     if dictated {
         prompt.push_str(DICTATED_INSTRUCTIONS);
+    }
+    if voice_terms {
+        prompt.push_str(VOICE_TERMS_INSTRUCTIONS);
     }
     let Some(context) = context else {
         return prompt;

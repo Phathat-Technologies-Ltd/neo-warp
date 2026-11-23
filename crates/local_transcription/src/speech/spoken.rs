@@ -19,8 +19,42 @@ const MAX_SPOKEN_DIGITS: usize = 3;
 /// summary streams, it is returned as far as it got and nothing after its opening tag is shown,
 /// and a trailing prefix of the opening tag is held back so the tag never flashes on screen.
 pub fn split_spoken_block(text: &str) -> (Option<String>, Cow<'_, str>) {
-    let Some(open) = text.find(OPEN) else {
-        let held = strip_partial_suffix(text, OPEN);
+    split_block(text, OPEN, CLOSE)
+}
+
+/// Splits a (possibly still streaming) reply into the terms of its `<terms>` block, the uncommon
+/// words the agent expects the user to say next, and the rest of the reply. The block is held
+/// back from the screen the same way as the `<spoken>` summary, and a block still streaming
+/// yields no terms.
+pub fn split_terms_block(text: &str) -> (Vec<String>, Cow<'_, str>) {
+    let (block, rest) = split_block(text, TERMS_OPEN, TERMS_CLOSE);
+    let complete = text
+        .find(TERMS_OPEN)
+        .is_some_and(|open| text[open..].contains(TERMS_CLOSE));
+    let terms = block
+        .filter(|_| complete)
+        .map(|block| {
+            block
+                .split([',', '\n'])
+                .map(|term| term.trim().trim_matches('`').trim())
+                .filter(|term| !term.is_empty() && term.len() <= 64)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    (terms, rest)
+}
+
+const TERMS_OPEN: &str = "<terms>";
+const TERMS_CLOSE: &str = "</terms>";
+
+fn split_block<'a>(
+    text: &'a str,
+    open_tag: &str,
+    close_tag: &str,
+) -> (Option<String>, Cow<'a, str>) {
+    let Some(open) = text.find(open_tag) else {
+        let held = strip_partial_suffix(text, open_tag);
         if held.len() == text.len() {
             return (None, Cow::Borrowed(text));
         }
@@ -28,11 +62,11 @@ pub fn split_spoken_block(text: &str) -> (Option<String>, Cow<'_, str>) {
         return (spoken, Cow::Borrowed(held.trim_end()));
     };
     let before = text[..open].trim_end();
-    let after = &text[open + OPEN.len()..];
-    match after.find(CLOSE) {
+    let after = &text[open + open_tag.len()..];
+    match after.find(close_tag) {
         Some(end) => {
             let spoken = after[..end].trim().to_owned();
-            let rest = after[end + CLOSE.len()..].trim_start();
+            let rest = after[end + close_tag.len()..].trim_start();
             let display = match (before.is_empty(), rest.is_empty()) {
                 (true, _) => Cow::Borrowed(rest),
                 (false, true) => Cow::Borrowed(before),
@@ -41,7 +75,7 @@ pub fn split_spoken_block(text: &str) -> (Option<String>, Cow<'_, str>) {
             (Some(spoken), display)
         }
         None => (
-            Some(strip_partial_suffix(after, CLOSE).trim().to_owned()),
+            Some(strip_partial_suffix(after, close_tag).trim().to_owned()),
             Cow::Borrowed(before),
         ),
     }

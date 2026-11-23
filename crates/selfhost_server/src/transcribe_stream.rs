@@ -11,6 +11,7 @@ use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures::{Sink, SinkExt as _, Stream, StreamExt as _};
+use local_transcription::bias::{BiasTerm, MAX_BIAS_TERMS};
 use local_transcription::stream::{
     ClientMessage, DecodeQueue, DecodeRequest, ServerMessage, StreamConfig, StreamOutput,
     UtteranceStream,
@@ -111,12 +112,14 @@ pub(crate) async fn run_session<In, Out>(
     let mut queue = DecodeQueue::default();
     let mut running: Option<tokio::task::JoinHandle<DecodeResult>> = None;
     let mut language: Option<String> = None;
+    let mut bias_terms: Arc<Vec<BiasTerm>> = Arc::default();
     let mut ending = false;
     loop {
         if running.is_none() {
             if let Some(request) = queue.pop() {
                 let transcriber = transcriber.clone();
                 let language = language.clone();
+                let bias_terms = bias_terms.clone();
                 log::info!(
                     "Hands-free stream: decoding {:?} of utterance {} ({} ms of audio)",
                     request.kind,
@@ -125,7 +128,11 @@ pub(crate) async fn run_session<In, Out>(
                         / u64::from(request.audio.sample_rate.max(1))
                 );
                 running = Some(tokio::task::spawn_blocking(move || {
-                    let result = transcriber.transcribe(&request.audio, language.as_deref());
+                    let result = transcriber.transcribe_with_context(
+                        &request.audio,
+                        language.as_deref(),
+                        &bias_terms,
+                    );
                     (request, result)
                 }));
             } else if ending {
@@ -172,6 +179,10 @@ pub(crate) async fn run_session<In, Out>(
                         if let Some(min_silence_ms) = vad.and_then(|vad| vad.min_silence_ms) {
                             utterances.set_min_silence_ms(min_silence_ms.clamp(100, 5000));
                         }
+                    }
+                    Ok(ClientMessage::Context { mut terms }) => {
+                        terms.truncate(MAX_BIAS_TERMS);
+                        bias_terms = Arc::new(terms);
                     }
                     Ok(ClientMessage::Flush) => outputs = utterances.flush(),
                     Ok(ClientMessage::End) => {

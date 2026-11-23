@@ -2153,7 +2153,7 @@ impl AgentInputFooter {
                     self.cli_transcription_handle = Some(ctx.spawn(
                         async move {
                             transcriber
-                                .transcribe(wav_base64, language, team_scope)
+                                .transcribe(wav_base64, language, Vec::new(), team_scope)
                                 .await
                         },
                         AgentInputFooter::apply_cli_transcribed_voice_input,
