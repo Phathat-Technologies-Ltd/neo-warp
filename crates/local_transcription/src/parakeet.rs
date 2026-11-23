@@ -62,9 +62,8 @@ impl ParakeetTranscriber {
             .is_none_or(|(_, loaded)| *loaded != acceleration)
         {
             *model = None;
-            let (loaded, device) =
-                TdtModel::load_accelerated(self.store.model_dir(), acceleration, None)?;
-            log::info!("Parakeet loaded ({acceleration:?}), encoder on {device:?}");
+            let loaded = TdtModel::load_accelerated(self.store.model_dir(), acceleration, None)?;
+            log::info!("Parakeet loaded ({acceleration:?})");
             *model = Some((loaded, acceleration));
         }
         let Some((model, _)) = model.as_mut() else {

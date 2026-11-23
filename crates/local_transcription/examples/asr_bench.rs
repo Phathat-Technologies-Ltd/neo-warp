@@ -4,8 +4,11 @@
 //! `cargo run --release -p local_transcription --features parakeet --example asr_bench --
 //!  <model dir> <clip.wav>...`
 //!
-//! `ACCEL=cpu|auto` picks the execution provider (`auto` needs `--features coreml`), `THREADS`
-//! the CPU intra-op threads, and `POLICY=fixed` the old fixed 600 ms partial schedule.
+//! `ACCEL=cpu|auto` picks the execution provider (`auto` needs `--features coreml` and
+//! `encoder-model.fp16.onnx` in the model dir, and waits for Core ML to load), `THREADS` the CPU
+//! intra-op threads, `POLICY=fixed` the old fixed 600 ms partial schedule, `FINAL_ONLY=1` skips the
+//! session (for accuracy runs), and `COMPARE=1` only compares each clip's encoder output and text
+//! with the CPU encoder's.
 
 use std::path::Path;
 
@@ -50,15 +53,33 @@ fn main() {
     };
     let threads = std::env::var("THREADS").ok().and_then(|t| t.parse().ok());
     let fixed = std::env::var("POLICY").as_deref() == Ok("fixed");
+    let final_only = std::env::var_os("FINAL_ONLY").is_some();
     let (model, load_ms, _) =
         measure(|| TdtModel::load_accelerated(Path::new(model_dir), acceleration, threads));
-    let (mut model, device) = model.expect("load model");
-    println!("load {load_ms:.0} ms, encoder on {device:?}");
+    let mut model = model.expect("load model");
+    let (device, wait_ms, _) = measure(|| model.wait_for_accelerator());
+    println!("load {load_ms:.0} ms (+{wait_ms:.0} ms for Core ML), encoder on {device:?}");
+    let mut reference = std::env::var_os("COMPARE").map(|_| {
+        TdtModel::load_accelerated(Path::new(model_dir), Acceleration::Cpu, threads)
+            .expect("load CPU model")
+    });
     let config = StreamConfig::default();
     for clip in clips {
         let audio = decode_wav(&std::fs::read(clip).expect("read clip")).expect("decode clip");
         let samples = &audio.samples;
         let clip_ms = samples.len() as f64 / 16.0;
+        if let Some(reference) = reference.as_mut() {
+            let expected = reference.encode(samples).expect("CPU encode");
+            let actual = model.encode(samples).expect("encode");
+            let cpu_text = reference.decode(&expected, None).expect("CPU decode").text;
+            let text = model.decode(&actual, None).expect("decode").text;
+            println!(
+                "{clip}: similarity {:.4}, same text: {} | {text}",
+                expected.similarity(&actual),
+                text == cpu_text
+            );
+            continue;
+        }
         let _ = model.transcribe(samples, None);
         let mut finals = Vec::new();
         let mut text = String::new();
@@ -69,6 +90,10 @@ fn main() {
         }
         finals.sort_by(|a, b| a.0.total_cmp(&b.0));
         let (final_wall, final_cpu) = finals[1];
+        if final_only {
+            println!("{clip}: {clip_ms:.0} ms | final {final_wall:.0} ms wall | {text}");
+            continue;
+        }
 
         // Real-time session: one 32 ms VAD frame at a time, at most one decode in flight, and a
         // due partial waits (replacing older ones) until the transcriber is free. CPU counts the
