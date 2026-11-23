@@ -224,7 +224,10 @@ fn local_transcriber() -> Option<std::sync::Arc<dyn local_transcription::Transcr
     }
     crate::voice::local_model::mark_served_locally();
     Some(std::sync::Arc::new(
-        local_transcription::ParakeetTranscriber::new(crate::voice::local_model::model_store()),
+        local_transcription::ParakeetTranscriber::new(crate::voice::local_model::model_store())
+            .with_acceleration(std::sync::Arc::new(
+                crate::voice::local_model::transcription_acceleration,
+            )),
     ))
 }
 

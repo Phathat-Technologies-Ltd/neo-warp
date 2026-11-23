@@ -29,7 +29,11 @@ const CANDIDATES: usize = 12;
 const LSTM_LAYERS: usize = 2;
 const LSTM_HIDDEN: usize = 640;
 
-fn engine_error(error: impl std::fmt::Display) -> TranscribeError {
+mod acceleration;
+
+pub use acceleration::{Acceleration, DEFAULT_INTRA_THREADS, EncoderDevice};
+
+pub(crate) fn engine_error(error: impl std::fmt::Display) -> TranscribeError {
     TranscribeError::Engine(error.to_string())
 }
 
@@ -49,6 +53,9 @@ pub struct Encoded {
     steps: usize,
 }
 
+pub(crate) const ENCODER_FILE: &str = "encoder-model.int8.onnx";
+const JOINT_FILE: &str = "decoder_joint-model.int8.onnx";
+
 pub struct TdtModel {
     encoder: Session,
     joint: Session,
@@ -67,6 +74,18 @@ impl TdtModel {
     }
 
     pub fn load(dir: &Path, config: &ExecutionConfig) -> Result<Self, TranscribeError> {
+        let encoder = config
+            .build_session(&dir.join(ENCODER_FILE))
+            .map_err(engine_error)?;
+        Self::with_encoder(dir, encoder, config)
+    }
+
+    /// Loads the model in `dir` with `encoder` already built from its `encoder-model.int8.onnx`.
+    pub(crate) fn with_encoder(
+        dir: &Path,
+        encoder: Session,
+        joint_config: &ExecutionConfig,
+    ) -> Result<Self, TranscribeError> {
         let vocab_text = std::fs::read_to_string(dir.join("vocab.txt")).map_err(engine_error)?;
         let vocab = PieceVocab::from_vocab_txt(&vocab_text);
         if vocab.is_empty() {
@@ -74,11 +93,8 @@ impl TdtModel {
                 "the vocabulary is empty".to_owned(),
             ));
         }
-        let encoder = config
-            .build_session(&dir.join("encoder-model.int8.onnx"))
-            .map_err(engine_error)?;
-        let joint = config
-            .build_session(&dir.join("decoder_joint-model.int8.onnx"))
+        let joint = joint_config
+            .build_session(&dir.join(JOINT_FILE))
             .map_err(engine_error)?;
         let blank = vocab.len() as u32 - 1;
         Ok(Self {

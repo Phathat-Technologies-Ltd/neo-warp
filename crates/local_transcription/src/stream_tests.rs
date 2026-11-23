@@ -49,10 +49,12 @@ fn segments_an_utterance_between_pauses() {
         messages(&outputs),
         vec![ServerMessage::SpeechStart, ServerMessage::SpeechEnd]
     );
-    let decodes = decodes(&outputs);
-    assert_eq!(decodes.len(), 1);
-    let last = decodes[0];
-    assert_eq!(last.kind, DecodeKind::Final);
+    let finals: Vec<_> = decodes(&outputs)
+        .into_iter()
+        .filter(|request| request.kind == DecodeKind::Final)
+        .collect();
+    assert_eq!(finals.len(), 1);
+    let last = finals[0];
     assert_eq!(last.utterance, 1);
     // Pre-roll (192 ms + the 2 start frames = 8 frames) plus speech plus trailing silence.
     let speech = last.audio.samples.iter().filter(|s| **s > 0.25).count();
@@ -68,9 +70,35 @@ fn requests_partials_every_interval() {
         .into_iter()
         .filter(|request| request.kind == DecodeKind::Partial)
         .collect();
-    // 40 frames = 1.28 s of audio after the start: two 600 ms intervals.
+    // 40 frames = 1.28 s of audio after the start: the first partial at 400 ms, then one 600 ms
+    // interval.
     assert_eq!(partials.len(), 2);
     assert!(partials[1].audio.samples.len() > partials[0].audio.samples.len());
+}
+
+#[test]
+fn partial_gaps_grow_with_the_utterance_and_decode_time() {
+    let config = StreamConfig::default();
+    assert!(!partial_due(&config, 600, 399, true, 0));
+    assert!(partial_due(&config, 600, 400, true, 0));
+    assert!(partial_due(&config, 2_000, 600, false, 100));
+    assert!(!partial_due(&config, 10_000, 1_000, false, 100));
+    assert!(partial_due(&config, 10_000, 1_250, false, 100));
+    assert!(!partial_due(&config, 2_000, 600, false, 400));
+    assert!(partial_due(&config, 2_000, 800, false, 400));
+}
+
+#[test]
+fn slow_partial_decodes_space_out_the_next_partial() {
+    let mut stream = stream();
+    stream.note_partial_decode_ms(1_000);
+    let outputs = stream.push_samples(&frames(0.5, 2 + 70)).unwrap();
+    let partials = decodes(&outputs)
+        .into_iter()
+        .filter(|request| request.kind == DecodeKind::Partial)
+        .count();
+    // 70 frames = 2.24 s: the first partial at 400 ms, the next 2 s later.
+    assert_eq!(partials, 1);
 }
 
 #[test]

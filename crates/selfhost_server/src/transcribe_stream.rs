@@ -11,6 +11,7 @@ use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures::{Sink, SinkExt as _, Stream, StreamExt as _};
+use instant::Instant;
 use local_transcription::bias::{BiasTerm, MAX_BIAS_TERMS};
 use local_transcription::stream::{
     ClientMessage, DecodeKind, DecodeQueue, DecodeRequest, ServerMessage, StreamConfig,
@@ -134,6 +135,7 @@ pub(crate) async fn run_session<In, Out>(
     let mut audio_bytes: u64 = 0;
     let mut queue = DecodeQueue::default();
     let mut running: Option<tokio::task::JoinHandle<DecodeResult>> = None;
+    let mut decode_started = Instant::now();
     let mut language: Option<String> = None;
     let mut bias_terms: Arc<Vec<BiasTerm>> = Arc::default();
     let mut ending = false;
@@ -150,6 +152,7 @@ pub(crate) async fn run_session<In, Out>(
                     request.audio.samples.len() as u64 * 1000
                         / u64::from(request.audio.sample_rate.max(1))
                 );
+                decode_started = Instant::now();
                 running = Some(tokio::task::spawn_blocking(move || {
                     let result = transcriber.transcribe_with_context(
                         &request.audio,
@@ -234,6 +237,9 @@ pub(crate) async fn run_session<In, Out>(
                     Ok((request, Ok(text))) => {
                         if request.kind == DecodeKind::Partial {
                             utterances.note_partial(request.utterance, &text);
+                            utterances.note_partial_decode_ms(
+                                decode_started.elapsed().as_millis() as u32,
+                            );
                         }
                         log::info!(
                             "Hands-free stream: decoded {:?} of utterance {} ({} chars)",
