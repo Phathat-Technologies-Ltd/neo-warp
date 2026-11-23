@@ -65,8 +65,12 @@ pub const BARGE_IN_DUCK_GAIN: f32 = 0.3;
 /// Speech a candidate barge-in needs before its speaker check runs; shorter than the early check
 /// for partials, since the reply stays ducked until the verdict.
 pub const BARGE_IN_CHECK_AFTER: Duration = Duration::from_millis(700);
-/// How long a ducked reply waits for the speaker check before resuming at full volume.
-pub const BARGE_IN_VERDICT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Later speaker checks of a ducked barge-in, on more audio: the first one hears the user mixed with
+/// the reply's echo and often scores low.
+pub const BARGE_IN_RECHECKS: [Duration; 2] =
+    [Duration::from_millis(1200), Duration::from_millis(1800)];
+/// How long a ducked reply waits for a sign of the user before resuming at full volume.
+pub const BARGE_IN_VERDICT_TIMEOUT: Duration = Duration::from_millis(2500);
 
 /// How often the owner re-checks barge-in while the user keeps talking.
 pub const BARGE_IN_POLL: Duration = Duration::from_millis(40);
@@ -105,6 +109,15 @@ pub enum PlaybackAction<A> {
     Restore,
 }
 
+/// A speaker check's verdict on speech over the reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BargeInSpeaker {
+    Match,
+    NoMatch,
+    /// Too little speech to judge, or the check couldn't run.
+    Unavailable,
+}
+
 /// What a final utterance meant to the conversation. Every outcome but `NotConsumed` keeps the
 /// utterance out of the input.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,8 +142,8 @@ struct Utterance {
     /// The assistant was audible (or its echo tail was) when the speech started.
     overlapped: bool,
     barged_in: bool,
-    /// The speaker check's verdict on this utterance, once known: whether it is the user.
-    speaker_matched: Option<bool>,
+    /// A ducked barge-in on this utterance resumed the reply; it never ducks again.
+    barge_in_dismissed: bool,
 }
 
 /// An approval request that has not been announced yet.
@@ -761,7 +774,7 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             started_at: now,
             overlapped: self.is_audible(now),
             barged_in: false,
-            speaker_matched: None,
+            barge_in_dismissed: false,
         });
     }
 
@@ -771,15 +784,15 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     }
 
     /// Stops the speech once the user has talked over it long enough (see [`BARGE_IN_AFTER`]).
-    /// With [`Self::set_verify_barge_in`] on, it ducks the speech instead until
-    /// [`Self::barge_in_verdict`] or [`BARGE_IN_VERDICT_TIMEOUT`]. The owner calls it every
-    /// [`BARGE_IN_POLL`] while the user keeps talking, and once the timeout has passed.
+    /// With [`Self::set_verify_barge_in`] on, it ducks the speech instead until the user is
+    /// recognised ([`Self::barge_in_verdict`], [`Self::barge_in_transcript`]) or
+    /// [`BARGE_IN_VERDICT_TIMEOUT`] passes. The owner calls it every [`BARGE_IN_POLL`] while the
+    /// user keeps talking, and once the timeout has passed.
     pub fn check_barge_in(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
         if let Some(ducked_at) = self.ducked_at {
             if now.saturating_duration_since(ducked_at) >= BARGE_IN_VERDICT_TIMEOUT {
-                log::info!("Barge-in speaker check timed out; resuming the reply");
-                self.ducked_at = None;
-                return vec![PlaybackAction::Restore];
+                log::info!("Barge-in decision: resume (timeout, no sign of the user)");
+                return self.dismiss_barge_in();
             }
             return Vec::new();
         }
@@ -789,6 +802,9 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         let Some(utterance) = self.utterance else {
             return Vec::new();
         };
+        if utterance.barge_in_dismissed {
+            return Vec::new();
+        }
         let Some(barge_in_after) = self.barge_in_after() else {
             return Vec::new();
         };
@@ -800,38 +816,66 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             return Vec::new();
         }
         if self.verify_barge_in {
-            match utterance.speaker_matched {
-                Some(true) => {}
-                Some(false) => return Vec::new(),
-                None => {
-                    log::info!("Possible barge-in: ducking the reply until the speaker is checked");
-                    self.ducked_at = Some(now);
-                    return vec![PlaybackAction::Duck {
-                        gain: BARGE_IN_DUCK_GAIN,
-                    }];
-                }
-            }
+            log::info!("Possible barge-in: ducking the reply until the speaker is checked");
+            self.ducked_at = Some(now);
+            return vec![PlaybackAction::Duck {
+                gain: BARGE_IN_DUCK_GAIN,
+            }];
         }
         self.interrupt(now)
     }
 
-    /// Resolves the speaker check of the utterance in progress: the user's voice stops a ducked
-    /// reply, anything else (echo, silence, an unavailable check) resumes it at full volume.
-    pub fn barge_in_verdict(&mut self, matched: bool, now: Instant) -> Vec<PlaybackAction<A>> {
-        if let Some(utterance) = &mut self.utterance {
-            utterance.speaker_matched = Some(matched);
-        }
+    /// Feeds a speaker check of the speech over a ducked reply: a match stops the reply. A
+    /// mismatch or an unavailable check keeps it ducked, since the user's voice mixed with the
+    /// reply's echo often scores low; the transcript or the timeout decides instead.
+    pub fn barge_in_verdict(
+        &mut self,
+        verdict: BargeInSpeaker,
+        now: Instant,
+    ) -> Vec<PlaybackAction<A>> {
         if self.ducked_at.is_none() {
             return Vec::new();
         }
-        if matched {
-            log::info!("Barge-in speaker check matched; stopping the reply");
-            self.interrupt(now)
-        } else {
-            log::info!("Barge-in speaker check did not match; resuming the reply");
-            self.ducked_at = None;
-            vec![PlaybackAction::Restore]
+        match verdict {
+            BargeInSpeaker::Match => {
+                log::info!("Barge-in decision: stop the reply (speaker check matched)");
+                self.interrupt(now)
+            }
+            BargeInSpeaker::NoMatch => {
+                log::info!("Barge-in: speaker check did not match; staying ducked for more signal");
+                Vec::new()
+            }
+            BargeInSpeaker::Unavailable => {
+                log::info!("Barge-in: speaker check inconclusive; staying ducked for more signal");
+                Vec::new()
+            }
         }
+    }
+
+    /// Feeds a transcript of the speech over a ducked reply: words the reply just said are its
+    /// echo and resume it; two or more other words (or a stop phrase) are the user and stop it.
+    pub fn barge_in_transcript(&mut self, text: &str, now: Instant) -> Vec<PlaybackAction<A>> {
+        if self.ducked_at.is_none() {
+            return Vec::new();
+        }
+        if self.repeats_recent_speech(text, now) {
+            log::info!("Barge-in decision: resume (transcript repeats the reply)");
+            return self.dismiss_barge_in();
+        }
+        if speech_words(text).len() >= 2 || is_stop_phrase(text) {
+            log::info!("Barge-in decision: stop the reply (transcript differs from the reply)");
+            return self.interrupt(now);
+        }
+        Vec::new()
+    }
+
+    /// Resumes a ducked reply and keeps the speech over it from ducking it again.
+    fn dismiss_barge_in(&mut self) -> Vec<PlaybackAction<A>> {
+        self.ducked_at = None;
+        if let Some(utterance) = &mut self.utterance {
+            utterance.barge_in_dismissed = true;
+        }
+        vec![PlaybackAction::Restore]
     }
 
     fn interrupt(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
@@ -851,6 +895,22 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
     /// while the assistant is speaking or thinking, and an approval phrase answers the pending
     /// approval; anything else goes to the input as usual.
     pub fn on_final(
+        &mut self,
+        text: &str,
+        now: Instant,
+    ) -> (FinalOutcome<Id>, Vec<PlaybackAction<A>>) {
+        // A stop phrase is handled below without counting as an interruption.
+        let mut actions = if is_stop_phrase(text) {
+            Vec::new()
+        } else {
+            self.barge_in_transcript(text, now)
+        };
+        let (outcome, more) = self.interpret_final(text, now);
+        actions.extend(more);
+        (outcome, actions)
+    }
+
+    fn interpret_final(
         &mut self,
         text: &str,
         now: Instant,

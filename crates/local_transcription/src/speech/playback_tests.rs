@@ -840,9 +840,7 @@ fn verified_barge_in_harness() -> Harness {
     h
 }
 
-#[test]
-fn verified_barge_in_resumes_after_echo() {
-    let mut h = verified_barge_in_harness();
+fn duck(h: &mut Harness) -> Instant {
     let now = h.now;
     h.controller.speech_started(now);
     let actions = h
@@ -851,13 +849,25 @@ fn verified_barge_in_resumes_after_echo() {
     h.apply(actions);
     assert_eq!(h.log, [format!("duck {BARGE_IN_DUCK_GAIN}")]);
     assert!(h.controller.is_barge_in_pending());
+    now
+}
+
+#[test]
+fn verified_barge_in_resumes_after_echo() {
+    let mut h = verified_barge_in_harness();
+    let now = duck(&mut h);
     assert_eq!(h.controller.state(), ConversationState::Speaking);
     let actions = h
         .controller
-        .barge_in_verdict(false, now + BARGE_IN_CHECK_AFTER);
+        .barge_in_verdict(BargeInSpeaker::NoMatch, now + BARGE_IN_CHECK_AFTER);
+    assert!(actions.is_empty());
+    assert!(h.controller.is_barge_in_pending());
+    let actions = h
+        .controller
+        .barge_in_transcript("a long answer", now + Duration::from_millis(900));
     h.apply(actions);
     assert_eq!(h.log.last().map(String::as_str), Some("restore"));
-    // The rejected speech never ducks or interrupts again.
+    // The dismissed speech never ducks or interrupts again.
     let actions = h.controller.check_barge_in(now + Duration::from_secs(1));
     assert!(actions.is_empty());
     assert_eq!(h.controller.state(), ConversationState::Speaking);
@@ -867,6 +877,73 @@ fn verified_barge_in_resumes_after_echo() {
         .controller
         .on_final("a long answer", now + Duration::from_secs(1));
     assert_eq!(outcome, FinalOutcome::Echo);
+}
+
+#[test]
+fn verified_barge_in_stops_for_user_text_despite_speaker_mismatch() {
+    let mut h = verified_barge_in_harness();
+    let reply = h.controller.reply();
+    let now = duck(&mut h);
+    let actions = h
+        .controller
+        .barge_in_verdict(BargeInSpeaker::NoMatch, now + BARGE_IN_CHECK_AFTER);
+    assert!(actions.is_empty());
+    let actions = h
+        .controller
+        .barge_in_transcript("hold on please", now + Duration::from_millis(900));
+    h.apply(actions);
+    assert!(h.log.contains(&format!("interrupted {reply}")));
+    assert_eq!(h.controller.state(), ConversationState::Listening);
+    h.controller.speech_ended();
+    let (outcome, _) = h
+        .controller
+        .on_final("hold on please", now + Duration::from_secs(1));
+    assert_eq!(outcome, FinalOutcome::NotConsumed);
+}
+
+#[test]
+fn verified_barge_in_stops_for_a_user_final() {
+    let mut h = verified_barge_in_harness();
+    let reply = h.controller.reply();
+    let now = duck(&mut h);
+    h.controller.speech_ended();
+    let (outcome, actions) = h
+        .controller
+        .on_final("wait run the tests", now + Duration::from_millis(900));
+    h.apply(actions);
+    assert_eq!(outcome, FinalOutcome::NotConsumed);
+    assert!(h.log.contains(&format!("interrupted {reply}")));
+}
+
+#[test]
+fn verified_barge_in_stays_ducked_when_the_check_is_inconclusive() {
+    let mut h = verified_barge_in_harness();
+    let now = duck(&mut h);
+    let actions = h
+        .controller
+        .barge_in_verdict(BargeInSpeaker::Unavailable, now + BARGE_IN_CHECK_AFTER);
+    assert!(actions.is_empty());
+    let actions = h
+        .controller
+        .barge_in_transcript("hmm", now + Duration::from_millis(900));
+    assert!(actions.is_empty());
+    assert!(h.controller.is_barge_in_pending());
+    assert_eq!(h.controller.state(), ConversationState::Speaking);
+}
+
+#[test]
+fn verified_barge_in_stops_on_a_later_match() {
+    let mut h = verified_barge_in_harness();
+    let now = duck(&mut h);
+    let actions = h
+        .controller
+        .barge_in_verdict(BargeInSpeaker::NoMatch, now + BARGE_IN_CHECK_AFTER);
+    assert!(actions.is_empty());
+    let actions = h
+        .controller
+        .barge_in_verdict(BargeInSpeaker::Match, now + BARGE_IN_RECHECKS[0]);
+    h.apply(actions);
+    assert_eq!(h.controller.state(), ConversationState::Listening);
 }
 
 #[test]
@@ -881,7 +958,7 @@ fn verified_barge_in_stops_for_the_user() {
     h.apply(actions);
     let actions = h
         .controller
-        .barge_in_verdict(true, now + BARGE_IN_CHECK_AFTER);
+        .barge_in_verdict(BargeInSpeaker::Match, now + BARGE_IN_CHECK_AFTER);
     h.apply(actions);
     assert_eq!(
         h.log,

@@ -11,8 +11,8 @@ use local_transcription::Audio;
 use local_transcription::speech::approval::ApprovalReply;
 use local_transcription::speech::chunker::ChunkerOptions;
 use local_transcription::speech::playback::{
-    BARGE_IN_POLL, BARGE_IN_VERDICT_TIMEOUT, ConversationController, ConversationState,
-    FinalOutcome, PlaybackAction, is_headphone_device_name,
+    BARGE_IN_POLL, BARGE_IN_VERDICT_TIMEOUT, BargeInSpeaker, ConversationController,
+    ConversationState, FinalOutcome, PlaybackAction, is_headphone_device_name,
 };
 use local_transcription::speech::{KokoroSpeaker, Speaker, TinyVocaSpeaker, VoiceId};
 use voice_input::SpeechOutput;
@@ -478,8 +478,17 @@ impl ConversationSession {
     }
 
     /// Reports whether the speech over the reply is the enrolled user's.
-    pub fn barge_in_verdict(&mut self, matched: bool, ctx: &mut ModelContext<Self>) {
-        let actions = self.controller.barge_in_verdict(matched, Instant::now());
+    pub fn barge_in_verdict(&mut self, verdict: BargeInSpeaker, ctx: &mut ModelContext<Self>) {
+        let actions = self.controller.barge_in_verdict(verdict, Instant::now());
+        self.apply(actions, ctx);
+    }
+
+    /// Reports a partial transcript of the speech over a ducked reply.
+    pub fn barge_in_transcript(&mut self, text: &str, ctx: &mut ModelContext<Self>) {
+        if !self.is_active() {
+            return;
+        }
+        let actions = self.controller.barge_in_transcript(text, Instant::now());
         self.apply(actions, ctx);
     }
 
