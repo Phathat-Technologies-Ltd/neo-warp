@@ -251,6 +251,7 @@ fn state(enabled: bool) -> Arc<AppState> {
         vad: enabled.then(vad_factory),
         turn_detector: None,
         ai_settings: Default::default(),
+        next_command: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
         recordings: None,

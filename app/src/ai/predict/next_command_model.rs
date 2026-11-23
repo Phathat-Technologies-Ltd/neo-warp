@@ -379,6 +379,9 @@ impl NextCommandModel {
         let cached_next_command_context = self.cached_zerostate_next_command_context.clone();
         let team_scope =
             RequestTeamScope::from_scope(&self.ai_controller.as_ref(ctx).team_context(ctx));
+        let ai_settings = AISettings::as_ref(ctx);
+        let is_ai_suggestion_enabled = ai_settings.is_ai_next_command_suggestions_enabled(ctx);
+        let model = ai_settings.ai_next_command_model().map(str::to_owned);
 
         let completion_context = completer_data.completion_session_context(ctx);
         // This is only needed if we have a prefix.
@@ -473,6 +476,7 @@ impl NextCommandModel {
                                     prefix,
                                     block_context,
                                     previous_result,
+                                    model.clone(),
                                 );
                                 return (
                                     Ok(GenerateAIInputSuggestionsResponseV2 {
@@ -495,16 +499,22 @@ impl NextCommandModel {
                         prefix.clone(),
                         block_context,
                         previous_result,
+                        model,
                     );
 
                     // For zero-state next command suggestions, return the result immediately.
                     let Some(prefix) = prefix else {
-                        return (
+                        let response = if is_ai_suggestion_enabled {
                             server_api
                                 .generate_ai_input_suggestions(&request, team_scope)
-                                .await,
+                                .await
+                        } else {
+                            Ok(GenerateAIInputSuggestionsResponseV2::default())
+                        };
+                        return (
+                            response,
                             request,
-                            true,
+                            is_ai_suggestion_enabled,
                             start_ts_ms,
                             history_based_autosuggestion_state,
                             false,
@@ -582,13 +592,17 @@ impl NextCommandModel {
                     };
 
                     // Only if we have no commands from history and no completions, use the LLM to generate a partial suggestion.
-                    let response = server_api
-                        .generate_ai_input_suggestions(&request, team_scope)
-                        .await;
+                    let response = if is_ai_suggestion_enabled {
+                        server_api
+                            .generate_ai_input_suggestions(&request, team_scope)
+                            .await
+                    } else {
+                        Ok(GenerateAIInputSuggestionsResponseV2::default())
+                    };
                     (
                         response,
                         request,
-                        true,
+                        is_ai_suggestion_enabled,
                         start_ts_ms,
                         history_based_autosuggestion_state,
                         false,
@@ -631,11 +645,14 @@ impl NextCommandModel {
         }
         match result {
             Ok(response) => {
+                if response.most_likely_action.trim().is_empty() {
+                    return;
+                }
                 if let Some(prefix) = &request.prefix {
                     if !response.most_likely_action.starts_with(prefix) {
                         // This is not expected to happen because the server applies its own filtering,
                         // but check just in case.
-                        log::warn!(
+                        log::debug!(
                             "Next command suggestion `{}` does not start with prefix `{}`.",
                             response.most_likely_action,
                             prefix

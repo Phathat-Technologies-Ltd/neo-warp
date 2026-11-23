@@ -6,6 +6,7 @@
 pub mod command_search;
 mod helpers;
 mod mcp;
+pub mod next_command;
 mod prompt;
 mod responses;
 #[cfg(test)]
@@ -30,6 +31,7 @@ use tokio::sync::mpsc;
 use warp_multi_agent_api as api;
 
 pub use helpers::ModelSettingsCache;
+pub use next_command::NextCommandState;
 pub use turn::{ModelEndpoint, ProviderFactory};
 
 use crate::{AppState, bearer_token};

@@ -1294,6 +1294,28 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.warp_agent.active_ai.intelligent_autosuggestions_enabled",
         description: "Controls whether AI-powered intelligent autosuggestions are enabled.",
     }
+    // This field should not be referenced directly -- use the
+    // `is_ai_next_command_suggestions_enabled()` getter.
+    ai_next_command_suggestions_enabled_internal: AINextCommandSuggestionsEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.warp_agent.active_ai.ai_next_command_suggestions_enabled",
+        description: "Controls whether Next Command asks your model for a suggestion when your command history has no confident prediction.",
+    }
+    ai_next_command_model: AINextCommandModel {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.warp_agent.active_ai.ai_next_command_model",
+        description: "The model ID for AI next-command suggestions. Empty uses the agent's model.",
+    }
     // This field should not be referenced directly to lookup Prompt Suggestions
     // enablement -- use the `is_prompt_suggestions_enabled()` getter.
     // Note that AgentModeQuerySuggestionsEnabled is a legacy name (the feature was initially named Agent
@@ -2606,6 +2628,19 @@ impl AISettings {
 
     pub fn is_intelligent_autosuggestions_enabled(&self, app: &warpui::AppContext) -> bool {
         self.is_active_ai_enabled(app) && *self.intelligent_autosuggestions_enabled_internal
+    }
+
+    /// Whether Next Command may ask the model for a suggestion. History-based suggestions only
+    /// need [`Self::is_intelligent_autosuggestions_enabled`].
+    pub fn is_ai_next_command_suggestions_enabled(&self, app: &warpui::AppContext) -> bool {
+        self.is_intelligent_autosuggestions_enabled(app)
+            && *self.ai_next_command_suggestions_enabled_internal
+    }
+
+    /// The model picked for AI next-command suggestions, or `None` to use the agent's model.
+    pub fn ai_next_command_model(&self) -> Option<&str> {
+        let model = self.ai_next_command_model.trim();
+        (!model.is_empty()).then_some(model)
     }
 
     pub fn is_voice_input_enabled(&self, app: &warpui::AppContext) -> bool {

@@ -26,6 +26,7 @@ fn state_with(required_group: Option<&str>, max_age: Duration) -> Arc<AppState> 
         vad: None,
         turn_detector: None,
         ai_settings: Default::default(),
+        next_command: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
         recordings: None,
@@ -767,6 +768,127 @@ async fn legacy_prompt_suggestions_answer_null_without_settings() {
     assert!(body["id"].is_string());
 }
 
+fn next_command_post(id_token: Option<&str>, body: Value) -> Request<Body> {
+    let mut request = Request::post("/ai/generate_input_suggestions")
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(id_token) = id_token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {id_token}"));
+    }
+    request.body(Body::from(body.to_string())).unwrap()
+}
+
+/// A request as the client's `GenerateAIInputSuggestionsRequest` serializes it.
+fn client_next_command_request() -> Value {
+    json!({
+        "context_messages": [
+            r#"{"input":"cargo build","output":"Finished","context":{"pwd":"/repo","git_branch":"main","exit_code":0}}"#
+        ],
+        "history_context": "{\"command\":\"cargo build\"}\n{\"command\":\"cargo test\"}",
+        "system_context": r#"{"os":{"category":"macOS"},"shell_name":"zsh"}"#,
+        "rejected_suggestions": [],
+        "prefix": null,
+        "block_context": {
+            "block_id": "block-1",
+            "index": 3,
+            "command": "cargo build",
+            "output": "Finished",
+            "exit_code": 0,
+            "is_auto_attached": false,
+            "started_ts": "2026-11-23T10:00:00+02:00",
+            "finished_ts": null,
+            "pwd": "/repo",
+            "shell": "zsh",
+            "username": "ada",
+            "hostname": "mac",
+            "git_branch": "main",
+            "os": "MacOS",
+            "session_id": 7
+        },
+        "previous_result": {
+            "was_autosuggestion_accepted": false,
+            "was_autosuggestion_from_ai": true,
+            "predicted_command": "cargo run"
+        }
+    })
+}
+
+#[tokio::test]
+async fn next_command_suggestions_require_a_sign_in() {
+    let state = state();
+    let (status, _) = send(
+        &state,
+        next_command_post(None, client_next_command_request()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn next_command_suggestions_are_empty_without_model_settings() {
+    let state = state();
+    let (id_token, _) = sign_in(&state).await;
+    let (status, body) = send(
+        &state,
+        next_command_post(Some(&id_token), client_next_command_request()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({ "commands": [], "ai_queries": [], "most_likely_action": "" })
+    );
+}
+
+#[tokio::test]
+async fn next_command_suggestions_use_the_remembered_model_settings() {
+    use prost::Message as _;
+    use warp_multi_agent_api as api;
+
+    let provider = crate::agent::scripted::TextProvider::new(vec![Ok("cargo test")]);
+    let state = Arc::new(AppState {
+        make_provider: provider.factory(),
+        ..Arc::into_inner(state()).unwrap()
+    });
+    let (id_token, _) = sign_in(&state).await;
+    let agent_request = api::Request {
+        settings: Some(api::request::Settings {
+            model_config: Some(api::request::settings::ModelConfig {
+                base: "claude-haiku-5-5".to_owned(),
+                ..Default::default()
+            }),
+            api_keys: Some(api::request::settings::ApiKeys {
+                anthropic: "sk-ant-key".to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (status, _) = send(
+        &state,
+        Request::post("/ai/passive-suggestions")
+            .header(header::AUTHORIZATION, format!("Bearer {id_token}"))
+            .body(Body::from(agent_request.encode_to_vec()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = send(
+        &state,
+        next_command_post(Some(&id_token), client_next_command_request()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({ "commands": ["cargo test"], "ai_queries": [], "most_likely_action": "cargo test" })
+    );
+    let calls = provider.calls();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].2.contains("Working directory: /repo"));
+}
+
 fn state_with_codebase_index(dir: &std::path::Path) -> Arc<AppState> {
     let keys: JwkSet = serde_json::from_str(PROVIDER_JWKS).unwrap();
     Arc::new(AppState {
@@ -778,6 +900,7 @@ fn state_with_codebase_index(dir: &std::path::Path) -> Arc<AppState> {
         vad: None,
         turn_detector: None,
         ai_settings: Default::default(),
+        next_command: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: Some(Arc::new(CodebaseIndex::with_zvec_grep_binary(
             dir.to_owned(),

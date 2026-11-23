@@ -43,4 +43,8 @@ pub struct GenerateAIInputSuggestionsRequest {
     /// The autosuggestion result from the previous next-command prediction, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_result: Option<IntelligentAutosuggestionResult>,
+
+    /// The model to answer with; absent means the agent's selected model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }

@@ -85,6 +85,8 @@ use crate::ai::blocklist::agent_view::agent_input_footer::editor::{
     AgentToolbarEditorMode, AgentToolbarInlineEditor,
 };
 use crate::ai::chatgpt_subscription::{ChatGPTSubscriptionEvent, ChatGPTSubscriptionModel};
+use crate::ai::custom_model_routers::is_custom_router_id;
+use crate::ai::execution_profiles::model_menu_items::is_auto;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::geap_credentials::force_refresh_geap_credentials;
@@ -101,12 +103,12 @@ use crate::server::telemetry::{
     AgentModeAutoDetectionSettingOrigin, ToggleCodeSuggestionsSettingSource,
 };
 use crate::settings::{
-    AIAutoDetectionEnabled, AICommandDenylist, AISettings, AISettingsChangedEvent,
-    AgentModeQuerySuggestionsEnabled, AutoApproveBypassesCommandDenylist, AwsBedrockAutoLogin,
-    AwsBedrockCredentialsEnabled, CanUseWarpCreditsForFallback, ConversationReadCodeSummaries,
-    EnableAiCommandSearchHashTrigger, GeminiEnterpriseCredentialsEnabled,
-    GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory, InputSettings,
-    IntelligentAutosuggestionsEnabled, LongRunningCommandSubmissionMode,
+    AIAutoDetectionEnabled, AICommandDenylist, AINextCommandModel, AINextCommandSuggestionsEnabled,
+    AISettings, AISettingsChangedEvent, AgentModeQuerySuggestionsEnabled,
+    AutoApproveBypassesCommandDenylist, AwsBedrockAutoLogin, AwsBedrockCredentialsEnabled,
+    CanUseWarpCreditsForFallback, ConversationReadCodeSummaries, EnableAiCommandSearchHashTrigger,
+    GeminiEnterpriseCredentialsEnabled, GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory,
+    InputSettings, IntelligentAutosuggestionsEnabled, LongRunningCommandSubmissionMode,
     McpDefaultAccessLevelInNewSessions, McpServersEnabledInNewSessions, NLDInTerminalEnabled,
     NaturalLanguageAutosuggestionsEnabled, OrchestrationMessageDisplayMode, PromptSubmissionMode,
     SharedBlockTitleGenerationEnabled, ShouldRenderUseAgentToolbarForUserCommands,
@@ -115,6 +117,7 @@ use crate::settings::{
     VoiceContextCorrection, VoiceDenoise, VoiceInputEnabled, VoiceInputLanguage,
     VoiceInputToggleKey, VoiceSmartEndOfTurn, VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
 };
+use crate::terminal::input::models::query_model_picker_choices;
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
 use crate::util::bindings;
@@ -130,6 +133,8 @@ const AI_SETTINGS_DROPDOWN_WIDTH: f32 = 250.;
 const AI_SETTINGS_DROPDOWN_MAX_HEIGHT: f32 = 250.;
 
 const NEXT_COMMAND_DESCRIPTION: &str = "Let AI suggest the next command to run based on your command history, outputs, and common workflows.";
+const AI_NEXT_COMMAND_SUGGESTIONS_DESCRIPTION: &str = "When your command history has no confident prediction, ask your model for the next command or the rest of the one you're typing. Never suggests destructive commands.";
+const NEXT_COMMAND_MODEL_SAME_AS_AGENT: &str = "Same as agent";
 const PROMPT_SUGGESTIONS_DESCRIPTION: &str = "Let AI suggest natural language prompts, as inline banners in the input, based on recent commands and their outputs.";
 const SUGGESTED_CODE_BANNERS_DESCRIPTION: &str = "Let AI suggest code diffs and queries as inline banners in the blocklist, based on recent commands and their outputs.";
 const NATURAL_LANGUAGE_AUTOSUGGESTIONS: &str =
@@ -251,6 +256,15 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 )),
                 &(context.clone() & id!(flags::IS_ACTIVE_AI_ENABLED)),
                 flags::INTELLIGENT_AUTOSUGGESTIONS_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
+            ToggleSettingActionPair::new(
+                "AI next-command suggestions",
+                builder(SettingsAction::WarpAgent(
+                    WarpAgentPageAction::ToggleAiNextCommandSuggestions,
+                )),
+                &(context.clone() & id!(flags::INTELLIGENT_AUTOSUGGESTIONS_FLAG)),
+                flags::AI_NEXT_COMMAND_SUGGESTIONS_FLAG,
             )
             .with_group(bindings::BindingGroup::WarpAi),
         ],
@@ -751,6 +765,7 @@ pub struct WarpAgentPageView {
     self_handle: WeakViewHandle<Self>,
     voice_input_toggle_key_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
     voice_input_language_dropdown: ViewHandle<FilterableDropdown<WarpAgentPageAction>>,
+    next_command_model_dropdown: ViewHandle<FilterableDropdown<WarpAgentPageAction>>,
     local_only_icon_tooltip_states: RefCell<HashMap<String, MouseStateHandle>>,
     autodetection_denylist_editor: ViewHandle<EditorView>,
     agent_toolbar_inline_editor: ViewHandle<AgentToolbarInlineEditor>,
@@ -876,6 +891,17 @@ impl WarpAgentPageView {
             );
 
             dropdown
+        });
+
+        let next_command_model_dropdown = ctx.add_typed_action_view(|ctx| {
+            let mut dropdown = FilterableDropdown::new(ctx);
+            dropdown.set_top_bar_max_width(AI_SETTINGS_DROPDOWN_WIDTH);
+            dropdown.set_menu_width(AI_SETTINGS_DROPDOWN_WIDTH, ctx);
+            dropdown
+        });
+        Self::refresh_next_command_model_dropdown(&next_command_model_dropdown, ctx);
+        ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |me, _, _, ctx| {
+            Self::refresh_next_command_model_dropdown(&me.next_command_model_dropdown, ctx);
         });
 
         let thinking_display_mode_dropdown =
@@ -1015,6 +1041,7 @@ impl WarpAgentPageView {
         // Refresh model dropdowns when BYO API keys update so key icons reflect latest state.
         ctx.subscribe_to_model(&ApiKeyManager::handle(ctx), |me, _model, _event, ctx| {
             me.sync_custom_endpoint_buttons(ctx);
+            Self::refresh_next_command_model_dropdown(&me.next_command_model_dropdown, ctx);
             // Driving the prompt off the key-store update (rather than the editor's
             // blur/Enter) means it fires reliably however the key was committed —
             // clicking outside the field, pressing Enter, or tabbing away.
@@ -1047,6 +1074,9 @@ impl WarpAgentPageView {
                 }
                 AISettingsChangedEvent::VoiceInputEnabled { .. } => {
                     me.update_voice_input_dropdown_enablement(ctx);
+                }
+                AISettingsChangedEvent::AINextCommandModel { .. } => {
+                    Self::refresh_next_command_model_dropdown(&me.next_command_model_dropdown, ctx);
                 }
                 AISettingsChangedEvent::VoiceInputToggleKey { .. } => {
                     let current_value = AISettings::as_ref(ctx)
@@ -1375,6 +1405,7 @@ impl WarpAgentPageView {
             self_handle,
             voice_input_toggle_key_dropdown,
             voice_input_language_dropdown,
+            next_command_model_dropdown,
             autodetection_denylist_editor,
             local_only_icon_tooltip_states: Default::default(),
             agent_toolbar_inline_editor,
@@ -1405,6 +1436,56 @@ impl WarpAgentPageView {
             grok_code_editor,
             chatgpt_oauth_attempt: None,
         }
+    }
+
+    /// Lists "Same as agent" and the models the agent model picker offers that the embedded
+    /// server can call directly, selecting the current choice.
+    fn refresh_next_command_model_dropdown(
+        dropdown: &ViewHandle<FilterableDropdown<WarpAgentPageAction>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let scope =
+            ResolvedTeamScope::from_scope(&UserWorkspaces::as_ref(ctx).team_context_for_view(ctx));
+        let llm_preferences = LLMPreferences::as_ref(ctx);
+        let choices = query_model_picker_choices(
+            llm_preferences,
+            llm_preferences
+                .get_base_llm_choices_for_agent_mode(&scope, ctx)
+                .collect::<Vec<_>>(),
+            "",
+            None,
+            &scope,
+            ctx,
+        );
+        let items = std::iter::once(DropdownItem::new(
+            NEXT_COMMAND_MODEL_SAME_AS_AGENT,
+            WarpAgentPageAction::SetNextCommandModel(String::new()),
+        ))
+        .chain(
+            choices
+                .into_iter()
+                // Auto models and routers pick a model on Warp's servers, which neo-warp lacks.
+                .filter(|choice| {
+                    choice.is_selectable()
+                        && !is_auto(&choice.llm)
+                        && !is_custom_router_id(choice.llm.id.as_str())
+                })
+                .map(|choice| {
+                    DropdownItem::new(
+                        choice.llm.menu_display_name(),
+                        WarpAgentPageAction::SetNextCommandModel(choice.llm.id.to_string()),
+                    )
+                }),
+        )
+        .collect();
+        let current = AISettings::as_ref(ctx)
+            .ai_next_command_model()
+            .unwrap_or_default()
+            .to_owned();
+        dropdown.update(ctx, |dropdown, ctx| {
+            dropdown.set_items(items, ctx);
+            dropdown.set_selected_by_action(WarpAgentPageAction::SetNextCommandModel(current), ctx);
+        });
     }
 
     fn update_voice_input_dropdown_enablement(&mut self, ctx: &mut ViewContext<Self>) {
@@ -2601,6 +2682,7 @@ impl WarpAgentPageView {
         {
             let active_ai_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
                 Box::new(NextCommandWidget::default()),
+                Box::new(AiNextCommandSuggestionsWidget::default()),
                 Box::new(PromptSuggestionsWidget::default()),
                 Box::new(SuggestedCodeBannersWidget::default()),
                 Box::new(NaturalLanguageAutosuggestionsWidget::default()),
@@ -2938,6 +3020,9 @@ pub enum WarpAgentPageAction {
     ToggleGlobalAI,
     ToggleActiveAI,
     ToggleIntelligentAutosuggestions,
+    ToggleAiNextCommandSuggestions,
+    /// The model ID for AI next-command suggestions; empty means the agent's model.
+    SetNextCommandModel(String),
     TogglePromptSuggestions,
     ToggleCodeSuggestions,
     ToggleNaturalLanguageAutosuggestions,
@@ -3018,6 +3103,13 @@ impl TypedActionView for WarpAgentPageView {
                 });
                 ctx.notify();
             }
+            WarpAgentPageAction::SetNextCommandModel(model) => {
+                let model = model.clone();
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.ai_next_command_model.set_value(model, ctx));
+                });
+                ctx.notify();
+            }
             WarpAgentPageAction::SetVoiceInputLanguage(language) => {
                 let language = language.clone();
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -3080,6 +3172,18 @@ impl TypedActionView for WarpAgentPageView {
                     Err(e) => {
                         log::warn!("Failed to set value for Next Command setting: {e:?}");
                     }
+                }
+                ctx.notify();
+            }
+            WarpAgentPageAction::ToggleAiNextCommandSuggestions => {
+                if let Err(e) = AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    settings
+                        .ai_next_command_suggestions_enabled_internal
+                        .toggle_and_save_value(ctx)
+                }) {
+                    log::warn!(
+                        "Failed to set value for AI next-command suggestions setting: {e:?}"
+                    );
                 }
                 ctx.notify();
             }
@@ -4174,6 +4278,70 @@ impl SettingsWidget for NextCommandWidget {
                 is_toggleable,
                 app,
             ))
+            .finish()
+    }
+}
+
+#[derive(Default)]
+struct AiNextCommandSuggestionsWidget {
+    toggle: SwitchStateHandle,
+}
+
+impl SettingsWidget for AiNextCommandSuggestionsWidget {
+    type View = WarpAgentPageView;
+
+    fn search_terms(&self) -> &str {
+        "active ai a.i. next command suggestions model llm"
+    }
+
+    fn should_render(&self, app: &AppContext) -> bool {
+        is_next_command_toggleable(app)
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ai_settings = AISettings::as_ref(app);
+        let is_toggleable = ai_settings.is_intelligent_autosuggestions_enabled(app);
+
+        Flex::column()
+            .with_child(render_ai_setting_toggle::<AINextCommandSuggestionsEnabled>(
+                "AI next-command suggestions",
+                WarpAgentPageAction::ToggleAiNextCommandSuggestions,
+                *ai_settings.ai_next_command_suggestions_enabled_internal,
+                is_toggleable,
+                self.toggle.clone(),
+                &view.local_only_icon_tooltip_states,
+                app,
+            ))
+            .with_child(render_ai_setting_description(
+                AI_NEXT_COMMAND_SUGGESTIONS_DESCRIPTION,
+                is_toggleable,
+                app,
+            ))
+            .with_children(
+                ai_settings
+                    .is_ai_next_command_suggestions_enabled(app)
+                    .then(|| {
+                        render_filterable_dropdown_item(
+                            appearance,
+                            "Next command model",
+                            Some("Falls back to the agent's model when this one can't be used."),
+                            None,
+                            LocalOnlyIconState::for_setting(
+                                AINextCommandModel::storage_key(),
+                                AINextCommandModel::sync_to_cloud(),
+                                &mut view.local_only_icon_tooltip_states.borrow_mut(),
+                                app,
+                            ),
+                            None,
+                            &view.next_command_model_dropdown,
+                        )
+                    }),
+            )
             .finish()
     }
 }

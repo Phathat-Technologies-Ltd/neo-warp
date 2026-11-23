@@ -194,6 +194,7 @@ pub fn create_generate_ai_input_suggestions_request(
     prefix: Option<String>,
     block_context: Option<Box<crate::ai::block_context::BlockContext>>,
     previous_result: Option<crate::terminal::input::IntelligentAutosuggestionResult>,
+    model: Option<String>,
 ) -> GenerateAIInputSuggestionsRequest {
     GenerateAIInputSuggestionsRequest {
         context_messages: convert_context_messages_to_strings(
@@ -205,6 +206,7 @@ pub fn create_generate_ai_input_suggestions_request(
         prefix,
         block_context,
         previous_result,
+        model,
     }
 }
 
