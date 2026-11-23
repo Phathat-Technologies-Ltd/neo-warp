@@ -776,3 +776,579 @@ async fn spoken_replies_tool_calls_and_non_voice_turns_get_no_narration() {
     run_turn(request(user_query("hi"), Vec::new()), plain.clone()).await;
     assert_eq!(plain.calls.lock().unwrap().len(), 1);
 }
+
+/// The client's copy of the conversation, built from the server's actions the way the client
+/// builds it, and sent back as `task_context`: the root plus subtasks whose subagent call is open.
+#[derive(Default)]
+struct Client {
+    tasks: Vec<api::Task>,
+}
+
+impl Client {
+    fn apply(&mut self, events: &[api::response_event::Type]) {
+        for action in actions(events) {
+            match action {
+                client_action::Action::CreateTask(create) => {
+                    let task = create.task.unwrap();
+                    if let Some(parent) = task
+                        .dependencies
+                        .as_ref()
+                        .map(|dependencies| dependencies.parent_task_id.clone())
+                        .filter(|parent| !parent.is_empty())
+                    {
+                        // The client resolves a subtask through its parent's subagent call.
+                        assert!(
+                            self.task(&parent).messages.iter().any(|message| matches!(
+                                &message.message,
+                                Some(Kind::ToolCall(ToolCall {
+                                    tool: Some(api::message::tool_call::Tool::Subagent(call)),
+                                    ..
+                                })) if call.task_id == task.id
+                            )),
+                            "the subagent call precedes its subtask"
+                        );
+                    }
+                    self.tasks.push(task);
+                }
+                client_action::Action::AddMessagesToTask(add) => {
+                    self.task_mut(&add.task_id).messages.extend(add.messages)
+                }
+                client_action::Action::UpdateTaskServerData(update) => {
+                    self.task_mut(&update.task_id).server_data = update.server_data
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn task(&self, id: &str) -> &api::Task {
+        self.tasks
+            .iter()
+            .find(|task| task.id == id)
+            .unwrap_or_else(|| panic!("the client has no task {id}"))
+    }
+
+    fn task_mut(&mut self, id: &str) -> &mut api::Task {
+        self.tasks
+            .iter_mut()
+            .find(|task| task.id == id)
+            .unwrap_or_else(|| panic!("the client has no task {id}"))
+    }
+
+    fn root(&self) -> &api::Task {
+        self.tasks.iter().find(|task| is_root(task)).unwrap()
+    }
+
+    /// The open CLI subtask, if any.
+    fn cli_task(&self) -> Option<String> {
+        self.tasks
+            .iter()
+            .find(|task| is_root(task))
+            .and_then(CliSubtask::open_in)
+            .map(|cli| cli.task_id)
+    }
+
+    fn task_context(&self) -> Vec<api::Task> {
+        let open = self.cli_task();
+        self.tasks
+            .iter()
+            .filter(|task| is_root(task) || Some(&task.id) == open.as_ref())
+            .cloned()
+            .collect()
+    }
+
+    async fn send(
+        &mut self,
+        input: api::request::input::Type,
+        provider: &Arc<ScriptedProvider>,
+    ) -> Vec<api::response_event::Type> {
+        let events = run_turn(lrc_request(input, self.task_context()), provider.clone()).await;
+        assert!(matches!(
+            finish_reason(&events),
+            api::response_event::stream_finished::Reason::Done(_)
+        ));
+        self.apply(&events);
+        events
+    }
+}
+
+/// A request from a client that supports long-running commands, as Warp's does.
+fn lrc_request(input: api::request::input::Type, tasks: Vec<api::Task>) -> api::Request {
+    let mut request = request(input, tasks);
+    let settings = request.settings.as_mut().unwrap();
+    settings.supports_long_running_commands = true;
+    settings.supported_tools.extend([
+        api::ToolType::WriteToLongRunningShellCommand as i32,
+        api::ToolType::ReadShellCommandOutput as i32,
+    ]);
+    settings.supported_cli_agent_tools = vec![
+        api::ToolType::WriteToLongRunningShellCommand as i32,
+        api::ToolType::ReadShellCommandOutput as i32,
+        api::ToolType::ReadFiles as i32,
+    ];
+    request
+}
+
+fn single_input(
+    input: api::request::input::user_inputs::user_input::Input,
+) -> api::request::input::Type {
+    api::request::input::Type::UserInputs(api::request::input::UserInputs {
+        inputs: vec![api::request::input::user_inputs::UserInput { input: Some(input) }],
+    })
+}
+
+fn query_for(text: &str, agent: api::AgentType) -> api::request::input::Type {
+    single_input(
+        api::request::input::user_inputs::user_input::Input::UserQuery(
+            api::request::input::UserQuery {
+                query: text.to_owned(),
+                intended_agent: agent as i32,
+                ..Default::default()
+            },
+        ),
+    )
+}
+
+const FIND: &str = "find /Users/me -name '*.log' | sort | head";
+
+fn snapshot(output: &str) -> api::LongRunningShellCommandSnapshot {
+    api::LongRunningShellCommandSnapshot {
+        output: output.to_owned(),
+        cursor: "<|cursor|>".to_owned(),
+        command_id: "block-1".to_owned(),
+        ..Default::default()
+    }
+}
+
+fn tool_result_input(
+    tool_call_id: &str,
+    result: api::request::input::tool_call_result::Result,
+) -> api::request::input::Type {
+    single_input(
+        api::request::input::user_inputs::user_input::Input::ToolCallResult(
+            api::request::input::ToolCallResult {
+                tool_call_id: tool_call_id.to_owned(),
+                result: Some(result),
+            },
+        ),
+    )
+}
+
+fn added_to(events: &[api::response_event::Type], task_id: &str) -> Vec<api::Message> {
+    actions(events)
+        .into_iter()
+        .filter_map(|action| match action {
+            client_action::Action::AddMessagesToTask(add) if add.task_id == task_id => {
+                Some(add.messages)
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+fn texts(messages: &[api::Message]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|message| match &message.message {
+            Some(Kind::AgentOutput(output)) => Some(output.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn tool_calls(messages: &[api::Message]) -> Vec<api::message::tool_call::Tool> {
+    messages
+        .iter()
+        .filter_map(|message| match &message.message {
+            Some(Kind::ToolCall(call)) => call.tool.clone(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Replays the client's requests for a command that outlives the client's wait: the snapshot hands
+/// the command to a CLI subagent, a follow-up typed while it runs reaches the agent with the
+/// output, the agent stops it with Ctrl-C, and the finished command returns the turn to the root.
+#[tokio::test]
+async fn a_long_running_command_is_monitored_and_the_agent_answers_while_it_runs() {
+    let provider = ScriptedProvider::new(vec![
+        vec![tool_request(
+            "toolu_1",
+            "run_shell_command",
+            json!({ "command": FIND, "read_only": true, "risky": false }),
+        )],
+        vec![Message::assistant().with_text("It's still searching. I'll keep watching.")],
+        vec![
+            Message::assistant().with_text("Not yet, stopping it now."),
+            tool_request("toolu_2", "stop_shell_command", json!({})),
+        ],
+        vec![Message::assistant().with_text("I stopped it. It found 2 logs so far.")],
+    ]);
+    let mut client = Client::default();
+
+    client
+        .send(
+            query_for("find my log files", api::AgentType::Primary),
+            &provider,
+        )
+        .await;
+    let root_id = client.root().id.clone();
+
+    // The client stops waiting after a few seconds and reports a snapshot.
+    let events = client
+        .send(
+            tool_result_input(
+                "toolu_1",
+                api::request::input::tool_call_result::Result::RunShellCommand(
+                    api::RunShellCommandResult {
+                        command: FIND.to_owned(),
+                        result: Some(
+                            api::run_shell_command_result::Result::LongRunningCommandSnapshot(
+                                snapshot("/Users/me/a.log\n"),
+                            ),
+                        ),
+                        ..Default::default()
+                    },
+                ),
+            ),
+            &provider,
+        )
+        .await;
+    let cli_id = client
+        .cli_task()
+        .expect("the snapshot opens a CLI subagent");
+    let root_added = added_to(&events, &root_id);
+    assert!(
+        matches!(&root_added[0].message, Some(Kind::ToolCallResult(result)) if result.tool_call_id == "toolu_1")
+    );
+    let [api::message::tool_call::Tool::Subagent(subagent)] = &tool_calls(&root_added)[..] else {
+        panic!("the root task announces the subagent");
+    };
+    assert_eq!(
+        subagent.metadata,
+        Some(api::message::tool_call::subagent::Metadata::Cli(
+            api::message::tool_call::subagent::CliSubagent {
+                command_id: "block-1".to_owned()
+            }
+        ))
+    );
+    assert!(texts(&root_added).is_empty());
+    assert_eq!(
+        texts(&added_to(&events, &cli_id)),
+        vec!["It's still searching. I'll keep watching."]
+    );
+    {
+        let calls = provider.calls.lock().unwrap();
+        let (system, sent, tools) = &calls[1];
+        assert!(system.contains("Monitoring a running command"));
+        assert_eq!(
+            tools,
+            &vec![
+                "read_files",
+                "read_shell_command_output",
+                "write_to_shell_command",
+                "stop_shell_command"
+            ]
+        );
+        let sent = serde_json::to_string(sent).unwrap();
+        assert!(sent.contains("still running (command_id: block-1)"));
+    }
+
+    // While the agent monitors the command, the client routes follow-ups to the CLI subtask.
+    let events = client
+        .send(
+            query_for("Hello? Have you stopped it?", api::AgentType::Cli),
+            &provider,
+        )
+        .await;
+    assert!(added_to(&events, &root_id).is_empty());
+    let cli_added = added_to(&events, &cli_id);
+    assert!(
+        matches!(&cli_added[0].message, Some(Kind::UserQuery(query)) if query.query == "Hello? Have you stopped it?")
+    );
+    assert_eq!(texts(&cli_added), vec!["Not yet, stopping it now."]);
+    let [api::message::tool_call::Tool::WriteToLongRunningShellCommand(write)] =
+        &tool_calls(&cli_added)[..]
+    else {
+        panic!("the agent sends Ctrl-C to the command");
+    };
+    assert_eq!(write.command_id, "block-1");
+    assert_eq!(write.input, b"\x03");
+
+    // The write's result shows the command exited, which closes the subagent.
+    let events = client
+        .send(
+            tool_result_input(
+                "toolu_2",
+                api::request::input::tool_call_result::Result::WriteToLongRunningShellCommand(
+                    api::WriteToLongRunningShellCommandResult {
+                        result: Some(
+                            api::write_to_long_running_shell_command_result::Result::CommandFinished(
+                                api::ShellCommandFinished {
+                                    output: "/Users/me/a.log\n/Users/me/b.log\n^C".to_owned(),
+                                    exit_code: 130,
+                                    command_id: "block-1".to_owned(),
+                                    ..Default::default()
+                                },
+                            ),
+                        ),
+                    },
+                ),
+            ),
+            &provider,
+        )
+        .await;
+    assert!(
+        matches!(&added_to(&events, &cli_id)[..], [message] if matches!(&message.message, Some(Kind::ToolCallResult(result)) if result.tool_call_id == "toolu_2"))
+    );
+    let root_added = added_to(&events, &root_id);
+    assert!(matches!(
+        &root_added[0].message,
+        Some(Kind::ToolCallResult(ToolCallResult {
+            result: Some(api::message::tool_call_result::Result::Subagent(_)),
+            ..
+        }))
+    ));
+    assert_eq!(
+        texts(&root_added),
+        vec!["I stopped it. It found 2 logs so far."]
+    );
+    assert_eq!(client.cli_task(), None);
+
+    let calls = provider.calls.lock().unwrap();
+    let (system, sent, tools) = &calls[3];
+    assert!(!system.contains("Monitoring a running command"));
+    assert!(tools.contains(&"run_shell_command".to_owned()));
+    let sent = serde_json::to_string(sent).unwrap();
+    for expected in [
+        "find my log files",
+        "Have you stopped it?",
+        "exit code 130",
+        "b.log",
+    ] {
+        assert!(sent.contains(expected), "the model sees {expected}: {sent}");
+    }
+}
+
+/// The screenshot's case: the user writes while the agent's command runs and no subagent is open
+/// yet, so the client sends a `CliAgentUserQuery` and an optimistic subtask that waits for the
+/// server's `CreateTask`.
+#[tokio::test]
+async fn a_follow_up_about_a_running_command_opens_a_subagent_and_gets_an_answer() {
+    let provider = ScriptedProvider::new(vec![
+        vec![tool_request(
+            "toolu_1",
+            "run_shell_command",
+            json!({ "command": FIND, "read_only": true, "risky": false }),
+        )],
+        vec![Message::assistant().with_text("No, it's still running. It has found a.log.")],
+    ]);
+    let mut client = Client::default();
+    client
+        .send(
+            query_for("find my log files", api::AgentType::Primary),
+            &provider,
+        )
+        .await;
+    let root_id = client.root().id.clone();
+
+    use api::request::input::user_inputs::user_input::Input;
+    let events = client
+        .send(
+            single_input(Input::CliAgentUserQuery(
+                api::request::input::CliAgentUserQuery {
+                    user_query: Some(api::request::input::UserQuery {
+                        query: "Hello? Have you stopped it?".to_owned(),
+                        intended_agent: api::AgentType::Cli as i32,
+                        ..Default::default()
+                    }),
+                    running_command: Some(api::RunningShellCommand {
+                        command: FIND.to_owned(),
+                        snapshot: Some(snapshot("/Users/me/a.log\n")),
+                    }),
+                    run_shell_command_tool_call_id: "toolu_1".to_owned(),
+                },
+            )),
+            &provider,
+        )
+        .await;
+
+    let cli_id = client
+        .cli_task()
+        .expect("the follow-up opens a CLI subagent");
+    let root_added = added_to(&events, &root_id);
+    assert!(matches!(
+        &root_added[0].message,
+        Some(Kind::ToolCallResult(ToolCallResult {
+            tool_call_id,
+            result: Some(api::message::tool_call_result::Result::RunShellCommand(_)),
+            ..
+        })) if tool_call_id == "toolu_1"
+    ));
+    assert!(matches!(
+        &tool_calls(&root_added)[..],
+        [api::message::tool_call::Tool::Subagent(_)]
+    ));
+    let cli_added = added_to(&events, &cli_id);
+    assert!(
+        matches!(&cli_added[0].message, Some(Kind::UserQuery(query)) if query.query == "Hello? Have you stopped it?")
+    );
+    assert_eq!(
+        texts(&cli_added),
+        vec!["No, it's still running. It has found a.log."]
+    );
+
+    let calls = provider.calls.lock().unwrap();
+    let sent = serde_json::to_string(&calls[1].1).unwrap();
+    assert!(sent.contains("Have you stopped it?"));
+    assert!(sent.contains("is still running in the terminal (command_id: block-1)"));
+    assert!(sent.contains("/Users/me/a.log"));
+}
+
+async fn client_monitoring_a_command(provider: &Arc<ScriptedProvider>) -> Client {
+    let mut client = Client::default();
+    client
+        .send(
+            query_for("find my log files", api::AgentType::Primary),
+            provider,
+        )
+        .await;
+    client
+        .send(
+            tool_result_input(
+                "toolu_1",
+                api::request::input::tool_call_result::Result::RunShellCommand(
+                    api::RunShellCommandResult {
+                        command: FIND.to_owned(),
+                        result: Some(
+                            api::run_shell_command_result::Result::LongRunningCommandSnapshot(
+                                snapshot(""),
+                            ),
+                        ),
+                        ..Default::default()
+                    },
+                ),
+            ),
+            provider,
+        )
+        .await;
+    assert!(client.cli_task().is_some());
+    client
+}
+
+#[tokio::test]
+async fn a_poll_interrupted_by_a_follow_up_is_answered_as_cancelled() {
+    let provider = ScriptedProvider::new(vec![
+        vec![tool_request(
+            "toolu_1",
+            "run_shell_command",
+            json!({ "command": FIND, "read_only": true, "risky": false }),
+        )],
+        vec![tool_request(
+            "toolu_2",
+            "read_shell_command_output",
+            json!({ "until_complete": true }),
+        )],
+        vec![Message::assistant().with_text("It's still going.")],
+    ]);
+    let mut client = client_monitoring_a_command(&provider).await;
+    let cli_id = client.cli_task().unwrap();
+    let poll = tool_calls(&client.task(&cli_id).messages);
+    assert!(matches!(
+        &poll[..],
+        [api::message::tool_call::Tool::ReadShellCommandOutput(read)] if read.command_id == "block-1"
+    ));
+
+    // The client drops the pending poll when the user sends a follow-up.
+    let events = client
+        .send(query_for("status?", api::AgentType::Cli), &provider)
+        .await;
+    let cli_added = added_to(&events, &cli_id);
+    assert!(matches!(
+        &cli_added[0].message,
+        Some(Kind::ToolCallResult(ToolCallResult {
+            tool_call_id,
+            result: Some(api::message::tool_call_result::Result::Cancel(())),
+            ..
+        })) if tool_call_id == "toolu_2"
+    ));
+    assert_eq!(texts(&cli_added), vec!["It's still going."]);
+}
+
+#[tokio::test]
+async fn a_query_for_the_main_agent_closes_the_subagent() {
+    let provider = ScriptedProvider::new(vec![
+        vec![tool_request(
+            "toolu_1",
+            "run_shell_command",
+            json!({ "command": FIND, "read_only": true, "risky": false }),
+        )],
+        vec![Message::assistant().with_text("Watching it.")],
+        vec![Message::assistant().with_text("Sure.")],
+    ]);
+    let mut client = client_monitoring_a_command(&provider).await;
+    let root_id = client.root().id.clone();
+
+    let events = client
+        .send(
+            query_for("something else", api::AgentType::Primary),
+            &provider,
+        )
+        .await;
+    assert_eq!(client.cli_task(), None);
+    let root_added = added_to(&events, &root_id);
+    assert!(matches!(
+        &root_added[0].message,
+        Some(Kind::ToolCallResult(ToolCallResult {
+            result: Some(api::message::tool_call_result::Result::Subagent(_)),
+            ..
+        }))
+    ));
+    assert_eq!(texts(&root_added), vec!["Sure."]);
+}
+
+/// After the user takes over and the command exits, the client resumes the conversation with the
+/// finished block as context.
+#[tokio::test]
+#[allow(deprecated)]
+async fn resuming_after_a_take_over_reports_the_finished_command() {
+    let provider = ScriptedProvider::new(vec![
+        vec![tool_request(
+            "toolu_1",
+            "run_shell_command",
+            json!({ "command": FIND, "read_only": true, "risky": false }),
+        )],
+        vec![Message::assistant().with_text("Watching it.")],
+        vec![Message::assistant().with_text("The search is done.")],
+    ]);
+    let mut client = client_monitoring_a_command(&provider).await;
+    let root_id = client.root().id.clone();
+
+    let mut request = lrc_request(
+        api::request::input::Type::ResumeConversation(Default::default()),
+        client.task_context(),
+    );
+    request.input.as_mut().unwrap().context = Some(api::InputContext {
+        executed_shell_commands: vec![api::ExecutedShellCommand {
+            command: FIND.to_owned(),
+            output: "/Users/me/a.log".to_owned(),
+            exit_code: 0,
+            command_id: "block-1".to_owned(),
+            finished_ts: Some(prost_types::Timestamp::default()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let events = run_turn(request, provider.clone()).await;
+    client.apply(&events);
+
+    assert_eq!(client.cli_task(), None);
+    assert_eq!(
+        texts(&added_to(&events, &root_id)),
+        vec!["The search is done."]
+    );
+    let calls = provider.calls.lock().unwrap();
+    let sent = serde_json::to_string(&calls[2].1).unwrap();
+    assert!(sent.contains("finished with exit code 0"));
+}

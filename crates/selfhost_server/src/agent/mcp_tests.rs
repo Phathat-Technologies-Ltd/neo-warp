@@ -330,6 +330,6 @@ fn calls_to_tools_not_advertised_this_turn_are_refused() {
     // raw name becomes a client tool call.
     for name in ["mcp__GitHub__delete_issue", "delete_issue"] {
         assert!(tools.to_warp_tool(name, None).is_none());
-        assert!(crate::agent::tools::to_warp_tool(name, None).is_err());
+        assert!(crate::agent::tools::to_warp_tool(name, None, None).is_err());
     }
 }

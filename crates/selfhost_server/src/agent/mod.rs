@@ -6,6 +6,7 @@
 pub mod command_search;
 mod helpers;
 mod mcp;
+mod monitor;
 mod prompt;
 mod responses;
 #[cfg(test)]
