@@ -160,6 +160,41 @@ pub(crate) fn reopen_captures() {
     for (_, tx) in CAPTURES.lock().iter() {
         let _ = tx.send(Signal::Reopen);
     }
+    notify_backend_changed();
+}
+
+/// Bumped whenever the backend streams should use, or whether echo is being cancelled, may have
+/// changed.
+static BACKEND_GENERATION: AtomicU64 = AtomicU64::new(0);
+static BACKEND_LISTENERS: Mutex<Vec<async_channel::Sender<()>>> = Mutex::new(Vec::new());
+
+pub(crate) fn backend_generation() -> u64 {
+    BACKEND_GENERATION.load(Ordering::Acquire)
+}
+
+pub(crate) fn notify_backend_changed() {
+    BACKEND_GENERATION.fetch_add(1, Ordering::AcqRel);
+    BACKEND_LISTENERS
+        .lock()
+        .retain(|tx| !matches!(tx.try_send(()), Err(async_channel::TrySendError::Closed(_))));
+}
+
+/// Receives a message whenever the audio backend changes (for example, system echo cancellation
+/// falls back to the voice-processing unit) or [`is_echo_cancelling`] may have changed. Bursts are
+/// coalesced.
+pub fn backend_changes() -> async_channel::Receiver<()> {
+    let (tx, rx) = async_channel::bounded(1);
+    BACKEND_LISTENERS.lock().push(tx);
+    rx
+}
+
+/// The backend a speaker opened now should use.
+pub(crate) fn desired_output_backend(
+    selector: &BackendSelector,
+    supported: bool,
+    system_aec_running: bool,
+) -> AudioBackend {
+    system_aec::output_backend(system_aec_running, selector.choose(supported))
 }
 
 /// Keeps a microphone supervisor registered for [`Signal::Reopen`] until dropped.

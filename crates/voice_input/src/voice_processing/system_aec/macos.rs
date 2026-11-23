@@ -10,7 +10,7 @@
 use std::ffi::{CStr, c_void};
 use std::mem::size_of;
 use std::ptr::{NonNull, null, null_mut};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
@@ -67,6 +67,9 @@ struct Shared {
     sink: Mutex<Option<CaptureSink>>,
     /// Set by the I/O callback when a frame had tap audio; cleared by the health check.
     tap_had_sound: AtomicBool,
+    /// The I/O proc's input layout, `buffers << 16 | mic channels << 8 | tap channels`, for
+    /// diagnosing a silent tap.
+    input_layout: AtomicU32,
     frames_processed: AtomicU64,
     stop: AtomicBool,
     blocked: AtomicBool,
@@ -175,6 +178,7 @@ impl Drop for Engine {
         self.shared.stop.store(true, Ordering::Relaxed);
         *self.shared.sink.lock() = None;
         log::info!("System echo cancellation: pipeline stopped");
+        crate::voice_processing::notify_backend_changed();
     }
 }
 
@@ -450,6 +454,7 @@ fn start_engine() -> anyhow::Result<Engine> {
             output: SampleRing::new(OUTPUT_CAPACITY),
             sink: Mutex::new(None),
             tap_had_sound: AtomicBool::new(false),
+            input_layout: AtomicU32::new(0),
             frames_processed: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             blocked: AtomicBool::new(false),
@@ -546,6 +551,12 @@ unsafe extern "C-unwind" fn io_proc(
     };
     let mic_channels = mic.mNumberChannels.max(1) as usize;
     let tap_channels = tap.mNumberChannels.max(1) as usize;
+    state.shared.input_layout.store(
+        (buffers.len() as u32) << 16
+            | (mic_channels as u32 & 0xff) << 8
+            | tap_channels as u32 & 0xff,
+        Ordering::Relaxed,
+    );
     let mic_frames = samples(mic).chunks_exact(mic_channels);
     let tap_frames = samples(tap).chunks_exact(tap_channels);
     for (mic_frame, tap_frame) in mic_frames.zip(tap_frames) {
@@ -592,9 +603,14 @@ fn run_worker(shared: Arc<Shared>, started_at: Instant) {
         } else {
             if !first_audio_logged {
                 first_audio_logged = true;
+                let layout = shared.input_layout.load(Ordering::Relaxed);
                 log::info!(
-                    "System echo cancellation: first audio {} ms after starting",
-                    started_at.elapsed().as_millis()
+                    "System echo cancellation: first audio {} ms after starting ({} input \
+                     buffers, microphone {} channels, tap {} channels)",
+                    started_at.elapsed().as_millis(),
+                    layout >> 16,
+                    (layout >> 8) & 0xff,
+                    layout & 0xff
                 );
             }
             if frames != last_frames {

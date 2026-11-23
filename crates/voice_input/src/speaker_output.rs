@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use anyhow::Context as _;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -124,37 +124,23 @@ enum Backend {
 /// An open speaker; dropping it closes the device.
 pub struct SpeechOutput {
     backend: Mutex<Backend>,
+    /// The [`voice_processing::backend_generation`] the backend was chosen at.
+    generation: AtomicU64,
     device_name: String,
     reports_headphones: bool,
 }
 
 impl SpeechOutput {
     /// Opens the default output device, on the echo-cancelling unit while
-    /// [`voice_processing::set_voice_processing_wanted`] is on and the unit works.
+    /// [`voice_processing::set_voice_processing_wanted`] is on, the unit works, and system echo
+    /// cancellation isn't running. The backend is chosen again before a clip plays whenever the
+    /// audio backends changed since.
     pub fn open() -> anyhow::Result<Self> {
-        let system_aec_running = system_aec::is_running();
-        let (backend, kind) = voice_processing::with_selector(|selector| {
-            open_with_fallback(
-                selector,
-                voice_processing::is_supported()
-                    && system_aec::output_backend(
-                        system_aec_running,
-                        AudioBackend::VoiceProcessing,
-                    ) == AudioBackend::VoiceProcessing,
-                || voice_processing::acquire_output().map(Backend::VoiceProcessing),
-                || CpalOutput::open().map(Backend::Cpal),
-            )
-        })?;
-        if kind == AudioBackend::VoiceProcessing {
-            log::info!("Speech output: using the echo-cancelling voice-processing unit");
-        } else if system_aec_running {
-            log::info!(
-                "Speech output: plain path; system echo cancellation hears it through the tap"
-            );
-        }
+        let (backend, generation) = open_backend()?;
         let (device_name, reports_headphones) = default_output_description();
         Ok(Self {
             backend: Mutex::new(backend),
+            generation: AtomicU64::new(generation),
             device_name,
             reports_headphones,
         })
@@ -172,10 +158,7 @@ impl SpeechOutput {
 
     /// Which backend plays the speech.
     pub fn backend(&self) -> AudioBackend {
-        match &*self.backend.lock() {
-            Backend::Cpal(_) => AudioBackend::Cpal,
-            Backend::VoiceProcessing(_) => AudioBackend::VoiceProcessing,
-        }
+        backend_kind(&self.backend.lock())
     }
 
     /// Plays mono `samples` recorded at `sample_rate`, replacing anything playing, and calls
@@ -187,6 +170,7 @@ impl SpeechOutput {
         on_finished: impl FnOnce() + Send + 'static,
     ) {
         let mut backend = self.backend.lock();
+        self.reselect_if_changed(&mut backend);
         // A unit that stopped (say, it couldn't restart after a device change) would never finish
         // the clip, so speech moves to the plain path.
         if let Backend::VoiceProcessing(lease) = &*backend
@@ -214,6 +198,33 @@ impl SpeechOutput {
         }
     }
 
+    /// Moves to the backend the speaker should now use (for example, onto the echo-cancelling unit
+    /// after system echo cancellation fell back) when the audio backends changed since it was
+    /// chosen.
+    fn reselect_if_changed(&self, backend: &mut Backend) {
+        let generation = voice_processing::backend_generation();
+        if self.generation.swap(generation, Ordering::AcqRel) == generation {
+            return;
+        }
+        let desired = voice_processing::with_selector(|selector| {
+            voice_processing::desired_output_backend(
+                selector,
+                voice_processing::is_supported(),
+                system_aec::is_running(),
+            )
+        });
+        if !needs_reselect(backend_kind(backend), desired) {
+            return;
+        }
+        match open_backend() {
+            Ok((reopened, generation)) => {
+                *backend = reopened;
+                self.generation.store(generation, Ordering::Release);
+            }
+            Err(error) => log::error!("Speech output: couldn't reopen the speaker: {error:#}"),
+        }
+    }
+
     /// Ramps the speech volume to `gain` (1.0 is full volume) over a few milliseconds.
     pub fn set_gain(&self, gain: f32) {
         TARGET_GAIN.store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
@@ -230,6 +241,45 @@ impl SpeechOutput {
             Backend::VoiceProcessing(lease) => lease.stop(),
         }
     }
+}
+
+fn backend_kind(backend: &Backend) -> AudioBackend {
+    match backend {
+        Backend::Cpal(_) => AudioBackend::Cpal,
+        Backend::VoiceProcessing(_) => AudioBackend::VoiceProcessing,
+    }
+}
+
+/// Whether a speaker on `current` must reopen to play on `desired`. Speech plays through cpal for
+/// system echo cancellation, so only a move onto or off the voice-processing unit reopens it.
+fn needs_reselect(current: AudioBackend, desired: AudioBackend) -> bool {
+    let on_unit = |backend| backend == AudioBackend::VoiceProcessing;
+    on_unit(current) != on_unit(desired)
+}
+
+/// Opens the speaker on the backend the selector picks now, returning the backend generation it
+/// was chosen at.
+fn open_backend() -> anyhow::Result<(Backend, u64)> {
+    let generation = voice_processing::backend_generation();
+    let system_aec_running = system_aec::is_running();
+    let (backend, kind) = voice_processing::with_selector(|selector| {
+        open_with_fallback(
+            selector,
+            voice_processing::is_supported()
+                && system_aec::output_backend(system_aec_running, AudioBackend::VoiceProcessing)
+                    == AudioBackend::VoiceProcessing,
+            || voice_processing::acquire_output().map(Backend::VoiceProcessing),
+            || CpalOutput::open().map(Backend::Cpal),
+        )
+    })?;
+    if kind == AudioBackend::VoiceProcessing {
+        log::info!("Speech output: using the echo-cancelling voice-processing unit");
+    } else if system_aec_running {
+        log::info!("Speech output: plain path; system echo cancellation hears it through the tap");
+    } else {
+        log::info!("Speech output: plain path");
+    }
+    Ok((backend, generation))
 }
 
 fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
