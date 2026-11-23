@@ -442,7 +442,8 @@ elif [[ $RELEASE_CHANNEL = "neo-warp" ]]; then
     BUNDLE_ID="dev.neowarp.NeoWarp"
     WARP_APP_NAME="neo-warp"
     WARP_SCHEME_NAME="neowarp"
-    FEATURES="release_bundle,extern_plist"
+    # The ML prompt/command classifier and heuristic Warp's own TUI ships with.
+    FEATURES="release_bundle,extern_plist,nld_classifier_v3,nld_heuristic_v2"
     ASSET_CHANNEL="oss"
 fi
 # Bundled resources and icons come from this channel's assets.
