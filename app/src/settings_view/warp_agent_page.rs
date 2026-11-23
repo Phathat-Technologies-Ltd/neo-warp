@@ -3299,12 +3299,21 @@ impl TypedActionView for WarpAgentPageView {
             WarpAgentPageAction::CycleConversationVoice => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     let voices = conversation_voices(&settings.conversation_speech_engine);
+                    if voices.is_empty() {
+                        return;
+                    }
                     let current = voices
                         .iter()
                         .position(|(id, _)| *id == settings.conversation_voice.as_str())
                         .unwrap_or(0);
-                    let next = voices[(current + 1) % voices.len()].0;
-                    report_if_error!(settings.conversation_voice.set_value(next.to_owned(), ctx));
+                    let next = voices[(current + 1) % voices.len()].0.clone();
+                    #[cfg(target_os = "macos")]
+                    if next == local_transcription::speech::APPLE_PERSONAL_VOICE_REQUEST {
+                        local_transcription::speech::request_personal_voice_authorization(
+                            |allowed| log::info!("Personal Voice authorization: {allowed}"),
+                        );
+                    }
+                    report_if_error!(settings.conversation_voice.set_value(next, ctx));
                 });
                 ctx.notify();
             }
@@ -5156,33 +5165,40 @@ impl VoiceWidget {
         use crate::voice::local_model::{SpeechOutputEngine, SpeechOutputModel};
 
         let model = SpeechOutputModel::as_ref(app);
-        column.add_child(self.render_model_row(
-            "Speech Output Model",
-            ModelRow {
-                state: model.state().clone(),
-                display_name: model.display_name(),
-                size: model.download_size(),
-                download: WarpAgentPageAction::DownloadSpeechOutputModel,
-                cancel: WarpAgentPageAction::CancelSpeechOutputModelDownload,
-                remove: WarpAgentPageAction::RemoveSpeechOutputModel,
-            },
-            self.speech_output_model_button.clone(),
-            appearance,
-        ));
+        let engine =
+            SpeechOutputEngine::from_setting(&AISettings::as_ref(app).conversation_speech_engine);
+        if engine.spec().is_some() {
+            column.add_child(self.render_model_row(
+                "Speech Output Model",
+                ModelRow {
+                    state: model.state().clone(),
+                    display_name: model.display_name(),
+                    size: model.download_size(),
+                    download: WarpAgentPageAction::DownloadSpeechOutputModel,
+                    cancel: WarpAgentPageAction::CancelSpeechOutputModelDownload,
+                    remove: WarpAgentPageAction::RemoveSpeechOutputModel,
+                },
+                self.speech_output_model_button.clone(),
+                appearance,
+            ));
+        }
         let settings = AISettings::as_ref(app);
         let voices = conversation_voices(&settings.conversation_speech_engine);
         let voice = voices
             .iter()
             .find(|(id, _)| *id == settings.conversation_voice.as_str())
             .or_else(|| voices.first())
-            .map_or("Default", |(_, name)| *name);
-        let engine = SpeechOutputEngine::from_setting(&settings.conversation_speech_engine);
+            .map_or("Default", |(_, name)| name.as_str());
         let engine_help = match engine {
             SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => {
                 "Kokoro sounds best; tiny-voca is a smaller download; Pocket TTS (Kyutai, \
                  English, one voice) is another option."
                     .to_owned()
             }
+            SpeechOutputEngine::Apple => "Uses the voices installed on this Mac; nothing to \
+                 download. Add more natural voices in System Settings \u{203a} Accessibility \
+                 \u{203a} Spoken Content \u{203a} System Voice \u{203a} Manage Voices."
+                .to_owned(),
             SpeechOutputEngine::Pocket => format!(
                 "Pocket TTS (Kyutai, English, one voice) has a single voice and a fixed speaking \
                  rate. {POCKET_ATTRIBUTION}"
@@ -5598,6 +5614,7 @@ fn engine_label(
     match engine {
         SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => display_name.to_owned(),
         SpeechOutputEngine::Pocket => "Pocket TTS (Kyutai, English, one voice)".to_owned(),
+        SpeechOutputEngine::Apple => "Apple (macOS voices)".to_owned(),
     }
 }
 
@@ -5607,15 +5624,30 @@ const CONVERSATION_RATES: [u32; 5] = [80, 100, 120, 135, 150];
 
 /// The voices of the engine named by the `conversation_speech_engine` setting, as (id, name).
 #[cfg(not(target_family = "wasm"))]
-fn conversation_voices(engine: &str) -> &'static [(&'static str, &'static str)] {
+fn conversation_voices(engine: &str) -> Vec<(String, String)> {
     use local_transcription::speech::{KOKORO_VOICES, POCKET_VOICES, TINY_VOCA_VOICES};
 
     use crate::voice::local_model::SpeechOutputEngine;
-    match SpeechOutputEngine::from_setting(engine) {
+    let voices = match SpeechOutputEngine::from_setting(engine) {
         SpeechOutputEngine::Kokoro => KOKORO_VOICES,
         SpeechOutputEngine::TinyVoca => TINY_VOCA_VOICES,
         SpeechOutputEngine::Pocket => POCKET_VOICES,
-    }
+        #[cfg(target_os = "macos")]
+        SpeechOutputEngine::Apple => {
+            use local_transcription::speech::{AppleSpeaker, Speaker};
+            return AppleSpeaker::new(crate::voice::local_model::CONVERSATION_LANGUAGE)
+                .voices()
+                .into_iter()
+                .map(|voice| (voice.id.0, voice.display_name))
+                .collect();
+        }
+        #[cfg(not(target_os = "macos"))]
+        SpeechOutputEngine::Apple => KOKORO_VOICES,
+    };
+    voices
+        .iter()
+        .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
+        .collect()
 }
 
 /// A row whose button shows the current value and switches to the next one.
@@ -5713,7 +5745,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai apple macos system voices premium enhanced personal voice rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

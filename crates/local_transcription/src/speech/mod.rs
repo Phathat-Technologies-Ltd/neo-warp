@@ -1,6 +1,8 @@
 //! Text-to-speech for voice conversation mode: a [`Speaker`] interface that engines implement, and
 //! the pure logic that decides what of an agent reply is spoken and when.
 
+#[cfg(feature = "apple")]
+mod apple;
 pub mod approval;
 pub mod chunker;
 #[cfg(any(feature = "kokoro", feature = "tiny_voca"))]
@@ -16,6 +18,12 @@ pub mod summary;
 mod tiny_voca;
 pub mod tts_text;
 
+#[cfg(all(feature = "apple", target_os = "macos"))]
+pub use apple::{
+    APPLE_PERSONAL_VOICE_REQUEST, AppleSpeaker, apple_voices, request_personal_voice_authorization,
+};
+#[cfg(feature = "apple")]
+pub use apple::{AppleVoice, AppleVoiceQuality, rank_apple_voices};
 #[cfg(feature = "kokoro")]
 pub use kokoro::{KOKORO_VOICES, KokoroSpeaker};
 #[cfg(feature = "pocket")]
