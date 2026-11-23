@@ -2324,8 +2324,12 @@ pub(crate) fn initialize_app(
     ctx.add_singleton_model(voice::context_correction::VoiceCorrections::new);
     #[cfg(not(target_family = "wasm"))]
     ctx.add_singleton_model(|ctx| {
+        let settings = crate::settings::AISettings::as_ref(ctx);
+        voice::local_model::set_transcription_acceleration(
+            &settings.voice_transcription_acceleration,
+        );
         let engine = voice::local_model::SpeechOutputEngine::from_setting(
-            &crate::settings::AISettings::as_ref(ctx).conversation_speech_engine,
+            &settings.conversation_speech_engine,
         );
         voice::local_model::SpeechOutputModel::new(engine)
     });

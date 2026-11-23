@@ -147,6 +147,22 @@ pub fn is_conversation_enabled() -> bool {
     is_hands_free_enabled() && FeatureFlag::VoiceConversation.is_enabled()
 }
 
+static TRANSCRIPTION_ON_CPU: AtomicBool = AtomicBool::new(false);
+
+/// Applies the `transcription_acceleration` setting to on-device transcription.
+pub fn set_transcription_acceleration(setting: &str) {
+    TRANSCRIPTION_ON_CPU.store(setting == "cpu", Ordering::Relaxed);
+}
+
+/// Where on-device transcription should run, per the `transcription_acceleration` setting.
+pub fn transcription_acceleration() -> local_transcription::tdt::Acceleration {
+    if TRANSCRIPTION_ON_CPU.load(Ordering::Relaxed) {
+        local_transcription::tdt::Acceleration::Cpu
+    } else {
+        local_transcription::tdt::Acceleration::Auto
+    }
+}
+
 pub fn mark_served_locally() {
     let _ = SERVED_LOCALLY.set(());
 }

@@ -2907,6 +2907,8 @@ pub enum WarpAgentPageAction {
     CycleConversationSpeechRate,
     ToggleConversationReadCodeSummaries,
     ToggleVoiceDenoise,
+    /// Switches on-device transcription between automatic acceleration and the CPU.
+    CycleTranscriptionAcceleration,
     ToggleVoiceSmartEndOfTurn,
     ToggleSystemEchoCancellation,
     /// Clears a blocked or failed system echo cancellation verdict and tries the pipeline again.
@@ -3345,6 +3347,23 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::CycleTranscriptionAcceleration => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let next = if settings.voice_transcription_acceleration.as_str() == "cpu" {
+                        "auto"
+                    } else {
+                        "cpu"
+                    };
+                    report_if_error!(
+                        settings
+                            .voice_transcription_acceleration
+                            .set_value(next.to_owned(), ctx)
+                    );
+                    crate::voice::local_model::set_transcription_acceleration(next);
+                });
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             WarpAgentPageAction::ToggleVoiceContextBiasing => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.voice_context_biasing.toggle_and_save_value(ctx));
@@ -3471,6 +3490,7 @@ impl TypedActionView for WarpAgentPageView {
             }
             #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
             WarpAgentPageAction::ToggleVoiceDenoise
+            | WarpAgentPageAction::CycleTranscriptionAcceleration
             | WarpAgentPageAction::ToggleVoiceSmartEndOfTurn
             | WarpAgentPageAction::ToggleSystemEchoCancellation
             | WarpAgentPageAction::RetrySystemEchoCancellation
@@ -4920,6 +4940,7 @@ struct VoiceWidget {
     conversation_rate_button: MouseStateHandle,
     conversation_code_summaries_toggle: SwitchStateHandle,
     denoise_toggle: SwitchStateHandle,
+    transcription_acceleration_button: MouseStateHandle,
     smart_end_of_turn_toggle: SwitchStateHandle,
     system_echo_cancellation_toggle: SwitchStateHandle,
     system_echo_cancellation_retry_button: MouseStateHandle,
@@ -5081,6 +5102,19 @@ impl VoiceWidget {
                     self.smart_end_of_turn_toggle.clone(),
                     &view.local_only_icon_tooltip_states,
                     app,
+                ));
+                column.add_child(render_cycle_row(
+                    "Speech Recognition Acceleration",
+                    "Auto runs speech recognition on the Neural Engine or GPU when that's faster \
+                     than the CPU; CPU always uses the processor.",
+                    if ai_settings.voice_transcription_acceleration.as_str() == "cpu" {
+                        "CPU"
+                    } else {
+                        "Auto"
+                    },
+                    WarpAgentPageAction::CycleTranscriptionAcceleration,
+                    self.transcription_acceleration_button.clone(),
+                    appearance,
                 ));
                 if ai_settings
                     .system_echo_cancellation
@@ -5713,7 +5747,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn acceleration neural engine gpu cpu core ml pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

@@ -101,7 +101,9 @@ pub enum StreamOutput {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamConfig {
     pub segmenter: SegmenterConfig,
-    /// Audio between partial transcripts of an open utterance.
+    /// Audio from the start of speech to an utterance's first partial transcript.
+    pub first_partial_ms: u32,
+    /// The least audio between partial transcripts of an open utterance; see [`partial_due`].
     pub partial_interval_ms: u32,
     /// Partials decode at most this much of the end of the utterance.
     pub max_partial_ms: u32,
@@ -117,6 +119,7 @@ impl Default for StreamConfig {
     fn default() -> Self {
         Self {
             segmenter: SegmenterConfig::default(),
+            first_partial_ms: 400,
             partial_interval_ms: 600,
             max_partial_ms: 15_000,
             max_utterance_ms: 30_000,
@@ -124,6 +127,35 @@ impl Default for StreamConfig {
             end_of_turn: EndOfTurnConfig::default(),
         }
     }
+}
+
+/// The gap between partials grows by this fraction of the utterance's length, since each partial
+/// re-encodes the whole utterance.
+const PARTIAL_INTERVAL_DIVISOR: u32 = 8;
+
+/// Whether an open utterance of `utterance_ms` is due a partial transcript, `since_partial_ms`
+/// after the previous one or, when `first`, after speech started, given that the previous decode took
+/// `last_decode_ms`. Gaps grow with the utterance and with decode time, keeping the transcriber
+/// busy at most about half of the time.
+pub fn partial_due(
+    config: &StreamConfig,
+    utterance_ms: u32,
+    since_partial_ms: u32,
+    first: bool,
+    last_decode_ms: u32,
+) -> bool {
+    if first {
+        return since_partial_ms >= config.first_partial_ms;
+    }
+    let interval = config
+        .partial_interval_ms
+        .max(utterance_ms / PARTIAL_INTERVAL_DIVISOR)
+        .max(last_decode_ms.saturating_mul(2));
+    since_partial_ms >= interval
+}
+
+fn samples_to_ms(samples: usize) -> u32 {
+    (samples * 1000 / VAD_SAMPLE_RATE as usize) as u32
 }
 
 fn ms_to_samples(ms: u32) -> usize {
@@ -144,6 +176,9 @@ pub struct UtteranceStream {
     utterance: Vec<f32>,
     utterance_id: u64,
     since_partial: usize,
+    /// Whether the open utterance has asked for a partial yet.
+    partial_requested: bool,
+    last_partial_decode_ms: u32,
     turn_detector: Option<Box<dyn TurnDetector>>,
     end_of_turn: EndOfTurn,
     smart_end_of_turn: bool,
@@ -163,6 +198,8 @@ impl UtteranceStream {
             utterance: Vec::new(),
             utterance_id: 0,
             since_partial: 0,
+            partial_requested: false,
+            last_partial_decode_ms: 0,
             turn_detector: None,
             end_of_turn: EndOfTurn::new(config.end_of_turn),
             smart_end_of_turn: true,
@@ -195,6 +232,11 @@ impl UtteranceStream {
         if utterance == self.utterance_id && self.segmenter.in_speech() {
             text.clone_into(&mut self.partial_text);
         }
+    }
+
+    /// Records how long the last partial took to decode, which spaces out the next ones.
+    pub fn note_partial_decode_ms(&mut self, decode_ms: u32) {
+        self.last_partial_decode_ms = decode_ms;
     }
 
     /// Whether a turn detector decides when utterances end.
@@ -291,6 +333,7 @@ impl UtteranceStream {
                 self.utterance = self.pre_roll.drain(..).collect();
                 self.partial_text.clear();
                 self.since_partial = 0;
+                self.partial_requested = false;
                 outputs.push(StreamOutput::Message(ServerMessage::SpeechStart));
             }
             Some(SegmentEvent::SpeechEnd) => self.end_utterance(outputs),
@@ -302,8 +345,15 @@ impl UtteranceStream {
                 if self.utterance.len() >= ms_to_samples(self.config.max_utterance_ms) {
                     self.segmenter.reset();
                     self.end_utterance(outputs);
-                } else if self.since_partial >= ms_to_samples(self.config.partial_interval_ms) {
+                } else if partial_due(
+                    &self.config,
+                    samples_to_ms(self.utterance.len()),
+                    samples_to_ms(self.since_partial),
+                    !self.partial_requested,
+                    self.last_partial_decode_ms,
+                ) {
                     self.since_partial = 0;
+                    self.partial_requested = true;
                     let start = self
                         .utterance
                         .len()

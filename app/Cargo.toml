@@ -281,6 +281,7 @@ hashbrown.workspace = true
 rustc-hash.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+local_transcription = { workspace = true, features = ["coreml"] }
 block.workspace = true
 cocoa.workspace = true
 core-foundation.workspace = true

@@ -1535,6 +1535,17 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.denoise",
         description: "Whether hands-free voice input suppresses background noise before detecting speech.",
     },
+    // Where on-device transcription runs: "auto" (Core ML when it's faster) or "cpu".
+    voice_transcription_acceleration: VoiceTranscriptionAcceleration {
+        type: String,
+        default: "auto".to_owned(),
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.transcription_acceleration",
+        description: "Where on-device speech recognition runs: auto (Core ML on the Neural Engine or GPU when it's faster than the CPU) or cpu.",
+    },
     voice_smart_end_of_turn: VoiceSmartEndOfTurn {
         type: bool,
         default: true,

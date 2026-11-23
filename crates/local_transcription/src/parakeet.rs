@@ -1,17 +1,20 @@
 use std::sync::{Arc, Mutex};
 
-use parakeet_rs::ExecutionConfig;
-
 use crate::bias::{BiasConfig, BiasTerm, BoostingTree};
-use crate::tdt::TdtModel;
+use crate::tdt::{Acceleration, TdtModel};
 use crate::{Audio, ModelStore, TranscribeError, Transcriber};
 
-/// NVIDIA Parakeet TDT 0.6B v3 on ONNX Runtime (CPU). Loads the model from its [`ModelStore`] on
+/// Asks, before each transcription, where the encoder should run.
+pub type AccelerationSource = Arc<dyn Fn() -> Acceleration + Send + Sync>;
+
+/// NVIDIA Parakeet TDT 0.6B v3 on ONNX Runtime. Loads the model from its [`ModelStore`] on
 /// first use and keeps it loaded; if the files are removed it unloads and reports
 /// [`TranscribeError::ModelNotInstalled`].
 pub struct ParakeetTranscriber {
     store: ModelStore,
-    model: Mutex<Option<TdtModel>>,
+    /// The loaded model and the acceleration it was loaded with.
+    model: Mutex<Option<(TdtModel, Acceleration)>>,
+    acceleration: AccelerationSource,
     /// The boosting tree of the last term list, rebuilt only when the list changes.
     bias: Mutex<Option<(Vec<BiasTerm>, Arc<BoostingTree>)>>,
     bias_config: BiasConfig,
@@ -26,9 +29,16 @@ impl ParakeetTranscriber {
         Self {
             store,
             model: Mutex::new(None),
+            acceleration: Arc::new(Acceleration::default),
             bias: Mutex::new(None),
             bias_config,
         }
+    }
+
+    /// Reloads the model whenever `acceleration` changes.
+    pub fn with_acceleration(mut self, acceleration: AccelerationSource) -> Self {
+        self.acceleration = acceleration;
+        self
     }
 
     fn run(&self, audio: &Audio, terms: &[BiasTerm]) -> Result<String, TranscribeError> {
@@ -46,12 +56,18 @@ impl ParakeetTranscriber {
                 audio.sample_rate
             )));
         }
-        if model.is_none() {
-            let environment = crate::ort_env::environment()?;
-            let config = ExecutionConfig::new().with_environment(environment);
-            *model = Some(TdtModel::load(self.store.model_dir(), &config)?);
+        let acceleration = (self.acceleration)();
+        if model
+            .as_ref()
+            .is_none_or(|(_, loaded)| *loaded != acceleration)
+        {
+            *model = None;
+            let (loaded, device) =
+                TdtModel::load_accelerated(self.store.model_dir(), acceleration, None)?;
+            log::info!("Parakeet loaded ({acceleration:?}), encoder on {device:?}");
+            *model = Some((loaded, acceleration));
         }
-        let Some(model) = model.as_mut() else {
+        let Some((model, _)) = model.as_mut() else {
             return Err(TranscribeError::ModelNotInstalled);
         };
         let tree = (!terms.is_empty()).then(|| self.tree(terms));

@@ -51,7 +51,7 @@ pub use model::{
     pocket_tts_int8, silero_vad_v5, smart_turn_v3_2, tiny_voca,
 };
 #[cfg(feature = "parakeet")]
-pub use parakeet::ParakeetTranscriber;
+pub use parakeet::{AccelerationSource, ParakeetTranscriber};
 #[cfg(feature = "silero")]
 pub use silero::SileroVad;
 #[cfg(feature = "smart_turn")]
