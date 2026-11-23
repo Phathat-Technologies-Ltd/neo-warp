@@ -136,26 +136,22 @@ fn pocket_engine_round_trips_through_the_setting() {
 }
 
 #[test]
-fn engine_picker_cycles_through_every_engine() {
-    let mut engine = SpeechOutputEngine::Kokoro;
-    let mut seen = vec![engine];
-    for _ in 0..2 {
-        engine = engine.next();
-        seen.push(engine);
-    }
-    assert_eq!(
-        seen,
-        [
-            SpeechOutputEngine::Kokoro,
-            SpeechOutputEngine::TinyVoca,
-            SpeechOutputEngine::Pocket
-        ]
-    );
+fn engine_picker_lists_every_engine_for_the_platform() {
+    let mut expected = vec![
+        SpeechOutputEngine::Kokoro,
+        SpeechOutputEngine::TinyVoca,
+        SpeechOutputEngine::Pocket,
+    ];
     if cfg!(target_os = "macos") {
-        engine = engine.next();
-        assert_eq!(engine, SpeechOutputEngine::Apple);
+        expected.push(SpeechOutputEngine::Apple);
     }
-    assert_eq!(engine.next(), SpeechOutputEngine::Kokoro);
+    assert_eq!(SpeechOutputEngine::all(), expected);
+    for engine in SpeechOutputEngine::all() {
+        assert_eq!(
+            SpeechOutputEngine::from_setting(engine.setting_value()),
+            engine
+        );
+    }
 }
 
 #[test]

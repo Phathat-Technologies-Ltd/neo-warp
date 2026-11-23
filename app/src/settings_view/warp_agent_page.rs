@@ -766,6 +766,8 @@ pub struct WarpAgentPageView {
     voice_input_toggle_key_dropdown: ViewHandle<Dropdown<WarpAgentPageAction>>,
     voice_input_language_dropdown: ViewHandle<FilterableDropdown<WarpAgentPageAction>>,
     next_command_model_dropdown: ViewHandle<FilterableDropdown<WarpAgentPageAction>>,
+    #[cfg(not(target_family = "wasm"))]
+    voice_dropdowns: VoiceDropdowns,
     local_only_icon_tooltip_states: RefCell<HashMap<String, MouseStateHandle>>,
     autodetection_denylist_editor: ViewHandle<EditorView>,
     agent_toolbar_inline_editor: ViewHandle<AgentToolbarInlineEditor>,
@@ -903,6 +905,8 @@ impl WarpAgentPageView {
         ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |me, _, _, ctx| {
             Self::refresh_next_command_model_dropdown(&me.next_command_model_dropdown, ctx);
         });
+        #[cfg(not(target_family = "wasm"))]
+        let voice_dropdowns = VoiceDropdowns::new(ctx);
 
         let thinking_display_mode_dropdown =
             OtherAIWidget::create_thinking_display_mode_dropdown(ctx);
@@ -1050,6 +1054,8 @@ impl WarpAgentPageView {
         });
 
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, event, ctx| {
+            #[cfg(not(target_family = "wasm"))]
+            me.voice_dropdowns.handle_settings_event(event, ctx);
             match event {
                 AISettingsChangedEvent::AICommandDenylist { .. } => {
                     me.autodetection_denylist_editor.update(ctx, |editor, ctx| {
@@ -1406,6 +1412,8 @@ impl WarpAgentPageView {
             voice_input_toggle_key_dropdown,
             voice_input_language_dropdown,
             next_command_model_dropdown,
+            #[cfg(not(target_family = "wasm"))]
+            voice_dropdowns,
             autodetection_denylist_editor,
             local_only_icon_tooltip_states: Default::default(),
             agent_toolbar_inline_editor,
@@ -2981,18 +2989,18 @@ pub enum WarpAgentPageAction {
     DownloadSpeechOutputModel,
     CancelSpeechOutputModelDownload,
     RemoveSpeechOutputModel,
-    /// Switches conversation mode to the next speech output engine.
-    CycleConversationSpeechEngine,
-    /// Switches conversation mode to the engine's next voice.
-    CycleConversationVoice,
-    /// Switches conversation mode to the next speaking rate.
-    CycleConversationSpeechRate,
-    /// Switches conversation mode to the next idle timeout.
-    CycleConversationIdleTimeout,
+    /// Sets the conversation speech output engine, by its setting value.
+    SetConversationSpeechEngine(&'static str),
+    /// Sets the conversation voice, by its id in the current engine.
+    SetConversationVoice(String),
+    /// Sets the conversation speaking rate, in percent.
+    SetConversationSpeechRate(u32),
+    /// Sets the conversation idle timeout in minutes; 0 is never.
+    SetConversationIdleTimeout(u32),
     ToggleConversationReadCodeSummaries,
     ToggleVoiceDenoise,
-    /// Switches on-device transcription between automatic acceleration and the CPU.
-    CycleTranscriptionAcceleration,
+    /// Sets where on-device transcription runs, by its setting value.
+    SetTranscriptionAcceleration(&'static str),
     ToggleVoiceSmartEndOfTurn,
     ToggleSystemEchoCancellation,
     /// Clears a blocked or failed system echo cancellation verdict and tries the pipeline again.
@@ -3000,8 +3008,8 @@ pub enum WarpAgentPageAction {
     ChooseMicrophoneMode,
     ToggleVoiceContextBiasing,
     ToggleVoiceSpeakerId,
-    /// Switches "Recognize my voice" to the next sensitivity.
-    CycleVoiceSpeakerSensitivity,
+    /// Sets the "Recognize my voice" sensitivity, by its setting value.
+    SetVoiceSpeakerSensitivity(&'static str),
     /// Starts guided voice enrollment, first asking to download the speaker model if needed.
     EnrollVoice,
     /// Records the current enrollment phrase.
@@ -3387,69 +3395,51 @@ impl TypedActionView for WarpAgentPageView {
                     .update(ctx, |model, ctx| model.remove(ctx));
             }
             #[cfg(not(target_family = "wasm"))]
-            WarpAgentPageAction::CycleConversationSpeechEngine => {
-                use crate::voice::local_model::SpeechOutputEngine;
+            WarpAgentPageAction::SetConversationSpeechEngine(engine) => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let next =
-                        SpeechOutputEngine::from_setting(&settings.conversation_speech_engine)
-                            .next()
-                            .setting_value();
+                    if settings.conversation_speech_engine.as_str() == *engine {
+                        return;
+                    }
                     report_if_error!(
                         settings
                             .conversation_speech_engine
-                            .set_value(next.to_owned(), ctx)
+                            .set_value((*engine).to_owned(), ctx)
                     );
                     report_if_error!(settings.conversation_voice.set_value(String::new(), ctx));
                 });
                 ctx.notify();
             }
             #[cfg(not(target_family = "wasm"))]
-            WarpAgentPageAction::CycleConversationVoice => {
+            WarpAgentPageAction::SetConversationVoice(voice) => {
+                #[cfg(target_os = "macos")]
+                if voice == local_transcription::speech::APPLE_PERSONAL_VOICE_REQUEST {
+                    local_transcription::speech::request_personal_voice_authorization(|allowed| {
+                        log::info!("Personal Voice authorization: {allowed}")
+                    });
+                }
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let voices = conversation_voices(&settings.conversation_speech_engine);
-                    if voices.is_empty() {
-                        return;
-                    }
-                    let current = voices
-                        .iter()
-                        .position(|(id, _)| *id == settings.conversation_voice.as_str())
-                        .unwrap_or(0);
-                    let next = voices[(current + 1) % voices.len()].0.clone();
-                    #[cfg(target_os = "macos")]
-                    if next == local_transcription::speech::APPLE_PERSONAL_VOICE_REQUEST {
-                        local_transcription::speech::request_personal_voice_authorization(
-                            |allowed| log::info!("Personal Voice authorization: {allowed}"),
-                        );
-                    }
-                    report_if_error!(settings.conversation_voice.set_value(next, ctx));
+                    report_if_error!(settings.conversation_voice.set_value(voice.clone(), ctx));
                 });
                 ctx.notify();
             }
             #[cfg(not(target_family = "wasm"))]
-            WarpAgentPageAction::CycleConversationSpeechRate => {
+            WarpAgentPageAction::SetConversationSpeechRate(percent) => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let current = *settings.conversation_speech_rate_percent;
-                    let next = CONVERSATION_RATES
-                        .iter()
-                        .copied()
-                        .find(|rate| *rate > current)
-                        .unwrap_or(CONVERSATION_RATES[0]);
                     report_if_error!(
                         settings
                             .conversation_speech_rate_percent
-                            .set_value(next, ctx)
+                            .set_value(*percent, ctx)
                     );
                 });
                 ctx.notify();
             }
             #[cfg(not(target_family = "wasm"))]
-            WarpAgentPageAction::CycleConversationIdleTimeout => {
+            WarpAgentPageAction::SetConversationIdleTimeout(minutes) => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let next = next_idle_timeout(*settings.conversation_idle_timeout_minutes);
                     report_if_error!(
                         settings
                             .conversation_idle_timeout_minutes
-                            .set_value(next, ctx)
+                            .set_value(*minutes, ctx)
                     );
                 });
                 ctx.notify();
@@ -3474,20 +3464,15 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
-            WarpAgentPageAction::CycleTranscriptionAcceleration => {
+            WarpAgentPageAction::SetTranscriptionAcceleration(acceleration) => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let next = if settings.voice_transcription_acceleration.as_str() == "cpu" {
-                        "auto"
-                    } else {
-                        "cpu"
-                    };
                     report_if_error!(
                         settings
                             .voice_transcription_acceleration
-                            .set_value(next.to_owned(), ctx)
+                            .set_value((*acceleration).to_owned(), ctx)
                     );
-                    crate::voice::local_model::set_transcription_acceleration(next);
                 });
+                crate::voice::local_model::set_transcription_acceleration(acceleration);
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
@@ -3532,19 +3517,12 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
-            WarpAgentPageAction::CycleVoiceSpeakerSensitivity => {
-                use local_transcription::speaker::Sensitivity;
+            WarpAgentPageAction::SetVoiceSpeakerSensitivity(sensitivity) => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let next =
-                        match Sensitivity::from_setting(&settings.voice_speaker_id_sensitivity) {
-                            Sensitivity::Strict => "normal",
-                            Sensitivity::Normal => "loose",
-                            Sensitivity::Loose => "strict",
-                        };
                     report_if_error!(
                         settings
                             .voice_speaker_id_sensitivity
-                            .set_value(next.to_owned(), ctx)
+                            .set_value((*sensitivity).to_owned(), ctx)
                     );
                 });
                 ctx.notify();
@@ -3617,14 +3595,14 @@ impl TypedActionView for WarpAgentPageView {
             }
             #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
             WarpAgentPageAction::ToggleVoiceDenoise
-            | WarpAgentPageAction::CycleTranscriptionAcceleration
+            | WarpAgentPageAction::SetTranscriptionAcceleration(_)
             | WarpAgentPageAction::ToggleVoiceSmartEndOfTurn
             | WarpAgentPageAction::ToggleSystemEchoCancellation
             | WarpAgentPageAction::RetrySystemEchoCancellation
             | WarpAgentPageAction::ChooseMicrophoneMode
             | WarpAgentPageAction::ToggleVoiceContextBiasing
             | WarpAgentPageAction::ToggleVoiceSpeakerId
-            | WarpAgentPageAction::CycleVoiceSpeakerSensitivity
+            | WarpAgentPageAction::SetVoiceSpeakerSensitivity(_)
             | WarpAgentPageAction::EnrollVoice
             | WarpAgentPageAction::RecordVoicePhrase
             | WarpAgentPageAction::StopVoicePhrase
@@ -3642,10 +3620,10 @@ impl TypedActionView for WarpAgentPageView {
             | WarpAgentPageAction::DownloadSpeechOutputModel
             | WarpAgentPageAction::CancelSpeechOutputModelDownload
             | WarpAgentPageAction::RemoveSpeechOutputModel
-            | WarpAgentPageAction::CycleConversationSpeechEngine
-            | WarpAgentPageAction::CycleConversationVoice
-            | WarpAgentPageAction::CycleConversationSpeechRate
-            | WarpAgentPageAction::CycleConversationIdleTimeout
+            | WarpAgentPageAction::SetConversationSpeechEngine(_)
+            | WarpAgentPageAction::SetConversationVoice(_)
+            | WarpAgentPageAction::SetConversationSpeechRate(_)
+            | WarpAgentPageAction::SetConversationIdleTimeout(_)
             | WarpAgentPageAction::ToggleConversationReadCodeSummaries => {}
             WarpAgentPageAction::VoiceCorrection(action) => {
                 Self::handle_voice_correction_action(action, ctx);
@@ -4047,6 +4025,14 @@ impl TypedActionView for WarpAgentPageView {
 impl SettingsPageMeta for WarpAgentPageView {
     fn section() -> SettingsSection {
         SettingsSection::WarpAgent
+    }
+
+    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
+    fn on_page_selected(&mut self, _: bool, ctx: &mut ViewContext<Self>) {
+        #[cfg(not(target_family = "wasm"))]
+        if crate::voice::local_model::is_conversation_enabled() {
+            self.voice_dropdowns.sync_voices(ctx);
+        }
     }
 
     fn should_render(&self, _ctx: &AppContext) -> bool {
@@ -5127,13 +5113,8 @@ struct VoiceWidget {
     wispr_highlight_index: HighlightedHyperlink,
     local_model_button: MouseStateHandle,
     speech_output_model_button: MouseStateHandle,
-    conversation_engine_button: MouseStateHandle,
-    conversation_voice_button: MouseStateHandle,
-    conversation_rate_button: MouseStateHandle,
-    conversation_idle_button: MouseStateHandle,
     conversation_code_summaries_toggle: SwitchStateHandle,
     denoise_toggle: SwitchStateHandle,
-    transcription_acceleration_button: MouseStateHandle,
     smart_end_of_turn_toggle: SwitchStateHandle,
     system_echo_cancellation_toggle: SwitchStateHandle,
     system_echo_cancellation_retry_button: MouseStateHandle,
@@ -5145,7 +5126,6 @@ struct VoiceWidget {
     enroll_accept_button: MouseStateHandle,
     enroll_cancel_button: MouseStateHandle,
     delete_voiceprint_button: MouseStateHandle,
-    sensitivity_button: MouseStateHandle,
     context_correction_toggle: SwitchStateHandle,
     context_biasing_toggle: SwitchStateHandle,
     correction_buttons: CorrectionButtons,
@@ -5296,17 +5276,11 @@ impl VoiceWidget {
                     &view.local_only_icon_tooltip_states,
                     app,
                 ));
-                column.add_child(render_cycle_row(
+                column.add_child(render_voice_dropdown_row(
                     "Speech Recognition Acceleration",
                     "Auto runs speech recognition on the Neural Engine or GPU when that's faster \
                      than the CPU; CPU always uses the processor.",
-                    if ai_settings.voice_transcription_acceleration.as_str() == "cpu" {
-                        "CPU"
-                    } else {
-                        "Auto"
-                    },
-                    WarpAgentPageAction::CycleTranscriptionAcceleration,
-                    self.transcription_acceleration_button.clone(),
+                    &view.voice_dropdowns.acceleration,
                     appearance,
                 ));
                 if ai_settings
@@ -5344,9 +5318,9 @@ impl VoiceWidget {
                         *ai_settings.system_echo_cancellation,
                         capturing,
                     );
-                    column.add_child(render_cycle_row(
+                    column.add_child(render_button_row(
                         "Microphone Mode",
-                        &format!(
+                        format!(
                             "{status}. Voice Isolation reduces background noise and distant \
                              voices; it isn't based on your voiceprint."
                         ),
@@ -5401,12 +5375,6 @@ impl VoiceWidget {
             ));
         }
         let settings = AISettings::as_ref(app);
-        let voices = conversation_voices(&settings.conversation_speech_engine);
-        let voice = voices
-            .iter()
-            .find(|(id, _)| *id == settings.conversation_voice.as_str())
-            .or_else(|| voices.first())
-            .map_or("Default", |(_, name)| name.as_str());
         let engine_help = match engine {
             SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => {
                 "Kokoro sounds best; tiny-voca is a smaller download; Pocket TTS (Kyutai, \
@@ -5422,39 +5390,34 @@ impl VoiceWidget {
                  rate. {POCKET_ATTRIBUTION}"
             ),
         };
-        column.add_child(render_cycle_row(
+        let dropdowns = &view.voice_dropdowns;
+        column.add_child(render_voice_dropdown_row(
             "Speech Output Engine",
             &engine_help,
-            &engine_label(engine, &model.display_name()),
-            WarpAgentPageAction::CycleConversationSpeechEngine,
-            self.conversation_engine_button.clone(),
+            &dropdowns.engine,
             appearance,
         ));
         if engine.has_voice_and_rate_controls() {
-            column.add_child(render_cycle_row(
-                "Conversation Voice",
-                "The voice that reads agent replies aloud.",
-                voice,
-                WarpAgentPageAction::CycleConversationVoice,
-                self.conversation_voice_button.clone(),
+            column.add_child(render_filterable_dropdown_item(
                 appearance,
+                "Conversation Voice",
+                Some("The voice that reads agent replies aloud."),
+                None,
+                LocalOnlyIconState::Hidden,
+                None,
+                &dropdowns.voice,
             ));
-            column.add_child(render_cycle_row(
+            column.add_child(render_voice_dropdown_row(
                 "Speaking Rate",
                 "How fast agent replies are read.",
-                &format!("{:.1}x", settings.conversation_speech_rate()),
-                WarpAgentPageAction::CycleConversationSpeechRate,
-                self.conversation_rate_button.clone(),
+                &dropdowns.rate,
                 appearance,
             ));
         }
-        let idle_minutes = *settings.conversation_idle_timeout_minutes;
-        column.add_child(render_cycle_row(
+        column.add_child(render_voice_dropdown_row(
             "Turn Off After Silence",
             "Ends voice conversation after this long without your speech or agent activity.",
-            &idle_timeout_label(idle_minutes),
-            WarpAgentPageAction::CycleConversationIdleTimeout,
-            self.conversation_idle_button.clone(),
+            &dropdowns.idle_timeout,
             appearance,
         ));
         column.add_child(render_ai_setting_toggle::<ConversationReadCodeSummaries>(
@@ -5478,7 +5441,7 @@ impl VoiceWidget {
         appearance: &Appearance,
         app: &AppContext,
     ) {
-        use local_transcription::speaker::{ENROLLMENT_PHRASES, Sensitivity};
+        use local_transcription::speaker::ENROLLMENT_PHRASES;
 
         use crate::voice::local_model::SpeakerIdModel;
         use crate::voice::speaker_id::{EnrollmentState, SpeakerProfile};
@@ -5598,18 +5561,10 @@ impl VoiceWidget {
                 self.delete_voiceprint_button.clone(),
                 appearance,
             ));
-            let sensitivity =
-                match Sensitivity::from_setting(&settings.voice_speaker_id_sensitivity) {
-                    Sensitivity::Strict => "Strict",
-                    Sensitivity::Normal => "Normal",
-                    Sensitivity::Loose => "Loose",
-                };
-            column.add_child(render_cycle_row(
+            column.add_child(render_voice_dropdown_row(
                 "Sensitivity",
                 "Strict ignores more voices; loose misses you less in noisy rooms.",
-                sensitivity,
-                WarpAgentPageAction::CycleVoiceSpeakerSensitivity,
-                self.sensitivity_button.clone(),
+                &view.voice_dropdowns.sensitivity,
                 appearance,
             ));
         }
@@ -5670,10 +5625,11 @@ impl VoiceWidget {
                 .then(b.last_seen.cmp(&a.last_seen))
         });
         let buttons = &self.correction_buttons.0;
-        column.add_child(render_cycle_row(
+        column.add_child(render_button_row(
             "Voice Corrections",
             "Words heard and the screen terms they were corrected to. Pin a mapping to always \
-             apply it; reverted mappings stop applying.",
+             apply it; reverted mappings stop applying."
+                .to_owned(),
             "Export JSON",
             WarpAgentPageAction::VoiceCorrection(VoiceCorrectionAction::Export),
             buttons[MAX_CORRECTION_ROWS * 3].clone(),
@@ -5831,15 +5787,12 @@ struct ModelRow {
     remove: WarpAgentPageAction,
 }
 
-/// The picker label for `engine`, whose model is named `display_name`.
+/// The picker label for `engine`.
 #[cfg(not(target_family = "wasm"))]
-fn engine_label(
-    engine: crate::voice::local_model::SpeechOutputEngine,
-    display_name: &str,
-) -> String {
+fn engine_label(engine: crate::voice::local_model::SpeechOutputEngine) -> String {
     use crate::voice::local_model::SpeechOutputEngine;
     match engine {
-        SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => display_name.to_owned(),
+        SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => engine.display_name(),
         SpeechOutputEngine::Pocket => "Pocket TTS (Kyutai, English, one voice)".to_owned(),
         SpeechOutputEngine::Apple => "Apple (macOS voices)".to_owned(),
     }
@@ -5849,28 +5802,330 @@ fn engine_label(
 #[cfg(not(target_family = "wasm"))]
 const CONVERSATION_RATES: [u32; 5] = [80, 100, 120, 135, 150];
 
-/// Idle timeouts the voice conversation setting cycles through, in minutes; 0 is never.
+/// Idle timeouts offered for voice conversation, in minutes; 0 is never.
 #[cfg(not(target_family = "wasm"))]
 const CONVERSATION_IDLE_TIMEOUTS: [u32; 6] = [2, 5, 10, 15, 30, 0];
 
 #[cfg(not(target_family = "wasm"))]
-fn next_idle_timeout(current: u32) -> u32 {
-    let index = CONVERSATION_IDLE_TIMEOUTS
-        .iter()
-        .position(|minutes| *minutes == current);
-    match index {
-        Some(index) => CONVERSATION_IDLE_TIMEOUTS[(index + 1) % CONVERSATION_IDLE_TIMEOUTS.len()],
-        None => CONVERSATION_IDLE_TIMEOUTS[0],
-    }
-}
-
-#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 fn idle_timeout_label(minutes: u32) -> String {
     match minutes {
         0 => "Never".to_owned(),
         1 => "1 minute".to_owned(),
         minutes => format!("{minutes} minutes"),
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn speech_rate_label(percent: u32) -> String {
+    let rate = percent as f32 / 100.0;
+    if percent.is_multiple_of(10) {
+        format!("{rate:.1}x")
+    } else {
+        format!("{rate:.2}x")
+    }
+}
+
+/// The items of a Settings > Voice picker and which one is selected.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug, PartialEq)]
+struct PickerOptions {
+    items: Vec<(String, WarpAgentPageAction)>,
+    selected: usize,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl PickerOptions {
+    fn dropdown_items(&self) -> Vec<DropdownItem<WarpAgentPageAction>> {
+        self.items
+            .iter()
+            .map(|(label, action)| DropdownItem::new(label.clone(), action.clone()))
+            .collect()
+    }
+}
+
+/// The engine picker; `current` is the `conversation_speech_engine` setting.
+#[cfg(not(target_family = "wasm"))]
+fn speech_engine_options(current: &str) -> PickerOptions {
+    use crate::voice::local_model::SpeechOutputEngine;
+    let engines = SpeechOutputEngine::all();
+    let current = SpeechOutputEngine::from_setting(current);
+    PickerOptions {
+        selected: engines
+            .iter()
+            .position(|engine| *engine == current)
+            .unwrap_or(0),
+        items: engines
+            .into_iter()
+            .map(|engine| {
+                (
+                    engine_label(engine),
+                    WarpAgentPageAction::SetConversationSpeechEngine(engine.setting_value()),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The voice picker over `voices` as (id, name), in the engine's order. An unknown or empty
+/// `current` id selects the first voice, which the engine speaks with by default.
+#[cfg(not(target_family = "wasm"))]
+fn conversation_voice_options(voices: Vec<(String, String)>, current: &str) -> PickerOptions {
+    PickerOptions {
+        selected: voices.iter().position(|(id, _)| id == current).unwrap_or(0),
+        items: voices
+            .into_iter()
+            .map(|(id, name)| (name, WarpAgentPageAction::SetConversationVoice(id)))
+            .collect(),
+    }
+}
+
+/// The speaking rate picker; a `current` rate set outside the picker is listed too.
+#[cfg(not(target_family = "wasm"))]
+fn speech_rate_options(current: u32) -> PickerOptions {
+    let mut rates = CONVERSATION_RATES.to_vec();
+    if !rates.contains(&current) {
+        rates.push(current);
+        rates.sort_unstable();
+    }
+    PickerOptions {
+        selected: rates.iter().position(|rate| *rate == current).unwrap_or(0),
+        items: rates
+            .into_iter()
+            .map(|rate| {
+                (
+                    speech_rate_label(rate),
+                    WarpAgentPageAction::SetConversationSpeechRate(rate),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The idle timeout picker, with "Never" last; a `current` timeout set outside the picker is
+/// listed too.
+#[cfg(not(target_family = "wasm"))]
+fn idle_timeout_options(current: u32) -> PickerOptions {
+    let mut timeouts = CONVERSATION_IDLE_TIMEOUTS.to_vec();
+    if !timeouts.contains(&current) {
+        timeouts.push(current);
+        timeouts.sort_unstable_by_key(|minutes| if *minutes == 0 { u32::MAX } else { *minutes });
+    }
+    PickerOptions {
+        selected: timeouts
+            .iter()
+            .position(|minutes| *minutes == current)
+            .unwrap_or(0),
+        items: timeouts
+            .into_iter()
+            .map(|minutes| {
+                (
+                    idle_timeout_label(minutes),
+                    WarpAgentPageAction::SetConversationIdleTimeout(minutes),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The "Recognize my voice" sensitivity picker; `current` is the setting value.
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+fn speaker_sensitivity_options(current: &str) -> PickerOptions {
+    use local_transcription::speaker::Sensitivity;
+    let options = [
+        (Sensitivity::Strict, "Strict", "strict"),
+        (Sensitivity::Normal, "Normal", "normal"),
+        (Sensitivity::Loose, "Loose", "loose"),
+    ];
+    let current = Sensitivity::from_setting(current);
+    PickerOptions {
+        selected: options
+            .iter()
+            .position(|(sensitivity, _, _)| *sensitivity == current)
+            .unwrap_or(0),
+        items: options
+            .into_iter()
+            .map(|(_, label, value)| {
+                (
+                    label.to_owned(),
+                    WarpAgentPageAction::SetVoiceSpeakerSensitivity(value),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The speech recognition acceleration picker; `current` is the setting value.
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+fn transcription_acceleration_options(current: &str) -> PickerOptions {
+    PickerOptions {
+        selected: usize::from(current == "cpu"),
+        items: [("Auto", "auto"), ("CPU", "cpu")]
+            .into_iter()
+            .map(|(label, value)| {
+                (
+                    label.to_owned(),
+                    WarpAgentPageAction::SetTranscriptionAcceleration(value),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// The Settings > Voice pickers, each showing its setting's current value.
+#[cfg(not(target_family = "wasm"))]
+struct VoiceDropdowns {
+    engine: ViewHandle<Dropdown<WarpAgentPageAction>>,
+    voice: ViewHandle<FilterableDropdown<WarpAgentPageAction>>,
+    rate: ViewHandle<Dropdown<WarpAgentPageAction>>,
+    idle_timeout: ViewHandle<Dropdown<WarpAgentPageAction>>,
+    #[cfg(feature = "voice_input")]
+    sensitivity: ViewHandle<Dropdown<WarpAgentPageAction>>,
+    #[cfg(feature = "voice_input")]
+    acceleration: ViewHandle<Dropdown<WarpAgentPageAction>>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl VoiceDropdowns {
+    fn new(ctx: &mut ViewContext<WarpAgentPageView>) -> Self {
+        let new_dropdown = |ctx: &mut ViewContext<WarpAgentPageView>| {
+            ctx.add_typed_action_view(|ctx| {
+                let mut dropdown = Dropdown::new(ctx);
+                dropdown.set_top_bar_max_width(AI_SETTINGS_DROPDOWN_WIDTH);
+                dropdown.set_menu_width(AI_SETTINGS_DROPDOWN_WIDTH, ctx);
+                dropdown.set_menu_max_height(AI_SETTINGS_DROPDOWN_MAX_HEIGHT, ctx);
+                dropdown
+            })
+        };
+        let dropdowns = Self {
+            engine: new_dropdown(ctx),
+            voice: ctx.add_typed_action_view(|ctx| {
+                let mut dropdown = FilterableDropdown::new(ctx);
+                dropdown.set_top_bar_max_width(AI_SETTINGS_DROPDOWN_WIDTH);
+                dropdown.set_menu_width(AI_SETTINGS_DROPDOWN_WIDTH, ctx);
+                dropdown
+            }),
+            rate: new_dropdown(ctx),
+            idle_timeout: new_dropdown(ctx),
+            #[cfg(feature = "voice_input")]
+            sensitivity: new_dropdown(ctx),
+            #[cfg(feature = "voice_input")]
+            acceleration: new_dropdown(ctx),
+        };
+        dropdowns.sync_engine(ctx);
+        // Listing the macOS voices queries the system, so wait until the voice rows can show.
+        if crate::voice::local_model::is_conversation_enabled() {
+            dropdowns.sync_voices(ctx);
+        }
+        dropdowns.sync_rate(ctx);
+        dropdowns.sync_idle_timeout(ctx);
+        #[cfg(feature = "voice_input")]
+        dropdowns.sync_sensitivity(ctx);
+        #[cfg(feature = "voice_input")]
+        dropdowns.sync_acceleration(ctx);
+        dropdowns
+    }
+
+    fn apply(
+        dropdown: &ViewHandle<Dropdown<WarpAgentPageAction>>,
+        options: PickerOptions,
+        ctx: &mut ViewContext<WarpAgentPageView>,
+    ) {
+        dropdown.update(ctx, |dropdown, ctx| {
+            dropdown.set_items(options.dropdown_items(), ctx);
+            dropdown.set_selected_by_index(options.selected, ctx);
+        });
+    }
+
+    fn sync_engine(&self, ctx: &mut ViewContext<WarpAgentPageView>) {
+        let options = speech_engine_options(&AISettings::as_ref(ctx).conversation_speech_engine);
+        Self::apply(&self.engine, options, ctx);
+    }
+
+    /// Relists the current engine's voices, which for macOS change as voices are installed or
+    /// Personal Voice is allowed.
+    fn sync_voices(&self, ctx: &mut ViewContext<WarpAgentPageView>) {
+        let settings = AISettings::as_ref(ctx);
+        let options = conversation_voice_options(
+            conversation_voices(&settings.conversation_speech_engine),
+            &settings.conversation_voice,
+        );
+        self.voice.update(ctx, |dropdown, ctx| {
+            dropdown.set_items(options.dropdown_items(), ctx);
+            dropdown.set_selected_by_index(options.selected, ctx);
+        });
+    }
+
+    fn sync_rate(&self, ctx: &mut ViewContext<WarpAgentPageView>) {
+        let options =
+            speech_rate_options(*AISettings::as_ref(ctx).conversation_speech_rate_percent);
+        Self::apply(&self.rate, options, ctx);
+    }
+
+    fn sync_idle_timeout(&self, ctx: &mut ViewContext<WarpAgentPageView>) {
+        let options =
+            idle_timeout_options(*AISettings::as_ref(ctx).conversation_idle_timeout_minutes);
+        Self::apply(&self.idle_timeout, options, ctx);
+    }
+
+    #[cfg(feature = "voice_input")]
+    fn sync_sensitivity(&self, ctx: &mut ViewContext<WarpAgentPageView>) {
+        let options =
+            speaker_sensitivity_options(&AISettings::as_ref(ctx).voice_speaker_id_sensitivity);
+        Self::apply(&self.sensitivity, options, ctx);
+    }
+
+    #[cfg(feature = "voice_input")]
+    fn sync_acceleration(&self, ctx: &mut ViewContext<WarpAgentPageView>) {
+        let options = transcription_acceleration_options(
+            &AISettings::as_ref(ctx).voice_transcription_acceleration,
+        );
+        Self::apply(&self.acceleration, options, ctx);
+    }
+
+    /// Updates the picker that shows the setting behind `event`, if any.
+    fn handle_settings_event(
+        &self,
+        event: &AISettingsChangedEvent,
+        ctx: &mut ViewContext<WarpAgentPageView>,
+    ) {
+        match event {
+            AISettingsChangedEvent::ConversationSpeechEngine { .. } => {
+                self.sync_engine(ctx);
+                self.sync_voices(ctx);
+            }
+            AISettingsChangedEvent::ConversationVoice { .. } => self.sync_voices(ctx),
+            AISettingsChangedEvent::ConversationSpeechRatePercent { .. } => self.sync_rate(ctx),
+            AISettingsChangedEvent::ConversationIdleTimeoutMinutes { .. } => {
+                self.sync_idle_timeout(ctx)
+            }
+            #[cfg(feature = "voice_input")]
+            AISettingsChangedEvent::VoiceSpeakerIdSensitivity { .. } => self.sync_sensitivity(ctx),
+            #[cfg(feature = "voice_input")]
+            AISettingsChangedEvent::VoiceTranscriptionAcceleration { .. } => {
+                self.sync_acceleration(ctx)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A Settings > Voice row with a description and a picker.
+#[cfg(not(target_family = "wasm"))]
+fn render_voice_dropdown_row(
+    label: &str,
+    description: &str,
+    dropdown: &ViewHandle<Dropdown<WarpAgentPageAction>>,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    render_dropdown_item(
+        appearance,
+        label,
+        Some(description),
+        None,
+        LocalOnlyIconState::Hidden,
+        None,
+        dropdown,
+    )
 }
 
 /// The voices of the engine named by the `conversation_speech_engine` setting, as (id, name).
@@ -5901,8 +6156,6 @@ fn conversation_voices(engine: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A row whose button shows the current value and switches to the next one.
-#[cfg(not(target_family = "wasm"))]
 /// A settings row with a description and one button.
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 fn render_button_row(
@@ -5960,43 +6213,11 @@ fn render_buttons_row(
     )
 }
 
-fn render_cycle_row(
-    label: &str,
-    description: &str,
-    value: &str,
-    action: WarpAgentPageAction,
-    button_state: MouseStateHandle,
-    appearance: &Appearance,
-) -> Box<dyn Element> {
-    let button = appearance
-        .ui_builder()
-        .button(ButtonVariant::Secondary, button_state)
-        .with_text_label(value.to_owned())
-        .build()
-        .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
-        .finish();
-    build_toggle_element(
-        render_body_item_label::<WarpAgentPageAction>(
-            label.to_owned(),
-            None,
-            None,
-            LocalOnlyIconState::Hidden,
-            ToggleState::Enabled,
-            appearance,
-        ),
-        Container::new(button)
-            .with_padding_right(TOGGLE_BUTTON_RIGHT_PADDING)
-            .finish(),
-        appearance,
-        Some(description.to_owned()),
-    )
-}
-
 impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn acceleration neural engine gpu cpu core ml pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum apple macos system voices premium enhanced personal"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai engine rate speaking silence idle timeout turn off code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn acceleration neural engine gpu cpu core ml pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum apple macos system voices premium enhanced personal"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
