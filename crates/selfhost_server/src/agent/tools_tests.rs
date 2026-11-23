@@ -162,7 +162,14 @@ fn command_tools_address_the_monitored_command_by_default() {
         panic!("expected ReadShellCommandOutput")
     };
     assert_eq!(read.command_id, "block-1");
-    assert_eq!(read.delay, Some(Delay::OnCompletion(())));
+    assert_eq!(
+        read.delay,
+        Some(Delay::Duration(prost_types::Duration {
+            seconds: 30,
+            nanos: 0
+        })),
+        "waits stay bounded so the user can steer the agent between them"
+    );
 
     let call::Tool::ReadShellCommandOutput(read) = super::to_warp_tool(
         "read_shell_command_output",
@@ -178,7 +185,7 @@ fn command_tools_address_the_monitored_command_by_default() {
     assert_eq!(
         read.delay,
         Some(Delay::Duration(prost_types::Duration {
-            seconds: 120,
+            seconds: 30,
             nanos: 0
         }))
     );

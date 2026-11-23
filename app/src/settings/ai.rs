@@ -991,7 +991,6 @@ impl PromptSubmissionMode {
 /// Not consulted when [`PromptSubmissionMode`] is `Queue`: prompts then always queue until
 /// the full response finishes, so this setting is hidden and ignored.
 #[derive(
-    Default,
     Debug,
     serde::Serialize,
     serde::Deserialize,
@@ -1007,12 +1006,24 @@ impl PromptSubmissionMode {
     rename_all = "snake_case"
 )]
 pub enum LongRunningCommandSubmissionMode {
-    /// Send the prompt to the agent immediately, steering it mid-command.
+    /// Send the prompt to the agent immediately, steering it mid-command (default with
+    /// organization sign-in).
     SendImmediately,
     /// Queue the prompt and send it to the agent when the command finishes
     /// (default).
-    #[default]
     QueueUntilCommandCompletes,
+}
+
+impl Default for LongRunningCommandSubmissionMode {
+    /// Organization sign-in runs the agent on a self-hosted server that keeps the agent steerable
+    /// while it monitors a command, so follow-ups reach it right away.
+    fn default() -> Self {
+        if crate::auth::is_organization_sign_in() {
+            Self::SendImmediately
+        } else {
+            Self::QueueUntilCommandCompletes
+        }
+    }
 }
 
 settings::macros::implement_setting_for_enum!(

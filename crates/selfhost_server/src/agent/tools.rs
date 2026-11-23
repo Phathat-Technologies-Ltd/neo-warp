@@ -101,9 +101,10 @@ impl AgentTool {
             }
             AgentTool::ReadShellCommandOutput => {
                 "Read the current output of a command that is still running in the terminal. \
-                 By default it returns right away; set wait_seconds to wait that long first, or \
-                 until_complete to wait until the command exits (at most 120 seconds, after \
-                 which you get the output so far)."
+                 By default it returns right away; set wait_seconds (at most 30) to wait that \
+                 long first, or until the command exits if that is sooner. To wait for a long \
+                 command, call it again after each wait, so the user can talk to you between \
+                 waits."
             }
             AgentTool::WriteToShellCommand => {
                 "Send input to a command that is still running in the terminal, such as an \
@@ -185,8 +186,7 @@ impl AgentTool {
                 "type": "object",
                 "properties": {
                     "command_id": { "type": "string", "description": COMMAND_ID_DESCRIPTION },
-                    "wait_seconds": { "type": "integer", "minimum": 1, "maximum": 120 },
-                    "until_complete": { "type": "boolean" }
+                    "wait_seconds": { "type": "integer", "minimum": 1, "maximum": MAX_WAIT_SECONDS }
                 }
             }),
             AgentTool::WriteToShellCommand => json!({
@@ -239,12 +239,18 @@ struct RunShellCommandArgs {
     risky: bool,
 }
 
+/// The longest a `read_shell_command_output` call waits, so the agent regularly gets the turn back
+/// while a command runs: to report progress, to notice a stuck command, and to take follow-ups the
+/// client holds until the agent's next request.
+const MAX_WAIT_SECONDS: u32 = 30;
+
 #[derive(Deserialize)]
 struct ReadShellCommandOutputArgs {
     #[serde(default)]
     command_id: Option<String>,
     #[serde(default)]
     wait_seconds: Option<u32>,
+    /// Not offered to the model; older conversations' calls still name it.
     #[serde(default)]
     until_complete: bool,
 }
@@ -403,16 +409,17 @@ pub fn to_warp_tool(
             let args: ReadShellCommandOutputArgs =
                 serde_json::from_value(arguments).map_err(parse_error)?;
             use call::read_shell_command_output::Delay;
-            let delay = if args.until_complete {
-                Some(Delay::OnCompletion(()))
+            let wait_seconds = if args.until_complete {
+                Some(MAX_WAIT_SECONDS)
             } else {
-                args.wait_seconds.map(|seconds| {
-                    Delay::Duration(prost_types::Duration {
-                        seconds: i64::from(seconds.clamp(1, 120)),
-                        nanos: 0,
-                    })
-                })
+                args.wait_seconds
             };
+            let delay = wait_seconds.map(|seconds| {
+                Delay::Duration(prost_types::Duration {
+                    seconds: i64::from(seconds.clamp(1, MAX_WAIT_SECONDS)),
+                    nanos: 0,
+                })
+            });
             call::Tool::ReadShellCommandOutput(call::ReadShellCommandOutput {
                 command_id: command_id(args.command_id)?,
                 delay,

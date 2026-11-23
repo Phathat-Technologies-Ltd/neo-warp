@@ -1352,3 +1352,234 @@ async fn resuming_after_a_take_over_reports_the_finished_command() {
     let sent = serde_json::to_string(&calls[2].1).unwrap();
     assert!(sent.contains("finished with exit code 0"));
 }
+
+/// Asserts the model API accepts the conversation: every tool call has a result.
+fn assert_every_tool_call_answered(messages: &[Message]) {
+    let content = || messages.iter().flat_map(|message| &message.content);
+    let answered: HashSet<&str> = content()
+        .filter_map(|block| match block {
+            MessageContentBlock::ToolResponse(response) => Some(response.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    for block in content() {
+        if let MessageContentBlock::ToolRequest(request) = block {
+            assert!(
+                answered.contains(request.id.as_str()),
+                "tool call {} has no result",
+                request.id
+            );
+        }
+    }
+}
+
+#[allow(deprecated)]
+fn resume_with_block(client: &Client, output: &str, finished: bool) -> api::Request {
+    let mut request = lrc_request(
+        api::request::input::Type::ResumeConversation(Default::default()),
+        client.task_context(),
+    );
+    request.input.as_mut().unwrap().context = Some(api::InputContext {
+        executed_shell_commands: vec![api::ExecutedShellCommand {
+            command: FIND.to_owned(),
+            output: output.to_owned(),
+            command_id: "block-1".to_owned(),
+            finished_ts: finished.then(prost_types::Timestamp::default),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    request
+}
+
+/// Replays the client around a take over. The client cancels the agent's pending poll locally and
+/// sends nothing when the user takes over; handing control back resumes the subtask with the
+/// running block, and a command that exits while the user is in control resumes the root task with
+/// the finished block. The subagent must stay the block's subagent through the hand back, the
+/// cancelled poll must not leave the model conversation unanswered, and the finished command must
+/// close the subagent.
+#[tokio::test]
+async fn take_over_and_hand_back_keep_the_monitored_conversation_going() {
+    let provider = ScriptedProvider::new(vec![
+        vec![tool_request(
+            "toolu_1",
+            "run_shell_command",
+            json!({ "command": FIND, "read_only": true, "risky": false }),
+        )],
+        vec![tool_request(
+            "toolu_2",
+            "read_shell_command_output",
+            json!({ "wait_seconds": 30 }),
+        )],
+        vec![
+            Message::assistant().with_text("Back on it, it has found a.log."),
+            tool_request(
+                "toolu_3",
+                "read_shell_command_output",
+                json!({ "wait_seconds": 30 }),
+            ),
+        ],
+        vec![Message::assistant().with_text("The search is done: a.log and b.log.")],
+    ]);
+    let mut client = client_monitoring_a_command(&provider).await;
+    let root_id = client.root().id.clone();
+    let cli_id = client.cli_task().unwrap();
+
+    // Hand back while the command runs: the client resumes the subtask with the running block.
+    let events = run_turn(
+        resume_with_block(&client, "/Users/me/a.log\n", false),
+        provider.clone(),
+    )
+    .await;
+    assert!(matches!(
+        finish_reason(&events),
+        api::response_event::stream_finished::Reason::Done(_)
+    ));
+    client.apply(&events);
+    assert_eq!(client.cli_task(), Some(cli_id.clone()));
+    assert!(
+        !actions(&events)
+            .iter()
+            .any(|action| matches!(action, client_action::Action::CreateTask(_))),
+        "the hand back keeps the block's subagent"
+    );
+    assert!(added_to(&events, &root_id).is_empty());
+    let cli_added = added_to(&events, &cli_id);
+    assert!(matches!(
+        &cli_added[0].message,
+        Some(Kind::ToolCallResult(ToolCallResult {
+            tool_call_id,
+            result: Some(api::message::tool_call_result::Result::Cancel(())),
+            ..
+        })) if tool_call_id == "toolu_2"
+    ));
+    assert_eq!(texts(&cli_added), vec!["Back on it, it has found a.log."]);
+    assert!(matches!(
+        &tool_calls(&cli_added)[..],
+        [api::message::tool_call::Tool::ReadShellCommandOutput(read)] if read.command_id == "block-1"
+    ));
+    {
+        let calls = provider.calls.lock().unwrap();
+        let (system, sent, _) = &calls[2];
+        assert!(system.contains("Monitoring a running command"));
+        assert_every_tool_call_answered(sent);
+        let sent = serde_json::to_string(sent).unwrap();
+        assert!(sent.contains("handed control of the running command"));
+    }
+
+    // The user takes over again and the command exits: the client resumes the root task.
+    let events = run_turn(
+        resume_with_block(&client, "/Users/me/a.log\n/Users/me/b.log\n", true),
+        provider.clone(),
+    )
+    .await;
+    client.apply(&events);
+    assert_eq!(client.cli_task(), None);
+    let root_added = added_to(&events, &root_id);
+    assert!(matches!(
+        &root_added[..],
+        [closing, ..] if matches!(&closing.message, Some(Kind::ToolCallResult(ToolCallResult {
+            result: Some(api::message::tool_call_result::Result::Subagent(_)),
+            ..
+        })))
+    ));
+    assert_eq!(
+        texts(&root_added),
+        vec!["The search is done: a.log and b.log."]
+    );
+    assert!(matches!(
+        &added_to(&events, &cli_id)[..],
+        [message] if matches!(&message.message, Some(Kind::ToolCallResult(ToolCallResult {
+            tool_call_id,
+            result: Some(api::message::tool_call_result::Result::Cancel(())),
+            ..
+        })) if tool_call_id == "toolu_3")
+    ));
+    let calls = provider.calls.lock().unwrap();
+    let (system, sent, tools) = &calls[3];
+    assert!(!system.contains("Monitoring a running command"));
+    assert!(tools.contains(&"run_shell_command".to_owned()));
+    assert_every_tool_call_answered(sent);
+    assert!(
+        serde_json::to_string(sent)
+            .unwrap()
+            .contains("finished with exit code 0")
+    );
+}
+
+/// With "send immediately", a follow-up typed while the agent polls the command is a plain query
+/// for the CLI agent that cancels the poll; the agent is told to read the output it doesn't carry.
+#[tokio::test]
+async fn a_follow_up_sent_immediately_reaches_the_monitoring_agent() {
+    let provider = ScriptedProvider::new(vec![
+        vec![tool_request(
+            "toolu_1",
+            "run_shell_command",
+            json!({ "command": FIND, "read_only": true, "risky": false }),
+        )],
+        vec![tool_request(
+            "toolu_2",
+            "read_shell_command_output",
+            json!({ "wait_seconds": 30 }),
+        )],
+        vec![tool_request(
+            "toolu_3",
+            "read_shell_command_output",
+            json!({}),
+        )],
+        vec![Message::assistant().with_text("It has found a.log so far.")],
+    ]);
+    let mut client = client_monitoring_a_command(&provider).await;
+    let cli_id = client.cli_task().unwrap();
+
+    let events = client
+        .send(
+            query_for("what has it found?", api::AgentType::Cli),
+            &provider,
+        )
+        .await;
+    let cli_added = added_to(&events, &cli_id);
+    assert!(matches!(
+        &cli_added[0].message,
+        Some(Kind::ToolCallResult(ToolCallResult {
+            tool_call_id,
+            result: Some(api::message::tool_call_result::Result::Cancel(())),
+            ..
+        })) if tool_call_id == "toolu_2"
+    ));
+    assert!(
+        matches!(&cli_added[1].message, Some(Kind::UserQuery(query)) if query.query == "what has it found?")
+    );
+    {
+        let calls = provider.calls.lock().unwrap();
+        let (_, sent, _) = &calls[2];
+        assert_every_tool_call_answered(sent);
+        let sent = serde_json::to_string(sent).unwrap();
+        assert!(sent.contains("what has it found?"));
+        assert!(sent.contains("call read_shell_command_output without a wait"));
+    }
+
+    let events = client
+        .send(
+            tool_result_input(
+                "toolu_3",
+                api::request::input::tool_call_result::Result::ReadShellCommandOutput(
+                    api::ReadShellCommandOutputResult {
+                        command: FIND.to_owned(),
+                        result: Some(
+                            api::read_shell_command_output_result::Result::LongRunningCommandSnapshot(
+                                snapshot("/Users/me/a.log\n"),
+                            ),
+                        ),
+                    },
+                ),
+            ),
+            &provider,
+        )
+        .await;
+    assert_eq!(client.cli_task(), Some(cli_id.clone()));
+    assert_eq!(
+        texts(&added_to(&events, &cli_id)),
+        vec!["It has found a.log so far."]
+    );
+}
