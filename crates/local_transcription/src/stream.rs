@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+use crate::turn::{EndOfTurn, EndOfTurnConfig, TurnDecision, TurnDetector, ends_mid_thought};
 use crate::vad::{
     SegmentEvent, Segmenter, SegmenterConfig, VAD_FRAME_SAMPLES, VAD_SAMPLE_RATE,
     VoiceActivityDetector,
@@ -35,6 +36,10 @@ pub enum ClientMessage {
 pub struct VadOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_silence_ms: Option<u32>,
+    /// Whether a turn detector may end utterances early on finished thoughts and hold them open
+    /// through mid-thought pauses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smart_end_of_turn: Option<bool>,
 }
 
 /// A text frame from the server of `/ai/transcribe/stream`.
@@ -104,6 +109,8 @@ pub struct StreamConfig {
     pub max_utterance_ms: u32,
     /// Audio kept from before speech starts, so the first syllable isn't cut.
     pub pre_roll_ms: u32,
+    /// When a turn detector ends utterances. Without one, `segmenter.min_silence_ms` does.
+    pub end_of_turn: EndOfTurnConfig,
 }
 
 impl Default for StreamConfig {
@@ -114,6 +121,7 @@ impl Default for StreamConfig {
             max_partial_ms: 15_000,
             max_utterance_ms: 30_000,
             pre_roll_ms: 192,
+            end_of_turn: EndOfTurnConfig::default(),
         }
     }
 }
@@ -136,6 +144,11 @@ pub struct UtteranceStream {
     utterance: Vec<f32>,
     utterance_id: u64,
     since_partial: usize,
+    turn_detector: Option<Box<dyn TurnDetector>>,
+    end_of_turn: EndOfTurn,
+    smart_end_of_turn: bool,
+    /// The latest partial transcript of the open utterance.
+    partial_text: String,
 }
 
 impl UtteranceStream {
@@ -150,12 +163,51 @@ impl UtteranceStream {
             utterance: Vec::new(),
             utterance_id: 0,
             since_partial: 0,
+            turn_detector: None,
+            end_of_turn: EndOfTurn::new(config.end_of_turn),
+            smart_end_of_turn: true,
+            partial_text: String::new(),
         }
     }
 
-    /// Changes how long a pause ends an utterance. Applies from the next utterance.
+    /// Lets `detector` decide when pauses end utterances.
+    pub fn with_turn_detector(mut self, detector: Box<dyn TurnDetector>) -> Self {
+        self.turn_detector = Some(detector);
+        self.apply_silence_timeout();
+        self
+    }
+
+    /// Changes how long a pause ends an utterance without a turn detector.
     pub fn set_min_silence_ms(&mut self, min_silence_ms: u32) {
         self.config.segmenter.min_silence_ms = min_silence_ms;
+        self.apply_silence_timeout();
+    }
+
+    /// Turns the turn detector on or off; off, pauses end utterances after the fixed timeout.
+    pub fn set_smart_end_of_turn(&mut self, enabled: bool) {
+        self.smart_end_of_turn = enabled;
+        self.apply_silence_timeout();
+    }
+
+    /// Records a partial transcript, so a pause after words like "the" or "in" doesn't end the
+    /// turn even when it sounds finished.
+    pub fn note_partial(&mut self, utterance: u64, text: &str) {
+        if utterance == self.utterance_id && self.segmenter.in_speech() {
+            text.clone_into(&mut self.partial_text);
+        }
+    }
+
+    /// Whether a turn detector decides when utterances end.
+    pub fn uses_turn_detector(&self) -> bool {
+        self.smart_end_of_turn && self.turn_detector.is_some()
+    }
+
+    fn apply_silence_timeout(&mut self) {
+        let min_silence_ms = if self.uses_turn_detector() {
+            self.config.end_of_turn.incomplete_silence_ms
+        } else {
+            self.config.segmenter.min_silence_ms
+        };
         self.segmenter.set_min_silence_ms(min_silence_ms);
     }
 
@@ -237,10 +289,15 @@ impl UtteranceStream {
             Some(SegmentEvent::SpeechStart) => {
                 self.utterance_id += 1;
                 self.utterance = self.pre_roll.drain(..).collect();
+                self.partial_text.clear();
                 self.since_partial = 0;
                 outputs.push(StreamOutput::Message(ServerMessage::SpeechStart));
             }
             Some(SegmentEvent::SpeechEnd) => self.end_utterance(outputs),
+            None if was_in_speech && self.probe_end_of_turn() => {
+                self.segmenter.reset();
+                self.end_utterance(outputs);
+            }
             None if was_in_speech => {
                 if self.utterance.len() >= ms_to_samples(self.config.max_utterance_ms) {
                     self.segmenter.reset();
@@ -266,6 +323,37 @@ impl UtteranceStream {
         Ok(())
     }
 
+    /// Whether the turn detector ends the utterance at this point of the pause.
+    fn probe_end_of_turn(&mut self) -> bool {
+        if !self.uses_turn_detector() {
+            return false;
+        }
+        match self.end_of_turn.on_silence(self.segmenter.silence_ms()) {
+            TurnDecision::Wait => false,
+            TurnDecision::End => true,
+            TurnDecision::Probe => {
+                let Some(detector) = self.turn_detector.as_mut() else {
+                    return false;
+                };
+                match detector.completion_probability(&self.utterance) {
+                    Ok(probability) => {
+                        self.end_of_turn.is_complete(probability)
+                            && !ends_mid_thought(&self.partial_text)
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Turn detection failed, falling back to the silence timeout: {error}"
+                        );
+                        self.turn_detector = None;
+                        self.apply_silence_timeout();
+                        self.segmenter.silence_ms().unwrap_or(0)
+                            >= self.config.segmenter.min_silence_ms
+                    }
+                }
+            }
+        }
+    }
+
     fn end_utterance(&mut self, outputs: &mut Vec<StreamOutput>) {
         outputs.push(StreamOutput::Decode(DecodeRequest {
             utterance: self.utterance_id,
@@ -277,6 +365,7 @@ impl UtteranceStream {
         }));
         outputs.push(StreamOutput::Message(ServerMessage::SpeechEnd));
         self.since_partial = 0;
+        self.end_of_turn.reset();
     }
 }
 

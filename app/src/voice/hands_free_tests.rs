@@ -84,6 +84,7 @@ async fn speech_reaches_the_input_through_the_embedded_server() {
         remote_server_artifacts: None,
         transcriber: Some(Arc::new(FakeTranscriber)),
         vad: Some(vad),
+        turn_detector: None,
         codebase_index_dir: None,
         recording_store: None,
     })
@@ -97,7 +98,7 @@ async fn speech_reaches_the_input_through_the_embedded_server() {
     let (update_tx, mut update_rx) = mpsc::unbounded();
     tokio::spawn(stream_session(
         socket,
-        None,
+        stream_config(None, true),
         audio_rx,
         Arc::new(AtomicBool::new(false)),
         Arc::new(Mutex::new(Some(vec![BiasTerm::new("SAST-AI")]))),
@@ -149,4 +150,16 @@ async fn speech_reaches_the_input_through_the_embedded_server() {
             .unwrap(),
         Some(SocketUpdate::Closed(None))
     ));
+}
+
+#[test]
+fn stream_config_carries_the_smart_end_of_turn_setting() {
+    for enabled in [true, false] {
+        let ClientMessage::Config { vad, .. } = stream_config(None, enabled) else {
+            panic!("expected a config message");
+        };
+        let vad = vad.expect("vad options");
+        assert_eq!(vad.smart_end_of_turn, Some(enabled));
+        assert_eq!(vad.min_silence_ms, Some(300));
+    }
 }

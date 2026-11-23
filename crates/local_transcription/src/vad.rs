@@ -80,6 +80,11 @@ impl Segmenter {
         self.in_speech
     }
 
+    /// How long the current pause inside an utterance has lasted, `None` while speaking.
+    pub fn silence_ms(&self) -> Option<u32> {
+        self.silence_frames.map(|frames| frames * FRAME_MS)
+    }
+
     /// Frames of speech needed to start an utterance.
     pub fn min_speech_frames(&self) -> u32 {
         self.config.min_speech_ms.div_ceil(FRAME_MS).max(1)

@@ -113,7 +113,7 @@ use crate::settings::{
     ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
     SystemEchoCancellation, ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceContextBiasing,
     VoiceContextCorrection, VoiceDenoise, VoiceInputEnabled, VoiceInputLanguage,
-    VoiceInputToggleKey, VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
+    VoiceInputToggleKey, VoiceSmartEndOfTurn, VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
 };
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -512,6 +512,16 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 )),
                 &(context.clone() & id!(flags::IS_VOICE_INPUT_ENABLED)),
                 flags::VOICE_CONTEXT_BIASING_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi)
+            .with_enabled(|| cfg!(feature = "voice_input")),
+            ToggleSettingActionPair::new(
+                "smart end-of-turn detection",
+                builder(SettingsAction::WarpAgent(
+                    WarpAgentPageAction::ToggleVoiceSmartEndOfTurn,
+                )),
+                &(context.clone() & id!(flags::IS_VOICE_INPUT_ENABLED)),
+                flags::SMART_END_OF_TURN_FLAG,
             )
             .with_group(bindings::BindingGroup::WarpAi)
             .with_enabled(|| cfg!(feature = "voice_input")),
@@ -2879,6 +2889,7 @@ pub enum WarpAgentPageAction {
     CycleConversationSpeechRate,
     ToggleConversationReadCodeSummaries,
     ToggleVoiceDenoise,
+    ToggleVoiceSmartEndOfTurn,
     ToggleSystemEchoCancellation,
     ToggleVoiceContextBiasing,
     ToggleVoiceSpeakerId,
@@ -3322,6 +3333,13 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::ToggleVoiceSmartEndOfTurn => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.voice_smart_end_of_turn.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             WarpAgentPageAction::ToggleSystemEchoCancellation => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.system_echo_cancellation.toggle_and_save_value(ctx));
@@ -3425,6 +3443,7 @@ impl TypedActionView for WarpAgentPageView {
             }
             #[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
             WarpAgentPageAction::ToggleVoiceDenoise
+            | WarpAgentPageAction::ToggleVoiceSmartEndOfTurn
             | WarpAgentPageAction::ToggleSystemEchoCancellation
             | WarpAgentPageAction::ToggleVoiceContextBiasing
             | WarpAgentPageAction::ToggleVoiceSpeakerId
@@ -4871,6 +4890,7 @@ struct VoiceWidget {
     conversation_rate_button: MouseStateHandle,
     conversation_code_summaries_toggle: SwitchStateHandle,
     denoise_toggle: SwitchStateHandle,
+    smart_end_of_turn_toggle: SwitchStateHandle,
     system_echo_cancellation_toggle: SwitchStateHandle,
     speaker_id_toggle: SwitchStateHandle,
     speaker_model_button: MouseStateHandle,
@@ -5018,6 +5038,15 @@ impl VoiceWidget {
                     *ai_settings.voice_denoise,
                     true,
                     self.denoise_toggle.clone(),
+                    &view.local_only_icon_tooltip_states,
+                    app,
+                ));
+                column.add_child(render_ai_setting_toggle::<VoiceSmartEndOfTurn>(
+                    "Smart End-of-Turn Detection",
+                    WarpAgentPageAction::ToggleVoiceSmartEndOfTurn,
+                    *ai_settings.voice_smart_end_of_turn,
+                    true,
+                    self.smart_end_of_turn_toggle.clone(),
                     &view.local_only_icon_tooltip_states,
                     app,
                 ));
@@ -5589,7 +5618,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary biasing bias favor on-screen terms"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn pause cut off smart turn biasing bias favor on-screen terms"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

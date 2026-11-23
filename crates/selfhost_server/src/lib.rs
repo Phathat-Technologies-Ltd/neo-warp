@@ -46,6 +46,9 @@ pub struct AppState {
     pub transcriber: Option<Arc<dyn local_transcription::Transcriber>>,
     /// Splits `/ai/transcribe/stream` audio into utterances; `None` when hands-free voice is off.
     pub vad: Option<local_transcription::VadFactory>,
+    /// Decides when `/ai/transcribe/stream` utterances end; `None` (or a factory that fails, e.g.
+    /// because the model isn't downloaded) leaves that to a fixed silence timeout.
+    pub turn_detector: Option<local_transcription::TurnDetectorFactory>,
     /// Model settings for AI helper requests that carry no credentials of their own.
     pub ai_settings: agent::ModelSettingsCache,
     pub make_provider: agent::ProviderFactory,
@@ -67,6 +70,7 @@ impl AppState {
             remote_server_artifacts: config.remote_server_artifacts.clone(),
             transcriber: None,
             vad: None,
+            turn_detector: None,
             ai_settings: Default::default(),
             make_provider: agent::default_provider_factory(),
             codebase_index: config
@@ -92,6 +96,7 @@ pub struct EmbeddedConfig {
     pub remote_server_artifacts: Option<PathBuf>,
     pub transcriber: Option<Arc<dyn local_transcription::Transcriber>>,
     pub vad: Option<local_transcription::VadFactory>,
+    pub turn_detector: Option<local_transcription::TurnDetectorFactory>,
     /// Where codebase indexes are stored; `None` turns codebase indexing off.
     pub codebase_index_dir: Option<PathBuf>,
     /// Stores session recordings; `None` turns `/recordings` off.
@@ -115,6 +120,7 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         remote_server_artifacts: config.remote_server_artifacts,
         transcriber: config.transcriber,
         vad: config.vad,
+        turn_detector: config.turn_detector,
         ai_settings: Default::default(),
         make_provider: agent::default_provider_factory(),
         codebase_index: config

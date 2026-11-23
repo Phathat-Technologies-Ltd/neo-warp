@@ -44,6 +44,7 @@ fn state(transcriber: Option<Arc<FakeTranscriber>>) -> Arc<AppState> {
         remote_server_artifacts: None,
         transcriber: transcriber.map(|t| t as Arc<dyn Transcriber>),
         vad: None,
+        turn_detector: None,
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,

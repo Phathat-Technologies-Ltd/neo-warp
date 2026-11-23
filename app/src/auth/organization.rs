@@ -198,6 +198,7 @@ fn start_embedded_server(sign_in: &OrganizationSignInConfig) -> Option<String> {
         remote_server_artifacts: bundled_remote_server_builds(),
         transcriber: local_transcriber(),
         vad: local_vad(),
+        turn_detector: local_turn_detector(),
         codebase_index_dir: FeatureFlag::CodebaseIndexing
             .is_enabled()
             .then(|| warp_core::paths::data_dir().join("codebase-index")),
@@ -236,6 +237,19 @@ fn local_vad() -> Option<local_transcription::VadFactory> {
     Some(std::sync::Arc::new(move || {
         local_transcription::SileroVad::load(&store)
             .map(|vad| Box::new(vad) as Box<dyn local_transcription::VoiceActivityDetector>)
+    }))
+}
+
+/// The end-of-turn detector for `/ai/transcribe/stream`, when hands-free voice input is on. The
+/// stream falls back to a fixed silence timeout when its model isn't downloaded.
+fn local_turn_detector() -> Option<local_transcription::TurnDetectorFactory> {
+    if !(FeatureFlag::VoiceInput.is_enabled() && FeatureFlag::VoiceHandsFree.is_enabled()) {
+        return None;
+    }
+    let store = crate::voice::local_model::turn_model_store();
+    Some(std::sync::Arc::new(move || {
+        local_transcription::SmartTurnDetector::load(&store)
+            .map(|detector| Box::new(detector) as Box<dyn local_transcription::TurnDetector>)
     }))
 }
 

@@ -11,7 +11,7 @@ use futures::channel::mpsc;
 use local_transcription::{
     DownloadError, DownloadProgress, ModelAction, ModelBundle, ModelEvent, ModelSpec, ModelState,
     ModelStore, ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8,
-    parakeet_tdt_0_6b_v3, silero_vad_v5, tiny_voca,
+    parakeet_tdt_0_6b_v3, silero_vad_v5, smart_turn_v3_2, tiny_voca,
 };
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
@@ -35,17 +35,26 @@ pub fn vad_model_store() -> ModelStore {
     ModelStore::new(warp_core::paths::data_dir().join("models"), silero_vad_v5())
 }
 
+/// The store holding the turn detector that tells a finished request from a mid-thought pause.
+pub fn turn_model_store() -> ModelStore {
+    ModelStore::new(
+        warp_core::paths::data_dir().join("models"),
+        smart_turn_v3_2(),
+    )
+}
+
 /// Whether hands-free voice input is available, which also needs the VAD model.
 pub fn is_hands_free_enabled() -> bool {
     is_local_voice_enabled() && FeatureFlag::VoiceHandsFree.is_enabled()
 }
 
-/// The models voice input needs: the speech model, plus the VAD when hands-free is on, so one
-/// consent covers both.
+/// The models voice input needs: the speech model, plus the VAD and turn detector when hands-free
+/// is on, so one consent covers them all.
 fn model_bundle() -> ModelBundle {
     let mut stores = vec![model_store()];
     if FeatureFlag::VoiceHandsFree.is_enabled() {
         stores.push(vad_model_store());
+        stores.push(turn_model_store());
     }
     ModelBundle::new(stores)
 }

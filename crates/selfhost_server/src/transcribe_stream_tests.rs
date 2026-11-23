@@ -4,7 +4,8 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::Request;
 use futures::channel::mpsc;
-use local_transcription::{Audio, VAD_FRAME_SAMPLES, VoiceActivityDetector};
+use local_transcription::stream::VadOptions;
+use local_transcription::{Audio, TurnDetector, VAD_FRAME_SAMPLES, VoiceActivityDetector};
 use tower::ServiceExt as _;
 
 use super::*;
@@ -79,11 +80,25 @@ fn text(message: &ClientMessage) -> Frame {
 
 /// Runs a session over `frames` and returns what the server sent.
 async fn run(frames: Vec<Frame>, transcriber: Arc<FakeTranscriber>) -> Vec<Frame> {
+    run_with_turn_detector(frames, transcriber, None).await
+}
+
+async fn run_with_turn_detector(
+    frames: Vec<Frame>,
+    transcriber: Arc<FakeTranscriber>,
+    turn_detector: Option<TurnDetectorFactory>,
+) -> Vec<Frame> {
     let (tx, rx) = mpsc::unbounded();
     let incoming = futures::stream::iter(frames).chain(futures::stream::pending());
     tokio::time::timeout(
         Duration::from_secs(10),
-        run_session(Box::pin(incoming), tx, transcriber, vad_factory()),
+        run_session(
+            Box::pin(incoming),
+            tx,
+            transcriber,
+            vad_factory(),
+            turn_detector,
+        ),
     )
     .await
     .expect("the session ends after `end`");
@@ -216,6 +231,7 @@ async fn reports_a_missing_vad_model() {
         tx,
         Arc::new(FakeTranscriber::default()),
         vad,
+        None,
     )
     .await;
     let sent: Vec<_> = rx.collect().await;
@@ -233,6 +249,7 @@ fn state(enabled: bool) -> Arc<AppState> {
         remote_server_artifacts: None,
         transcriber: enabled.then(|| Arc::new(FakeTranscriber::default()) as Arc<dyn Transcriber>),
         vad: enabled.then(vad_factory),
+        turn_detector: None,
         ai_settings: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
@@ -280,4 +297,58 @@ async fn reports_when_hands_free_is_off() {
         upgrade_status(state, Some(&token)).await,
         StatusCode::NOT_IMPLEMENTED
     );
+}
+
+/// Always judges the turn finished.
+struct CompleteTurnDetector;
+
+impl TurnDetector for CompleteTurnDetector {
+    fn completion_probability(&mut self, _audio: &[f32]) -> Result<f32, TranscribeError> {
+        Ok(1.0)
+    }
+}
+
+fn complete_turn_detector() -> TurnDetectorFactory {
+    Arc::new(|| Ok(Box::new(CompleteTurnDetector) as Box<dyn TurnDetector>))
+}
+
+/// Whether 8 frames (256 ms) of silence after speech end the utterance: past the 200 ms probe,
+/// short of the 300 ms fixed timeout.
+async fn short_pause_ends_utterance(
+    config: Option<ClientMessage>,
+    turn_detector: Option<TurnDetectorFactory>,
+) -> bool {
+    let mut frames: Vec<Frame> = config.iter().map(text).collect();
+    frames.extend([pcm(0.5, 10), pcm(0.0, 8), pcm(0.5, 10)]);
+    frames.push(text(&ClientMessage::End));
+    let sent =
+        run_with_turn_detector(frames, Arc::new(FakeTranscriber::default()), turn_detector).await;
+    let finals = server_messages(&sent)
+        .iter()
+        .filter(|message| matches!(message, ServerMessage::Final { .. }))
+        .count();
+    finals == 2
+}
+
+#[tokio::test]
+async fn turn_detector_ends_finished_turns_early() {
+    assert!(short_pause_ends_utterance(None, Some(complete_turn_detector())).await);
+}
+
+#[tokio::test]
+async fn smart_end_of_turn_can_be_turned_off() {
+    let config = ClientMessage::Config {
+        language: None,
+        vad: Some(VadOptions {
+            min_silence_ms: Some(300),
+            smart_end_of_turn: Some(false),
+        }),
+    };
+    assert!(!short_pause_ends_utterance(Some(config), Some(complete_turn_detector())).await);
+}
+
+#[tokio::test]
+async fn missing_turn_model_falls_back_to_the_silence_timeout() {
+    let factory: TurnDetectorFactory = Arc::new(|| Err(TranscribeError::ModelNotInstalled));
+    assert!(!short_pause_ends_utterance(None, Some(factory)).await);
 }
