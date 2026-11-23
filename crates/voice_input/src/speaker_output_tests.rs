@@ -19,3 +19,13 @@ fn fills_frames_and_reports_the_end_once() {
     assert!(done.load(Ordering::SeqCst));
     assert!(shared.fill(&mut out, 2).is_none());
 }
+
+#[test]
+fn reselects_only_when_moving_onto_or_off_the_unit() {
+    use AudioBackend::*;
+    assert!(needs_reselect(Cpal, VoiceProcessing));
+    assert!(needs_reselect(VoiceProcessing, Cpal));
+    assert!(!needs_reselect(Cpal, Cpal));
+    assert!(!needs_reselect(VoiceProcessing, VoiceProcessing));
+    assert!(!needs_reselect(Cpal, SystemAec));
+}

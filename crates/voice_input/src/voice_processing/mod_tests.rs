@@ -194,3 +194,37 @@ fn reopen_reaches_registered_captures_until_dropped() {
     reopen_captures();
     assert!(rx.try_recv().is_err());
 }
+
+#[test]
+fn speaker_moves_onto_the_unit_when_system_aec_stops() {
+    let mut selector = BackendSelector::default();
+    selector.set_wanted(true);
+    assert_eq!(
+        desired_output_backend(&selector, true, true),
+        AudioBackend::Cpal
+    );
+    assert_eq!(
+        desired_output_backend(&selector, true, false),
+        AudioBackend::VoiceProcessing
+    );
+    selector.set_wanted(false);
+    assert_eq!(
+        desired_output_backend(&selector, true, false),
+        AudioBackend::Cpal
+    );
+}
+
+#[test]
+fn backend_changes_bump_the_generation_and_notify() {
+    let changes = backend_changes();
+    let before = backend_generation();
+    notify_backend_changed();
+    notify_backend_changed();
+    assert!(backend_generation() >= before + 2);
+    assert!(changes.try_recv().is_ok());
+    // Bursts are coalesced into one pending message.
+    assert!(changes.try_recv().is_err());
+    drop(changes);
+    notify_backend_changed();
+    assert!(BACKEND_LISTENERS.lock().iter().all(|tx| !tx.is_closed()));
+}

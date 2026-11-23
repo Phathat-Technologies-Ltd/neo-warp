@@ -92,6 +92,16 @@ impl ConversationSession {
             },
             |_, _| {},
         );
+        ctx.spawn_stream_local(
+            voice_input::backend_changes(),
+            |me, (), ctx| {
+                if me.is_active() {
+                    me.refresh_echo_cancellation();
+                    ctx.notify();
+                }
+            },
+            |_, _| {},
+        );
         ctx.subscribe_to_model(&HandsFreeSession::handle(ctx), |me, session, event, ctx| {
             if !matches!(event, HandsFreeEvent::StateChanged) || !me.is_active() {
                 return;
@@ -551,13 +561,14 @@ impl ConversationSession {
                     });
                 }
                 PlaybackAction::Play { reply, seq, audio } => {
-                    self.refresh_echo_cancellation();
                     if let Some(output) = &self.output {
                         let finished_tx = self.finished_tx.clone();
                         output.play(&audio.samples, audio.sample_rate, move || {
                             let _ = finished_tx.unbounded_send((reply, seq));
                         });
                     }
+                    // Playing may have moved the speaker onto the echo-cancelling unit.
+                    self.refresh_echo_cancellation();
                 }
                 PlaybackAction::StopPlayback => {
                     if let Some(output) = &self.output {

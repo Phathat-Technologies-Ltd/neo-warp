@@ -87,6 +87,7 @@ impl Engine {
                 "Echo-cancelling audio: echo cancellation {}",
                 if cancelling { "active" } else { "inactive" }
             );
+            super::notify_backend_changed();
         }
     }
 }
@@ -148,6 +149,7 @@ fn release(kind: LeaseKind) {
         *guard = None;
         if ECHO_CANCELLING.swap(false, Ordering::Relaxed) {
             log::info!("Echo-cancelling audio: echo cancellation inactive");
+            super::notify_backend_changed();
         }
     } else {
         engine.update_echo_flag();

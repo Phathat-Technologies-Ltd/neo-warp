@@ -56,7 +56,7 @@ pub fn mic_indicator_label(app: &warpui::AppContext) -> Option<String> {
 /// Where macOS lets the user allow system audio recording.
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 pub(crate) const SYSTEM_AUDIO_PRIVACY_URL: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture";
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
 /// Applies the system echo cancellation setting to the audio pipeline. Its noise suppression only
 /// runs when the RNNoise denoiser is off.

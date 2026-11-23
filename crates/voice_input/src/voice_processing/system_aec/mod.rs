@@ -219,6 +219,7 @@ pub(crate) fn acquire_capture(sink: CaptureSink) -> anyhow::Result<SystemCapture
     match imp::acquire_capture(sink) {
         Ok(lease) => {
             SELECTOR.lock().on_started();
+            super::notify_backend_changed();
             Ok(lease)
         }
         Err(error) => {

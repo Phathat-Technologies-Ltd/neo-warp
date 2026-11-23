@@ -184,12 +184,13 @@ impl HandsFreeSession {
             }
         });
         let toast = DismissibleToast::default(
-            "Allow neo-warp to record system audio in System Settings \u{203a} Privacy & Security \
-             to cancel sound from other apps."
+            "Allow neo-warp in System Settings \u{203a} Privacy & Security \u{203a} Screen & \
+             System Audio Recording \u{203a} System Audio Recording Only to cancel sound from \
+             other apps."
                 .to_owned(),
         )
         .with_link(
-            ToastLink::new("Open Privacy & Security".to_owned())
+            ToastLink::new("Open System Audio Recording".to_owned())
                 .with_href(super::SYSTEM_AUDIO_PRIVACY_URL.to_owned()),
         );
         ToastStack::handle(ctx).update(ctx, |stack, ctx| {
