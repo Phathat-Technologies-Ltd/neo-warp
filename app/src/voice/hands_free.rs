@@ -261,14 +261,20 @@ impl HandsFreeSession {
             .unwrap_or_default();
         let sensitivity = self.sensitivity;
         let stage = if early { "early" } else { "final" };
-        let verdict = SpeakerProfile::handle(ctx).update(ctx, |profile, _| {
-            profile.verify(samples, sensitivity, utterance, stage)
+        let may_adapt = !early && !ConversationSession::as_ref(ctx).is_echo_window();
+        let check = SpeakerProfile::handle(ctx).update(ctx, |profile, _| {
+            profile.verify(samples, sensitivity, may_adapt, utterance, stage)
         });
         let generation = self.generation;
-        ctx.spawn(verdict, move |me, verdict, ctx| {
+        ctx.spawn(check, move |me, check, ctx| {
             if me.generation != generation {
                 return;
             }
+            if check.verdict == Verdict::Match && !ConversationSession::as_ref(ctx).is_echo_window()
+            {
+                SpeakerProfile::handle(ctx).update(ctx, |profile, _| profile.adapt(&check));
+            }
+            let verdict = check.verdict;
             let (steps, rejected) = if early {
                 me.gate.early_verdict(utterance, verdict)
             } else {
@@ -321,9 +327,10 @@ impl HandsFreeSession {
                 .speech_utterance
                 .unwrap_or_else(|| me.latest_utterance.map_or(0, |id| id + 1));
             let verdict = SpeakerProfile::handle(ctx).update(ctx, |profile, _| {
-                profile.verify(samples, sensitivity, utterance, "barge-in")
+                profile.verify(samples, sensitivity, false, utterance, "barge-in")
             });
-            ctx.spawn(verdict, move |me, verdict, ctx| {
+            ctx.spawn(verdict, move |me, check, ctx| {
+                let verdict = check.verdict;
                 if me.generation != generation || me.speech_starts != speech_start {
                     return;
                 }
@@ -564,14 +571,16 @@ impl HandsFreeSession {
         let capture_tap = verify_speaker.then(|| tap.clone());
         let capture = LiveCapture::start(
             move |mut chunk| {
-                chunk.pcm = denoise.process(chunk.pcm);
-                if chunk.pcm.is_empty() {
-                    return;
-                }
+                // Speaker checks embed the audio before denoising: enrollment records it that way,
+                // and RNNoise reshapes the voice's spectrum enough to cost the user ~0.1 in score.
                 if let Some(tap) = &capture_tap
                     && let Ok(mut tap) = tap.lock()
                 {
                     tap.push_pcm(&chunk.pcm);
+                }
+                chunk.pcm = denoise.process(chunk.pcm);
+                if chunk.pcm.is_empty() {
+                    return;
                 }
                 let _ = audio_tx.unbounded_send(chunk);
             },

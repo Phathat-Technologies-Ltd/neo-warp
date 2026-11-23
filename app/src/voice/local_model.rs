@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use futures::channel::mpsc;
 use local_transcription::{
     DownloadError, DownloadProgress, ModelAction, ModelBundle, ModelEvent, ModelSpec, ModelState,
-    ModelStore, ProgressThrottle, campplus_en_voxceleb, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3,
-    silero_vad_v5, tiny_voca,
+    ModelStore, ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8,
+    parakeet_tdt_0_6b_v3, silero_vad_v5, tiny_voca,
 };
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
@@ -83,7 +83,7 @@ pub fn speech_output_store(engine: SpeechOutputEngine) -> ModelStore {
 pub fn speaker_model_store() -> ModelStore {
     ModelStore::new(
         warp_core::paths::data_dir().join("models"),
-        campplus_en_voxceleb(),
+        campplus_zh_en_advanced(),
     )
 }
 

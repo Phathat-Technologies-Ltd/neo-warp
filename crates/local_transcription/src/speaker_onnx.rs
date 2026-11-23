@@ -8,8 +8,8 @@ use crate::fbank::{FBANK_BINS, compute_fbank};
 use crate::speaker::{SpeakerEmbedder, embedding_clip, l2_normalize};
 use crate::{ModelStore, TranscribeError};
 
-/// The model file in [`crate::campplus_en_voxceleb`].
-pub const SPEAKER_MODEL_FILE: &str = "campplus_en_voxceleb_16k.onnx";
+/// The model file in [`crate::campplus_zh_en_advanced`].
+pub const SPEAKER_MODEL_FILE: &str = "campplus_zh_en_advanced_16k.onnx";
 
 /// A speaker embedding model on ONNX Runtime (CPU, one thread) that takes mean-normalized fbank
 /// features `x: [1, T, 80]` and returns `embedding: [1, D]`, as the 3D-Speaker and WeSpeaker
@@ -53,6 +53,8 @@ impl OnnxSpeakerEmbedder {
 
 impl SpeakerEmbedder for OnnxSpeakerEmbedder {
     fn embed(&mut self, samples: &[f32]) -> Result<Vec<f32>, TranscribeError> {
+        // Samples stay in [-1, 1]: 3D-Speaker trained on torchaudio's float audio (the export's
+        // `normalize_samples` is 1), unlike WeSpeaker models, which expect int16 scale.
         let clip = embedding_clip(samples);
         let mut features = compute_fbank(&clip);
         if features.frames == 0 {

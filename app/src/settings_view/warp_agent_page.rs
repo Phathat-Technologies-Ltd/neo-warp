@@ -2870,6 +2870,13 @@ pub enum WarpAgentPageAction {
     CycleVoiceSpeakerSensitivity,
     /// Starts guided voice enrollment, first asking to download the speaker model if needed.
     EnrollVoice,
+    /// Records the current enrollment phrase.
+    RecordVoicePhrase,
+    StopVoicePhrase,
+    /// Plays back the recorded enrollment phrase.
+    PlayVoicePhrase,
+    /// Accepts the recorded phrase and moves to the next, or builds the voiceprint after the last.
+    AcceptVoicePhrase,
     CancelVoiceEnrollment,
     DeleteVoiceprint,
     DownloadSpeakerModel,
@@ -3333,18 +3340,39 @@ impl TypedActionView for WarpAgentPageView {
                 if crate::voice::local_model::ensure_speaker_model_ready(window_id, ctx) {
                     crate::voice::hands_free::HandsFreeSession::handle(ctx)
                         .update(ctx, |session, ctx| session.stop(ctx));
-                    let started = crate::voice::speaker_id::SpeakerProfile::handle(ctx)
+                    crate::voice::speaker_id::SpeakerProfile::handle(ctx)
                         .update(ctx, |profile, ctx| profile.start_enrollment(ctx));
-                    if let Err(message) = started {
-                        crate::workspace::ToastStack::handle(ctx).update(ctx, |stack, ctx| {
-                            stack.add_ephemeral_toast(
-                                crate::view_components::DismissibleToast::error(message),
-                                window_id,
-                                ctx,
-                            );
-                        });
-                    }
                 }
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::RecordVoicePhrase => {
+                let window_id = ctx.window_id();
+                crate::voice::hands_free::HandsFreeSession::handle(ctx)
+                    .update(ctx, |session, ctx| session.stop(ctx));
+                let started = crate::voice::speaker_id::SpeakerProfile::handle(ctx)
+                    .update(ctx, |profile, ctx| profile.record_phrase(ctx));
+                if let Err(message) = started {
+                    show_error_toast(message, window_id, ctx);
+                }
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::StopVoicePhrase => {
+                crate::voice::speaker_id::SpeakerProfile::handle(ctx)
+                    .update(ctx, |profile, ctx| profile.stop_recording(ctx));
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::PlayVoicePhrase => {
+                let window_id = ctx.window_id();
+                let played = crate::voice::speaker_id::SpeakerProfile::handle(ctx)
+                    .update(ctx, |profile, _| profile.play_take());
+                if let Err(message) = played {
+                    show_error_toast(message, window_id, ctx);
+                }
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::AcceptVoicePhrase => {
+                crate::voice::speaker_id::SpeakerProfile::handle(ctx)
+                    .update(ctx, |profile, ctx| profile.accept_phrase(ctx));
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             WarpAgentPageAction::CancelVoiceEnrollment => {
@@ -3378,6 +3406,10 @@ impl TypedActionView for WarpAgentPageView {
             | WarpAgentPageAction::ToggleVoiceSpeakerId
             | WarpAgentPageAction::CycleVoiceSpeakerSensitivity
             | WarpAgentPageAction::EnrollVoice
+            | WarpAgentPageAction::RecordVoicePhrase
+            | WarpAgentPageAction::StopVoicePhrase
+            | WarpAgentPageAction::PlayVoicePhrase
+            | WarpAgentPageAction::AcceptVoicePhrase
             | WarpAgentPageAction::CancelVoiceEnrollment
             | WarpAgentPageAction::DeleteVoiceprint
             | WarpAgentPageAction::DownloadSpeakerModel
@@ -4819,6 +4851,9 @@ struct VoiceWidget {
     speaker_id_toggle: SwitchStateHandle,
     speaker_model_button: MouseStateHandle,
     enroll_button: MouseStateHandle,
+    enroll_play_button: MouseStateHandle,
+    enroll_accept_button: MouseStateHandle,
+    enroll_cancel_button: MouseStateHandle,
     delete_voiceprint_button: MouseStateHandle,
     sensitivity_button: MouseStateHandle,
     context_correction_toggle: SwitchStateHandle,
@@ -5084,49 +5119,95 @@ impl VoiceWidget {
         if !*settings.voice_speaker_id_enabled {
             return;
         }
-        let (description, label, action) = match profile.enrollment() {
+        let phrase_header = |phrase: usize| {
+            format!(
+                "Phrase {} of {}. Read aloud: \u{201c}{}\u{201d}",
+                phrase + 1,
+                ENROLLMENT_PHRASES.len(),
+                ENROLLMENT_PHRASES[phrase]
+            )
+        };
+        let enroll = self.enroll_button.clone();
+        let play = self.enroll_play_button.clone();
+        let accept = self.enroll_accept_button.clone();
+        let cancel = (
+            "Cancel",
+            WarpAgentPageAction::CancelVoiceEnrollment,
+            self.enroll_cancel_button.clone(),
+        );
+        let (description, buttons) = match profile.enrollment() {
+            EnrollmentState::Ready { phrase } => (
+                format!("{} Press Record, then read it.", phrase_header(*phrase)),
+                vec![
+                    ("Record", WarpAgentPageAction::RecordVoicePhrase, enroll),
+                    cancel,
+                ],
+            ),
             EnrollmentState::Recording { phrase } => (
                 format!(
-                    "Phrase {} of {}. Read aloud: \u{201c}{}\u{201d}",
-                    phrase + 1,
-                    ENROLLMENT_PHRASES.len(),
-                    ENROLLMENT_PHRASES[*phrase]
+                    "{} Recording\u{2026} press Stop when done.",
+                    phrase_header(*phrase)
                 ),
-                "Cancel",
-                WarpAgentPageAction::CancelVoiceEnrollment,
+                vec![
+                    ("Stop", WarpAgentPageAction::StopVoicePhrase, enroll),
+                    cancel,
+                ],
             ),
-            EnrollmentState::Processing => (
-                "Creating your voiceprint\u{2026}".to_owned(),
-                "Cancel",
-                WarpAgentPageAction::CancelVoiceEnrollment,
-            ),
+            EnrollmentState::Review { phrase, quality } => {
+                let last = phrase + 1 == ENROLLMENT_PHRASES.len();
+                let mut buttons = vec![
+                    ("Play", WarpAgentPageAction::PlayVoicePhrase, play),
+                    ("Re-record", WarpAgentPageAction::RecordVoicePhrase, enroll),
+                ];
+                let verdict = match quality.problem() {
+                    Some(problem) => problem.message().to_owned(),
+                    None => {
+                        buttons.push((
+                            if last { "Finish" } else { "Next" },
+                            WarpAgentPageAction::AcceptVoicePhrase,
+                            accept,
+                        ));
+                        "Sounds good.".to_owned()
+                    }
+                };
+                buttons.push(cancel);
+                (
+                    format!(
+                        "{} Recorded {}. {verdict}",
+                        phrase_header(*phrase),
+                        quality.summary()
+                    ),
+                    buttons,
+                )
+            }
+            EnrollmentState::Processing => {
+                ("Creating your voiceprint\u{2026}".to_owned(), vec![cancel])
+            }
             EnrollmentState::Failed(error) => (
                 format!("Enrollment failed: {error}"),
-                "Try Again",
-                WarpAgentPageAction::EnrollVoice,
+                vec![("Try Again", WarpAgentPageAction::EnrollVoice, enroll)],
             ),
             EnrollmentState::Idle if profile.is_enrolled() => (
                 "Hands-free voice input ignores speech that doesn't sound like you, including the \
-                 assistant's own voice. Your voiceprint stays on this computer."
+                 assistant's own voice. Your voiceprint stays on this computer and keeps learning \
+                 your voice from confident matches."
                     .to_owned(),
-                "Re-enroll",
-                WarpAgentPageAction::EnrollVoice,
+                vec![("Re-enroll", WarpAgentPageAction::EnrollVoice, enroll)],
             ),
             EnrollmentState::Idle => (
-                "Read three short phrases so hands-free voice input ignores other voices and the \
-                 assistant's own speech. Your voiceprint stays on this computer and is never sent \
-                 anywhere."
-                    .to_owned(),
-                "Enroll",
-                WarpAgentPageAction::EnrollVoice,
+                format!(
+                    "Read {} phrases so hands-free voice input ignores other voices and the \
+                     assistant's own speech. Your voiceprint stays on this computer and is never \
+                     sent anywhere.",
+                    ENROLLMENT_PHRASES.len()
+                ),
+                vec![("Enroll", WarpAgentPageAction::EnrollVoice, enroll)],
             ),
         };
-        column.add_child(render_button_row(
+        column.add_child(render_buttons_row(
             "Voiceprint",
             description,
-            label,
-            action,
-            self.enroll_button.clone(),
+            buttons,
             appearance,
         ));
         if profile.is_enrolled() {
@@ -5391,13 +5472,36 @@ fn render_button_row(
     button_state: MouseStateHandle,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
-    let button = appearance
-        .ui_builder()
-        .button(ButtonVariant::Secondary, button_state)
-        .with_text_label(button_label.to_owned())
-        .build()
-        .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
-        .finish();
+    render_buttons_row(
+        label,
+        description,
+        vec![(button_label, action, button_state)],
+        appearance,
+    )
+}
+
+fn render_buttons_row(
+    label: &str,
+    description: String,
+    buttons: Vec<(&str, WarpAgentPageAction, MouseStateHandle)>,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let mut row = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+    for (index, (button_label, action, button_state)) in buttons.into_iter().enumerate() {
+        let button = appearance
+            .ui_builder()
+            .button(ButtonVariant::Secondary, button_state)
+            .with_text_label(button_label.to_owned())
+            .build()
+            .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
+            .finish();
+        row.add_child(
+            Container::new(button)
+                .with_padding_left(if index == 0 { 0.0 } else { 6.0 })
+                .finish(),
+        );
+    }
+    let button = row.finish();
     build_toggle_element(
         render_body_item_label::<WarpAgentPageAction>(
             label.to_owned(),
@@ -8504,4 +8608,15 @@ impl SettingsWidget for CustomModelRoutersWidget {
             .with_margin_bottom(HEADER_PADDING)
             .finish()
     }
+}
+
+#[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+fn show_error_toast(message: String, window_id: WindowId, ctx: &mut AppContext) {
+    crate::workspace::ToastStack::handle(ctx).update(ctx, |stack, ctx| {
+        stack.add_ephemeral_toast(
+            crate::view_components::DismissibleToast::error(message),
+            window_id,
+            ctx,
+        );
+    });
 }

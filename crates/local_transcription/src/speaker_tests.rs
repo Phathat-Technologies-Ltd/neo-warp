@@ -20,12 +20,9 @@ fn thresholds_order_from_strict_to_loose() {
 
 #[test]
 fn match_depends_on_sensitivity() {
-    let print = Voiceprint {
-        model_id: "m".to_owned(),
-        embedding: vec![1.0, 0.0],
-    };
-    // cos = 0.57
-    let probe = [0.57, (1.0f32 - 0.57 * 0.57).sqrt()];
+    let print = Voiceprint::enroll("m", &[vec![1.0, 0.0]]).unwrap();
+    // cos = 0.48
+    let probe = [0.48, (1.0f32 - 0.48 * 0.48).sqrt()];
     assert!(!print.matches(&probe, Sensitivity::Strict));
     assert!(print.matches(&probe, Sensitivity::Normal));
     assert!(print.matches(&probe, Sensitivity::Loose));
@@ -78,4 +75,28 @@ fn embedding_clip_keeps_the_end_and_tiles_short_audio() {
     assert_eq!(&clip[..4], &[1.0, 2.0, 3.0, 1.0]);
 
     assert!(embedding_clip(&[]).is_empty());
+}
+
+#[test]
+fn adaptation_moves_the_voiceprint_and_stays_bounded() {
+    let mut print = Voiceprint::enroll("m", &[vec![1.0, 0.0], vec![1.0, 0.0]]).unwrap();
+    assert!(print.is_current("m"));
+    assert!(!print.is_current("other"));
+    print.adapt(&[0.0, 5.0]);
+    assert!(print.embedding[1] > 0.0);
+    for _ in 0..20 {
+        print.adapt(&[0.0, 1.0]);
+    }
+    assert_eq!(print.adapted.len(), MAX_ADAPTED_EMBEDDINGS);
+    // The enrollment keeps its share however long the voiceprint adapts.
+    assert!(print.embedding[0] > 0.2);
+    print.adapt(&[1.0]);
+    assert_eq!(print.adapted.len(), MAX_ADAPTED_EMBEDDINGS);
+}
+
+#[test]
+fn old_voiceprints_are_not_current() {
+    let print: Voiceprint =
+        serde_json::from_str(r#"{"model_id":"m","embedding":[1.0,0.0]}"#).unwrap();
+    assert!(!print.is_current("m"));
 }

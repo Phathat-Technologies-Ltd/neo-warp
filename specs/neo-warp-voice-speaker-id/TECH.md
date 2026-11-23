@@ -15,7 +15,7 @@
 | Output | `embedding: float32 [N, 512]` |
 | Params | 7.24 M (fp32) |
 
-The release asset isn't immutable, so the SHA-256 in `campplus_en_voxceleb()` is the pin. The
+The release asset isn't immutable, so the SHA-256 in `campplus_zh_en_advanced()` is the pin. The
 `ModelStore` deletes a file that fails the checksum.
 
 ### Size and RAM: requirement not met, and why
@@ -81,7 +81,7 @@ Normal 0.52, Loose 0.42.
   `Denoiser` upsamples 16 kHz to 48 kHz by linear interpolation, runs RNNoise on 480-sample frames,
   and averages groups of 3 back down. Buffers are reused, so the only allocation per chunk is its
   output vector. Latency is under 10 ms. `DenoiseStage::new(false)` passes audio through.
-- `model.rs`: `campplus_en_voxceleb()` `ModelSpec`, directory `campplus-en-voxceleb-16k`.
+- `model.rs`: `campplus_zh_en_advanced()` `ModelSpec`, directory `campplus-zh-en-advanced-16k`.
 
 ### App (`app/src/voice`)
 

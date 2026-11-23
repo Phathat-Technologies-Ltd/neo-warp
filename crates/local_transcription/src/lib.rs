@@ -38,7 +38,7 @@ mod voice_command;
 pub use audio::{Audio, decode_wav};
 pub use model::{
     DownloadError, DownloadProgress, ModelBundle, ModelFile, ModelSpec, ModelStatus, ModelStore,
-    ProgressThrottle, campplus_en_voxceleb, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3,
+    ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8, parakeet_tdt_0_6b_v3,
     silero_vad_v5, tiny_voca,
 };
 #[cfg(feature = "parakeet")]
