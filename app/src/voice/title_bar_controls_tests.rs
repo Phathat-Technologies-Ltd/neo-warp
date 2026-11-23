@@ -56,10 +56,11 @@ fn conversation_status_names_the_state_in_the_tooltip() {
 }
 
 #[test]
-fn waveform_is_flat_when_silent_or_not_live() {
-    let flat = [BAR_MIN_HEIGHT; 4];
-    assert_eq!(waveform_bar_heights(0., true), flat);
-    assert_eq!(waveform_bar_heights(1., false), flat);
+fn waveform_rests_in_a_waveform_shape_when_silent_or_not_live() {
+    let rest = waveform_bar_heights(0., true);
+    assert_eq!(waveform_bar_heights(1., false), rest);
+    assert!(rest.iter().all(|height| *height > BAR_MIN_HEIGHT));
+    assert!(rest[1] > rest[0] && rest[1] > rest[3]);
 }
 
 #[test]

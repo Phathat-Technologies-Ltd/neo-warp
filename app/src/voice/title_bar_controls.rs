@@ -45,6 +45,9 @@ const BAR_WIDTH: f32 = 2.;
 const BAR_GAP: f32 = 2.;
 const BAR_MIN_HEIGHT: f32 = 2.;
 const BAR_MAX_HEIGHT: f32 = 12.;
+/// The share of each bar's range shown with no sound, so the idle icon still reads as a waveform
+/// instead of a row of dots.
+const BAR_REST_LEVEL: f32 = 0.45;
 /// Level changes smaller than this don't redraw the waveform.
 const LEVEL_EPSILON: f32 = 0.02;
 
@@ -94,6 +97,7 @@ pub fn conversation_status(active: bool, state: ConversationState, muted: bool) 
 /// The waveform's bar heights for a microphone level in `[0, 1]`; flat while not live.
 pub fn waveform_bar_heights(level: f32, live: bool) -> [f32; 4] {
     let level = if live { level.clamp(0., 1.) } else { 0. };
+    let level = BAR_REST_LEVEL + (1. - BAR_REST_LEVEL) * level;
     BAR_WEIGHTS.map(|weight| BAR_MIN_HEIGHT + (BAR_MAX_HEIGHT - BAR_MIN_HEIGHT) * weight * level)
 }
 
