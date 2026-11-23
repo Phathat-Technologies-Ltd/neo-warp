@@ -2891,6 +2891,8 @@ pub enum WarpAgentPageAction {
     ToggleVoiceDenoise,
     ToggleVoiceSmartEndOfTurn,
     ToggleSystemEchoCancellation,
+    /// Clears a blocked or failed system echo cancellation verdict and tries the pipeline again.
+    RetrySystemEchoCancellation,
     ToggleVoiceContextBiasing,
     ToggleVoiceSpeakerId,
     /// Switches "Recognize my voice" to the next sensitivity.
@@ -3351,6 +3353,11 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::RetrySystemEchoCancellation => {
+                voice_input::retry_system_echo_cancellation();
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             WarpAgentPageAction::ToggleVoiceSpeakerId => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.voice_speaker_id_enabled.toggle_and_save_value(ctx));
@@ -3445,6 +3452,7 @@ impl TypedActionView for WarpAgentPageView {
             WarpAgentPageAction::ToggleVoiceDenoise
             | WarpAgentPageAction::ToggleVoiceSmartEndOfTurn
             | WarpAgentPageAction::ToggleSystemEchoCancellation
+            | WarpAgentPageAction::RetrySystemEchoCancellation
             | WarpAgentPageAction::ToggleVoiceContextBiasing
             | WarpAgentPageAction::ToggleVoiceSpeakerId
             | WarpAgentPageAction::CycleVoiceSpeakerSensitivity
@@ -4892,6 +4900,7 @@ struct VoiceWidget {
     denoise_toggle: SwitchStateHandle,
     smart_end_of_turn_toggle: SwitchStateHandle,
     system_echo_cancellation_toggle: SwitchStateHandle,
+    system_echo_cancellation_retry_button: MouseStateHandle,
     speaker_id_toggle: SwitchStateHandle,
     speaker_model_button: MouseStateHandle,
     enroll_button: MouseStateHandle,
@@ -5063,6 +5072,19 @@ impl VoiceWidget {
                         &view.local_only_icon_tooltip_states,
                         app,
                     ));
+                    if voice_input::system_echo_cancellation_held_back() {
+                        column.add_child(render_button_row(
+                            "Sound From Other Apps Isn't Being Cancelled",
+                            "Warp couldn't hear system audio, so it is cancelling only its own \
+                             speech. Allow Warp under Privacy & Security › Screen & System Audio \
+                             Recording, then retry."
+                                .to_owned(),
+                            "Retry",
+                            WarpAgentPageAction::RetrySystemEchoCancellation,
+                            self.system_echo_cancellation_retry_button.clone(),
+                            appearance,
+                        ));
+                    }
                 }
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]

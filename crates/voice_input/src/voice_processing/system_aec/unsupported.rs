@@ -1,5 +1,8 @@
 //! Stand-ins for platforms without process taps; the system pipeline is never available.
 
+use std::time::Duration;
+
+use super::TapLevels;
 use crate::voice_processing::CaptureSink;
 
 pub(crate) enum SystemCaptureLease {}
@@ -21,5 +24,9 @@ pub(super) fn shutdown() {}
 pub(super) fn on_noise_suppression_changed() {}
 
 pub(super) fn acquire_capture(_sink: CaptureSink) -> anyhow::Result<SystemCaptureLease> {
+    anyhow::bail!("system echo cancellation isn't supported in this build")
+}
+
+pub(super) fn measure_tap(_duration: Duration) -> anyhow::Result<TapLevels> {
     anyhow::bail!("system echo cancellation isn't supported in this build")
 }

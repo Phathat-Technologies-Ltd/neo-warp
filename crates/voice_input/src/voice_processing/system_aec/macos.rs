@@ -33,7 +33,8 @@ use objc2_core_audio::{
     kAudioDevicePropertyNominalSampleRate, kAudioHardwarePropertyDefaultInputDevice,
     kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyProcessObjectList,
     kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
-    kAudioProcessPropertyIsRunningOutput, kAudioSubDeviceUIDKey, kAudioSubTapUIDKey,
+    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID, kAudioSubDeviceUIDKey,
+    kAudioSubTapUIDKey,
 };
 use objc2_core_audio_types::{AudioBuffer, AudioBufferList, AudioTimeStamp};
 use objc2_core_foundation::CFDictionary;
@@ -45,7 +46,7 @@ use rubato::{FftFixedInOut, Resampler as _};
 use sonora::config::{EchoCanceller, NoiseSuppression};
 use sonora::{AudioProcessing, Config, StreamConfig};
 
-use super::{TapHealth, TapHealthDetector};
+use super::{BlockReason, TapHealth, TapHealthDetector, TapLevels};
 use crate::voice_processing::{CAPTURE_RATE, CaptureSink, SampleRing};
 
 /// Rate requested for the aggregate device; AEC3 also accepts 16 and 32 kHz.
@@ -70,6 +71,12 @@ struct Shared {
     /// The I/O proc's input layout, `buffers << 16 | mic channels << 8 | tap channels`, for
     /// diagnosing a silent tap.
     input_layout: AtomicU32,
+    /// Running tap statistics: `f64` bits of the summed squared far-end samples, frames that had
+    /// any non-zero tap sample, and frames where the tap buffer wasn't present in the input.
+    tap_energy: AtomicU64,
+    tap_nonzero_frames: AtomicU64,
+    tap_unmapped_frames: AtomicU64,
+    mic_energy: AtomicU64,
     frames_processed: AtomicU64,
     stop: AtomicBool,
     blocked: AtomicBool,
@@ -90,6 +97,13 @@ struct AudioState {
 }
 
 impl AudioState {
+    fn add_energy(counter: &AtomicU64, samples: &[f32]) {
+        let energy: f64 = samples.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+        // Single writer (the I/O thread), so a plain load and store is enough.
+        let total = f64::from_bits(counter.load(Ordering::Relaxed)) + energy;
+        counter.store(total.to_bits(), Ordering::Relaxed);
+    }
+
     fn push(&mut self, mic: f32, tap: f32) {
         self.mic[self.filled] = mic;
         self.tap[self.filled] = tap;
@@ -103,7 +117,12 @@ impl AudioState {
     fn process_frame(&mut self) {
         if self.tap.iter().any(|&sample| sample != 0.0) {
             self.shared.tap_had_sound.store(true, Ordering::Relaxed);
+            self.shared
+                .tap_nonzero_frames
+                .fetch_add(1, Ordering::Relaxed);
         }
+        Self::add_energy(&self.shared.tap_energy, &self.tap);
+        Self::add_energy(&self.shared.mic_energy, &self.mic);
         let _ = self
             .apm
             .process_render_f32(&[&self.tap[..]], &mut [&mut self.render_out[..]]);
@@ -165,6 +184,8 @@ struct Engine {
     _devices: Devices,
     _audio: Box<AudioState>,
     shared: Arc<Shared>,
+    rate_hz: u32,
+    frame_len: u32,
     captures: usize,
     idle_since: Option<Instant>,
 }
@@ -455,6 +476,10 @@ fn start_engine() -> anyhow::Result<Engine> {
             sink: Mutex::new(None),
             tap_had_sound: AtomicBool::new(false),
             input_layout: AtomicU32::new(0),
+            tap_energy: AtomicU64::new(0),
+            tap_nonzero_frames: AtomicU64::new(0),
+            tap_unmapped_frames: AtomicU64::new(0),
+            mic_energy: AtomicU64::new(0),
             frames_processed: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             blocked: AtomicBool::new(false),
@@ -505,10 +530,41 @@ fn start_engine() -> anyhow::Result<Engine> {
             _devices: devices,
             _audio: audio,
             shared,
+            rate_hz,
+            frame_len: frame as u32,
             captures: 0,
             idle_since: Some(Instant::now()),
         })
     }
+}
+
+pub(super) fn measure_tap(duration: Duration) -> anyhow::Result<TapLevels> {
+    let engine = start_engine()?;
+    let shared = engine.shared.clone();
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        std::thread::sleep(DRAIN_INTERVAL);
+        shared.output.pop_into(&mut [0.0; 1024]);
+    }
+    let frames = shared.frames_processed.load(Ordering::Relaxed);
+    let samples = (frames.max(1) * u64::from(engine.frame_len)) as f64;
+    let rms =
+        |counter: &AtomicU64| (f64::from_bits(counter.load(Ordering::Relaxed)) / samples).sqrt();
+    let layout = shared.input_layout.load(Ordering::Relaxed);
+    let levels = TapLevels {
+        rate: engine.rate_hz,
+        input_buffers: layout >> 16,
+        mic_channels: (layout >> 8) & 0xff,
+        tap_channels: layout & 0xff,
+        frames,
+        tap_nonzero_frames: shared.tap_nonzero_frames.load(Ordering::Relaxed),
+        tap_unmapped_frames: shared.tap_unmapped_frames.load(Ordering::Relaxed),
+        tap_rms: rms(&shared.tap_energy) as f32,
+        mic_rms: rms(&shared.mic_energy) as f32,
+        blocked: shared.blocked.load(Ordering::Relaxed),
+    };
+    drop(engine);
+    Ok(levels)
 }
 
 unsafe extern "C-unwind" fn io_proc(
@@ -531,12 +587,10 @@ unsafe extern "C-unwind" fn io_proc(
     let buffers =
         unsafe { std::slice::from_raw_parts(list.mBuffers.as_ptr(), list.mNumberBuffers as usize) };
     // The microphone's streams come first and the tap's last.
-    let (Some(mic), Some(tap)) = (buffers.first(), buffers.last()) else {
+    let Some(mic) = buffers.first() else {
         return 0;
     };
-    if buffers.len() < 2 {
-        return 0;
-    }
+    let tap = buffers.get(1..).and_then(<[AudioBuffer]>::last);
     let samples = |buffer: &AudioBuffer| {
         if buffer.mData.is_null() {
             return &[][..];
@@ -550,7 +604,7 @@ unsafe extern "C-unwind" fn io_proc(
         }
     };
     let mic_channels = mic.mNumberChannels.max(1) as usize;
-    let tap_channels = tap.mNumberChannels.max(1) as usize;
+    let tap_channels = tap.map_or(0, |tap| tap.mNumberChannels as usize);
     state.shared.input_layout.store(
         (buffers.len() as u32) << 16
             | (mic_channels as u32 & 0xff) << 8
@@ -558,7 +612,20 @@ unsafe extern "C-unwind" fn io_proc(
         Ordering::Relaxed,
     );
     let mic_frames = samples(mic).chunks_exact(mic_channels);
-    let tap_frames = samples(tap).chunks_exact(tap_channels);
+    let tap_samples = tap.map_or(&[][..], samples);
+    if tap_channels == 0 || tap_samples.is_empty() {
+        // The aggregate carries no tap stream: keep cancelling nothing rather than dropping the
+        // microphone, and let the health check report the missing mapping.
+        state
+            .shared
+            .tap_unmapped_frames
+            .fetch_add(1, Ordering::Relaxed);
+        for mic_frame in mic_frames {
+            state.push(mic_frame[0], 0.0);
+        }
+        return 0;
+    }
+    let tap_frames = tap_samples.chunks_exact(tap_channels);
     for (mic_frame, tap_frame) in mic_frames.zip(tap_frames) {
         let far = tap_frame.iter().sum::<f32>() / tap_channels as f32;
         state.push(mic_frame[0], far);
@@ -637,7 +704,12 @@ fn run_worker(shared: Arc<Shared>, started_at: Instant) {
                 }
                 Some(TapHealth::Blocked) => {
                     shared.blocked.store(true, Ordering::Relaxed);
-                    super::on_blocked();
+                    let reason = if shared.tap_unmapped_frames.load(Ordering::Relaxed) > 0 {
+                        BlockReason::Unmapped
+                    } else {
+                        BlockReason::Zeros
+                    };
+                    super::on_blocked(reason, shared.input_layout.load(Ordering::Relaxed));
                 }
                 Some(TapHealth::Unknown) | None => {}
             }
@@ -665,7 +737,8 @@ fn reap_if_idle(shared: &Arc<Shared>) {
     }
 }
 
-/// Whether any process (other than the aggregate's input) is sending audio to an output device.
+/// Whether another process is sending audio to an output device. Our own process is ignored: it
+/// keeps its speech output stream open while silent, which would make a working tap look blocked.
 fn something_is_playing() -> bool {
     let system = kAudioObjectSystemObject as AudioObjectID;
     let list_address = address(kAudioHardwarePropertyProcessObjectList);
@@ -699,10 +772,14 @@ fn something_is_playing() -> bool {
         return false;
     }
     processes.truncate(size as usize / size_of::<AudioObjectID>());
+    let own_pid = std::process::id() as i32;
     processes.into_iter().any(|process| {
-        // SAFETY: the property is a UInt32.
-        unsafe { get::<u32>(process, kAudioProcessPropertyIsRunningOutput, 0) }
-            .is_ok_and(|running| running != 0)
+        // SAFETY: the PID property is a pid_t and the running property a UInt32.
+        let is_own = unsafe { get::<i32>(process, kAudioProcessPropertyPID, -1) }
+            .is_ok_and(|pid| pid == own_pid);
+        !is_own
+            && unsafe { get::<u32>(process, kAudioProcessPropertyIsRunningOutput, 0) }
+                .is_ok_and(|running| running != 0)
     })
 }
 
