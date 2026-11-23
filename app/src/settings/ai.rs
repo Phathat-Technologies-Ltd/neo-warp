@@ -1504,6 +1504,16 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.conversation_read_code_summaries",
         description: "Whether code blocks in agent replies are announced (\"I wrote a code block in rust, 12 lines\") in voice conversation mode.",
     },
+    conversation_idle_timeout_minutes: ConversationIdleTimeoutMinutes {
+        type: u32,
+        default: 5,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.conversation_idle_timeout_minutes",
+        description: "Minutes without speech or agent activity after which voice conversation turns off; 0 keeps it on.",
+    },
     voice_speaker_id_enabled: VoiceSpeakerIdEnabled {
         type: bool,
         default: true,

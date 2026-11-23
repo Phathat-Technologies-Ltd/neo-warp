@@ -2516,17 +2516,10 @@ impl Input {
                     std::sync::atomic::Ordering::Relaxed,
                 );
                 let is_target = HandsFreeSession::as_ref(ctx).is_target(window_id, surface);
-                self.agent_input_footer.update(ctx, |footer, ctx| {
-                    footer.set_voice_is_active(is_target && state.is_mic_on(), ctx);
-                });
                 if is_target {
                     self.refresh_voice_vocabulary(ctx);
                     if self.editor.as_ref(ctx).is_empty(ctx) {
-                        let placeholder = if state.is_mic_on() {
-                            format!("\u{25cf} Mic on \u{b7} {}...", state.label())
-                        } else {
-                            state.label().to_owned()
-                        };
+                        let placeholder = format!("{}...", state.label());
                         self.editor.update(ctx, |editor, ctx| {
                             editor.set_placeholder_text(&placeholder, ctx);
                         });

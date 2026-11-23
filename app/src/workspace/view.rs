@@ -1054,6 +1054,8 @@ pub struct Workspace {
     tab_mru_order: Vec<EntityId>,
     pub(crate) hovered_tab_index: Option<TabBarHoverIndex>,
     tab_bar_hover_state: MouseStateHandle,
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    voice_title_bar: ViewHandle<crate::voice::title_bar_controls::VoiceTitleBarControls>,
     tab_fixed_width: Option<f32>,
     traffic_light_mouse_states: TrafficLightMouseStates,
     /// Tab groups in this workspace, keyed by id.
@@ -2959,6 +2961,10 @@ impl Workspace {
             );
         }
 
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        let voice_title_bar =
+            ctx.add_typed_action_view(crate::voice::title_bar_controls::VoiceTitleBarControls::new);
+
         let palette =
             ctx.add_typed_action_view(|ctx| CommandPalette::new(NavigationMode::Normal, ctx));
         ctx.subscribe_to_view(&palette, |me, _, event, ctx| {
@@ -3500,6 +3506,8 @@ impl Workspace {
             welcome_tips_view,
             palette,
             ctrl_tab_palette,
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            voice_title_bar,
             mouse_states: Default::default(),
             previous_theme: None,
             background_image_animation_start_time: Instant::now(),
@@ -21720,17 +21728,12 @@ impl Workspace {
         }
 
         #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
-        if let Some(label) = crate::voice::mic_indicator_label(ctx) {
+        if crate::voice::title_bar_controls::VoiceTitleBarControls::is_available() {
             target.add_child(
-                Container::new(
-                    Text::new_inline(label, appearance.ui_font_family(), 12.)
-                        .with_color(appearance.theme().ansi_fg_red())
-                        .finish(),
-                )
-                .with_margin_right(8.)
-                .finish(),
+                Container::new(ChildView::new(&self.voice_title_bar).finish())
+                    .with_margin_right(4.)
+                    .finish(),
             );
-            self.add_voice_readout_controls(target, appearance, ctx);
         }
 
         let is_online = NetworkStatus::as_ref(ctx).is_online();
@@ -22210,55 +22213,6 @@ impl Workspace {
             .finish(),
         )
         .finish()
-    }
-
-    /// The Stop button while a reply is read aloud and the Mute toggle, next to the mic indicator
-    /// in voice conversation mode.
-    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
-    fn add_voice_readout_controls(
-        &self,
-        target: &mut Flex,
-        appearance: &Appearance,
-        ctx: &AppContext,
-    ) {
-        let conversation = crate::voice::conversation::ConversationSession::as_ref(ctx);
-        if !conversation.is_active() {
-            return;
-        }
-        let font = appearance.ui_font_family();
-        let color = appearance.theme().foreground();
-        let text_button =
-            |label: &'static str, mouse_state: &MouseStateHandle, action: WorkspaceAction| {
-                Container::new(
-                    Hoverable::new(mouse_state.clone(), move |_| {
-                        Text::new_inline(label, font, 12.)
-                            .with_color(color.into())
-                            .finish()
-                    })
-                    .on_click(move |ctx, _, _| ctx.dispatch_typed_action(action.clone()))
-                    .with_cursor(Cursor::PointingHand)
-                    .finish(),
-                )
-                .with_margin_right(8.)
-                .finish()
-            };
-        if conversation.is_speaking() {
-            target.add_child(text_button(
-                "\u{25a0} Stop",
-                &self.mouse_states.voice_stop_speaking_button,
-                WorkspaceAction::StopVoiceSpeaking,
-            ));
-        }
-        let mute_label = if conversation.is_muted() {
-            "Unmute"
-        } else {
-            "Mute"
-        };
-        target.add_child(text_button(
-            mute_label,
-            &self.mouse_states.voice_mute_button,
-            WorkspaceAction::ToggleVoiceReadoutMute,
-        ));
     }
 
     fn render_offline_button(&self, appearance: &Appearance) -> Box<dyn Element> {

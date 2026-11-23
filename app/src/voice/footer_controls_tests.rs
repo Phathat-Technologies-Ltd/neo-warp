@@ -1,5 +1,3 @@
-use local_transcription::speech::playback::ConversationState;
-
 use super::*;
 
 #[test]
@@ -35,87 +33,24 @@ fn mic_click_stops_a_running_hands_free_session_in_any_mode() {
 }
 
 #[test]
-fn mic_visual_is_live_while_hands_free_has_the_mic() {
-    for state in [
-        HandsFreeState::Listening,
-        HandsFreeState::Hearing,
-        HandsFreeState::Transcribing,
-    ] {
-        assert_eq!(
-            mic_visual(DictationMode::ClickToRecord, true, state),
-            MicVisual {
-                live: true,
-                tooltip: MicTooltip::StopHandsFree,
-            }
-        );
-    }
-}
-
-#[test]
-fn mic_visual_tooltip_follows_mode_when_idle() {
+fn mic_tooltip_follows_mode_when_idle() {
     assert_eq!(
-        mic_visual(DictationMode::ClickToRecord, true, HandsFreeState::Off),
-        MicVisual {
-            live: false,
-            tooltip: MicTooltip::Record,
-        }
+        mic_tooltip(DictationMode::ClickToRecord, true, false),
+        MicTooltip::Record
     );
     assert_eq!(
-        mic_visual(DictationMode::HandsFree, true, HandsFreeState::Off),
-        MicVisual {
-            live: false,
-            tooltip: MicTooltip::StartHandsFree,
-        }
+        mic_tooltip(DictationMode::HandsFree, true, false),
+        MicTooltip::StartHandsFree
     );
     assert_eq!(
-        mic_visual(DictationMode::HandsFree, false, HandsFreeState::Off).tooltip,
+        mic_tooltip(DictationMode::HandsFree, false, false),
         MicTooltip::Record
     );
 }
 
 #[test]
-fn conversation_visual_is_idle_when_off() {
-    let visual = conversation_visual(false, ConversationState::Off, false);
-    assert!(!visual.live);
-    assert!(visual.label.is_empty());
-    assert_eq!(visual.tooltip, "Start voice conversation");
-}
-
-#[test]
-fn conversation_visual_shows_the_state_while_active() {
-    for (state, label) in [
-        (ConversationState::Off, "Starting"),
-        (ConversationState::Listening, "Listening"),
-        (ConversationState::Thinking, "Thinking"),
-        (ConversationState::Speaking, "Speaking"),
-    ] {
-        let visual = conversation_visual(true, state, false);
-        assert!(visual.live);
-        assert_eq!(visual.label, label);
-        assert_eq!(visual.tooltip, "Stop voice conversation");
+fn mic_tooltip_offers_to_stop_a_running_hands_free_session() {
+    for mode in [DictationMode::ClickToRecord, DictationMode::HandsFree] {
+        assert_eq!(mic_tooltip(mode, true, true), MicTooltip::StopHandsFree);
     }
-}
-
-#[test]
-fn conversation_visual_marks_a_muted_readout() {
-    assert_eq!(
-        conversation_visual(true, ConversationState::Speaking, true).label,
-        "Speaking (muted)"
-    );
-}
-
-#[test]
-fn only_the_target_input_shows_the_live_state() {
-    assert_eq!(
-        visible_voice_state(true, HandsFreeState::Hearing, true),
-        (HandsFreeState::Hearing, true)
-    );
-    assert_eq!(
-        visible_voice_state(false, HandsFreeState::Hearing, true),
-        (HandsFreeState::Off, false)
-    );
-    assert_eq!(
-        visible_voice_state(false, HandsFreeState::Listening, false),
-        (HandsFreeState::Off, false)
-    );
 }

@@ -32,3 +32,41 @@ fn pocket_speaks_with_its_only_voice() {
         kokoro.first().map(|voice| voice.id.as_str().to_owned())
     );
 }
+
+#[test]
+fn idle_timeout_zero_means_never() {
+    assert_eq!(idle_timeout(0), None);
+    assert_eq!(idle_timeout(5), Some(Duration::from_secs(300)));
+}
+
+#[test]
+fn idle_check_expires_only_after_the_timeout_since_the_last_activity() {
+    let start = Instant::now();
+    let timeout = Duration::from_secs(300);
+    assert_eq!(
+        check_idle(start, timeout, start + Duration::from_secs(10)),
+        IdleCheck::CheckAt(start + timeout)
+    );
+    assert_eq!(
+        check_idle(start, timeout, start + timeout),
+        IdleCheck::Expired
+    );
+    // Activity resets the clock.
+    let later = start + Duration::from_secs(200);
+    assert_eq!(
+        check_idle(later, timeout, start + timeout),
+        IdleCheck::CheckAt(later + timeout)
+    );
+}
+
+#[test]
+fn idle_ended_message_names_the_timeout() {
+    assert_eq!(
+        idle_ended_message(5),
+        "Voice conversation ended after 5 minutes without speech"
+    );
+    assert_eq!(
+        idle_ended_message(1),
+        "Voice conversation ended after 1 minute without speech"
+    );
+}
