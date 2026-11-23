@@ -575,7 +575,7 @@ impl TypedActionView for VoiceControls {
                 ctx.notify();
             }
             VoiceControlsAction::ToggleConversation => {
-                toggle_conversation(ctx.window_id(), ctx);
+                toggle_conversation(ctx.window_id(), Some(self.host), ctx);
             }
             VoiceControlsAction::ChooseMicrophoneMode => {
                 voice_input::microphone_mode::show_microphone_mode_picker();

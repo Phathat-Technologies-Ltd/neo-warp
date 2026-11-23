@@ -24993,7 +24993,7 @@ impl TypedActionView for Workspace {
                 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
                 {
                     let window_id = ctx.window_id();
-                    crate::voice::conversation::toggle_conversation(window_id, ctx);
+                    crate::voice::conversation::toggle_conversation(window_id, None, ctx);
                 }
             }
             StopVoiceSpeaking => {

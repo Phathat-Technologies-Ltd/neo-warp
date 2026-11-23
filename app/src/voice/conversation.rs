@@ -667,13 +667,23 @@ impl SingletonEntity for ConversationSession {}
 
 /// Turns conversation mode on or off. Turning it on first makes sure the speech output model is
 /// installed (asking the user to download it) and turns on hands-free input.
-pub fn toggle_conversation(window_id: WindowId, ctx: &mut AppContext) {
+/// Turns conversation mode on or off. `surface` is the terminal surface whose controls were
+/// used: while conversation mode runs in another pane, it moves there instead of stopping.
+pub fn toggle_conversation(window_id: WindowId, surface: Option<EntityId>, ctx: &mut AppContext) {
     if !is_conversation_enabled() {
         return;
     }
     let session = ConversationSession::handle(ctx);
     if session.as_ref(ctx).is_active() {
-        session.update(ctx, |session, ctx| session.stop(ctx));
+        let hands_free = HandsFreeSession::handle(ctx);
+        match surface {
+            Some(surface) if !hands_free.as_ref(ctx).is_target(window_id, surface) => {
+                hands_free.update(ctx, |hands_free, ctx| {
+                    hands_free.focus_target(window_id, surface, ctx)
+                });
+            }
+            Some(_) | None => session.update(ctx, |session, ctx| session.stop(ctx)),
+        }
         return;
     }
     if !ensure_speech_output_ready(window_id, ctx) {
@@ -684,6 +694,11 @@ pub fn toggle_conversation(window_id: WindowId, ctx: &mut AppContext) {
         if !HandsFreeSession::as_ref(ctx).is_active() {
             return;
         }
+    }
+    if let Some(surface) = surface {
+        HandsFreeSession::handle(ctx).update(ctx, |hands_free, ctx| {
+            hands_free.focus_target(window_id, surface, ctx)
+        });
     }
     if let Err(message) = session.update(ctx, |session, ctx| session.start(window_id, ctx)) {
         ToastStack::handle(ctx).update(ctx, |stack, ctx| {
