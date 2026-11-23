@@ -95,14 +95,17 @@ impl SpeechOutputEngine {
         }
     }
 
-    /// The engine the settings picker switches to after this one.
-    pub fn next(self) -> Self {
-        match self {
-            SpeechOutputEngine::Kokoro => SpeechOutputEngine::TinyVoca,
-            SpeechOutputEngine::TinyVoca => SpeechOutputEngine::Pocket,
-            SpeechOutputEngine::Pocket if cfg!(target_os = "macos") => SpeechOutputEngine::Apple,
-            SpeechOutputEngine::Pocket | SpeechOutputEngine::Apple => SpeechOutputEngine::Kokoro,
+    /// The engines available on this platform, in the order the settings picker lists them.
+    pub fn all() -> Vec<Self> {
+        let mut engines = vec![
+            SpeechOutputEngine::Kokoro,
+            SpeechOutputEngine::TinyVoca,
+            SpeechOutputEngine::Pocket,
+        ];
+        if cfg!(target_os = "macos") {
+            engines.push(SpeechOutputEngine::Apple);
         }
+        engines
     }
 
     /// The engine to speak with when this one fails.

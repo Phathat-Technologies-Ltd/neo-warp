@@ -28,8 +28,8 @@ use super::conversation_text::{
 };
 use super::hands_free::{HandsFreeEvent, HandsFreeSession, toggle_hands_free};
 use super::local_model::{
-    SpeechOutputEngine, SpeechOutputModel, ensure_speech_output_ready, is_conversation_enabled,
-    speech_output_store,
+    LocalVoiceModelEvent, SpeechOutputEngine, SpeechOutputModel, ensure_speech_output_ready,
+    is_conversation_enabled, speech_output_store,
 };
 use crate::ai::agent::api::VOICE_CONVERSATION_ACTIVE;
 use crate::ai::agent::conversation::AIConversationId;
@@ -37,7 +37,7 @@ use crate::ai::agent::{AIAgentActionId, CancellationReason};
 use crate::ai::blocklist::{
     BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
 };
-use crate::settings::AISettings;
+use crate::settings::{AISettings, AISettingsChangedEvent};
 use crate::view_components::DismissibleToast;
 use crate::workspace::ToastStack;
 
@@ -98,6 +98,9 @@ pub struct ConversationSession {
     speaker: Option<Arc<dyn Speaker>>,
     /// The engine `speaker` runs.
     engine: SpeechOutputEngine,
+    /// The engine the settings asked for; differs from `engine` while falling back or waiting for
+    /// its model to download.
+    requested_engine: SpeechOutputEngine,
     voice: VoiceId,
     rate: f32,
     output: Option<SpeechOutput>,
@@ -159,7 +162,7 @@ impl ConversationSession {
                 me.handle_history_event(event, ctx);
             },
         );
-        ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, _, ctx| {
+        ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, event, ctx| {
             if me.is_active() {
                 me.schedule_idle_check(ctx);
             }
@@ -167,11 +170,29 @@ impl ConversationSession {
                 &AISettings::as_ref(ctx).conversation_speech_engine,
             );
             SpeechOutputModel::handle(ctx).update(ctx, |model, ctx| model.set_engine(engine, ctx));
+            if me.is_active() && is_speech_setting_event(event) {
+                me.apply_speech_settings(ctx);
+            }
+        });
+        ctx.subscribe_to_model(&SpeechOutputModel::handle(ctx), |me, model, event, ctx| {
+            let LocalVoiceModelEvent::StateChanged = event;
+            if me.is_active()
+                && me.engine != me.requested_engine
+                && me.requested_engine.spec().is_some()
+                && model.as_ref(ctx).state().is_installed()
+            {
+                log::info!(
+                    "Voice conversation: {:?} finished downloading; switching to it",
+                    me.requested_engine
+                );
+                me.use_engine(me.requested_engine, ctx);
+            }
         });
         Self {
             controller: ConversationController::default(),
             speaker: None,
             engine: SpeechOutputEngine::Kokoro,
+            requested_engine: SpeechOutputEngine::Kokoro,
             voice: VoiceId::new(""),
             rate: 1.0,
             output: None,
@@ -298,16 +319,14 @@ impl ConversationSession {
 
     fn start(&mut self, window_id: WindowId, ctx: &mut ModelContext<Self>) -> Result<(), String> {
         let settings = AISettings::as_ref(ctx);
-        let engine = SpeechOutputEngine::from_setting(&settings.conversation_speech_engine);
+        let wanted = WantedSpeech::from_settings(settings);
+        let engine = wanted.engine;
         let speaker = new_speaker(engine);
         self.engine = engine;
-        self.voice = choose_voice(&speaker.voices(), settings.conversation_voice.as_str())
+        self.requested_engine = engine;
+        self.voice = choose_voice(&speaker.voices(), &wanted.voice)
             .ok_or_else(|| "The speech output model has no voices".to_owned())?;
-        self.rate = if engine.has_voice_and_rate_controls() {
-            settings.conversation_speech_rate()
-        } else {
-            1.0
-        };
+        self.rate = wanted.rate;
         let options = ChunkerOptions {
             read_code_summaries: *settings.conversation_read_code_summaries,
         };
@@ -323,18 +342,7 @@ impl ConversationSession {
         let headphones =
             output.reports_headphones() || is_headphone_device_name(output.device_name());
         self.output = Some(output);
-        // Loading the model takes seconds, so do it now rather than on the first sentence.
-        let warm = speaker.clone();
-        let voice = self.voice.clone();
-        let (tx, rx) = oneshot::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(warm.synthesize("Ready.", &voice, 1.0).err());
-        });
-        ctx.spawn(rx, move |me, error, ctx| {
-            if let Ok(Some(error)) = error {
-                me.speech_model_failed(engine, error.to_string(), ctx);
-            }
-        });
+        self.warm_up(engine, &speaker, ctx);
         self.speaker = Some(speaker);
         self.window_id = Some(window_id);
         self.controller.start(options);
@@ -346,6 +354,112 @@ impl ConversationSession {
         ctx.emit(ConversationEvent::StateChanged);
         ctx.notify();
         Ok(())
+    }
+
+    /// Loads `speaker`'s model now, since that takes seconds, rather than on the first sentence.
+    fn warm_up(
+        &self,
+        engine: SpeechOutputEngine,
+        speaker: &Arc<dyn Speaker>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let warm = speaker.clone();
+        let voice = self.voice.clone();
+        let (tx, rx) = oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(warm.synthesize("Ready.", &voice, 1.0).err());
+        });
+        ctx.spawn(rx, move |me, error, ctx| {
+            if let Ok(Some(error)) = error {
+                me.speech_model_failed(engine, error.to_string(), ctx);
+            }
+        });
+    }
+
+    /// Applies changed speech settings to the running conversation: a new engine replaces the
+    /// speaker, while a new voice or rate takes effect from the next sentence.
+    fn apply_speech_settings(&mut self, ctx: &mut ModelContext<Self>) {
+        let wanted = WantedSpeech::from_settings(AISettings::as_ref(ctx));
+        let voices = self
+            .speaker
+            .as_ref()
+            .map(|speaker| speaker.voices())
+            .unwrap_or_default();
+        match speech_setting_change(
+            self.requested_engine,
+            self.engine,
+            &self.voice,
+            self.rate,
+            &wanted,
+            &voices,
+        ) {
+            SpeechSettingChange::Unchanged => {}
+            SpeechSettingChange::Engine(engine) => self.switch_engine(engine, ctx),
+            SpeechSettingChange::Voice { voice, rate } => {
+                log::info!(
+                    "Voice conversation: speaking with voice {} at {rate:.2}x from the next \
+                     sentence",
+                    voice.as_str()
+                );
+                self.voice = voice;
+                self.rate = rate;
+            }
+        }
+    }
+
+    /// Stops the current reply and replaces the speaker with one for `engine`, asking to download
+    /// its model if needed and speaking with the fallback engine meanwhile.
+    fn switch_engine(&mut self, engine: SpeechOutputEngine, ctx: &mut ModelContext<Self>) {
+        log::info!(
+            "Voice conversation: switching speech output from {:?} to {engine:?}",
+            self.engine
+        );
+        self.requested_engine = engine;
+        self.stop_speaking(ctx);
+        self.speaker = None;
+        let ready = engine.spec().is_none()
+            || self
+                .window_id
+                .is_some_and(|window_id| ensure_speech_output_ready(window_id, ctx));
+        if ready {
+            self.use_engine(engine, ctx);
+            return;
+        }
+        match engine.fallback() {
+            Some(fallback) if new_speaker(fallback).is_ready() => {
+                log::info!(
+                    "Voice conversation: speaking with {fallback:?} until {engine:?} is downloaded"
+                );
+                self.use_engine(fallback, ctx);
+            }
+            Some(_) | None => {
+                log::info!("Voice conversation: replies stay silent until {engine:?} is downloaded")
+            }
+        }
+    }
+
+    /// Speaks with a new speaker for `engine`, using the chosen voice when `engine` is the one
+    /// the settings asked for.
+    fn use_engine(&mut self, engine: SpeechOutputEngine, ctx: &mut ModelContext<Self>) {
+        let speaker = new_speaker(engine);
+        let wanted = WantedSpeech::from_settings(AISettings::as_ref(ctx));
+        let chosen = if engine == self.requested_engine {
+            wanted.voice.as_str()
+        } else {
+            ""
+        };
+        if let Some(voice) = choose_voice(&speaker.voices(), chosen) {
+            self.voice = voice;
+        }
+        self.rate = if engine == self.requested_engine {
+            wanted.rate
+        } else {
+            1.0
+        };
+        self.engine = engine;
+        self.warm_up(engine, &speaker, ctx);
+        self.speaker = Some(speaker);
+        ctx.notify();
     }
 
     /// Switches to the fallback engine when `engine`'s model couldn't load, so replies are still
@@ -843,6 +957,81 @@ pub fn toggle_conversation(window_id: WindowId, surface: Option<EntityId>, ctx: 
         ToastStack::handle(ctx).update(ctx, |stack, ctx| {
             stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
         });
+    }
+}
+
+/// Whether `event` changes how conversation replies are spoken.
+fn is_speech_setting_event(event: &AISettingsChangedEvent) -> bool {
+    matches!(
+        event,
+        AISettingsChangedEvent::ConversationSpeechEngine { .. }
+            | AISettingsChangedEvent::ConversationVoice { .. }
+            | AISettingsChangedEvent::ConversationSpeechRatePercent { .. }
+    )
+}
+
+/// The speech output the conversation settings ask for.
+#[derive(Debug, Clone, PartialEq)]
+struct WantedSpeech {
+    engine: SpeechOutputEngine,
+    /// The chosen voice id; empty or unknown means the engine's default.
+    voice: String,
+    rate: f32,
+}
+
+impl WantedSpeech {
+    fn from_settings(settings: &AISettings) -> Self {
+        let engine = SpeechOutputEngine::from_setting(&settings.conversation_speech_engine);
+        Self {
+            engine,
+            voice: settings.conversation_voice.clone(),
+            rate: if engine.has_voice_and_rate_controls() {
+                settings.conversation_speech_rate()
+            } else {
+                1.0
+            },
+        }
+    }
+}
+
+/// How a running conversation follows a change to its speech settings.
+#[derive(Debug, PartialEq)]
+enum SpeechSettingChange {
+    Unchanged,
+    /// Replace the speaker with one for this engine.
+    Engine(SpeechOutputEngine),
+    /// Keep the speaker; speak the next sentence with this voice and rate.
+    Voice {
+        voice: VoiceId,
+        rate: f32,
+    },
+}
+
+/// What a conversation speaking with `engine`, `voice`, and `rate` for `requested_engine` must do
+/// to match `wanted`; `voices` are the current speaker's. While a fallback engine stands in for
+/// `requested_engine`, voice and rate changes wait for the requested engine.
+fn speech_setting_change(
+    requested_engine: SpeechOutputEngine,
+    engine: SpeechOutputEngine,
+    voice: &VoiceId,
+    rate: f32,
+    wanted: &WantedSpeech,
+    voices: &[VoiceInfo],
+) -> SpeechSettingChange {
+    if wanted.engine != requested_engine {
+        return SpeechSettingChange::Engine(wanted.engine);
+    }
+    if engine != requested_engine {
+        return SpeechSettingChange::Unchanged;
+    }
+    let next_voice = choose_voice(voices, &wanted.voice).unwrap_or_else(|| voice.clone());
+    if next_voice == *voice && wanted.rate == rate {
+        SpeechSettingChange::Unchanged
+    } else {
+        SpeechSettingChange::Voice {
+            voice: next_voice,
+            rate: wanted.rate,
+        }
     }
 }
 
