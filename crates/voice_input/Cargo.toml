@@ -23,6 +23,7 @@ warpui_core.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 coreaudio-rs = { version = "0.14.2", default-features = false, features = ["core_audio", "audio_toolbox"], optional = true }
 objc2 = { version = "0.6", optional = true }
+objc2-av-foundation = { workspace = true, features = ["AVCaptureDevice"], optional = true }
 objc2-audio-toolbox = { version = "0.3", default-features = false, features = ["std", "AUComponent", "AudioUnitProperties"], optional = true }
 objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"], optional = true }
 objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std"], optional = true }
@@ -48,6 +49,7 @@ voice_processing = [
     "dep:objc2-core-foundation",
     "dep:objc2-foundation",
     "dep:objc2-audio-toolbox",
+    "dep:objc2-av-foundation",
     "dep:objc2-core-audio",
     "dep:objc2-core-audio-types",
 ]

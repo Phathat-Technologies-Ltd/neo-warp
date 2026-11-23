@@ -528,6 +528,18 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
         ],
         app,
     );
+    #[cfg(feature = "voice_input")]
+    if voice_input::microphone_mode::microphone_mode().is_some() {
+        app.register_editable_bindings([warpui::keymap::EditableBinding::new(
+            "settings:choose_microphone_mode",
+            "Choose microphone mode",
+            builder(SettingsAction::WarpAgent(
+                WarpAgentPageAction::ChooseMicrophoneMode,
+            )),
+        )
+        .with_context_predicate(context.clone() & id!(flags::IS_VOICE_INPUT_ENABLED))
+        .with_group(bindings::BindingGroup::WarpAi.as_str())]);
+    }
     ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
         vec![
             ToggleSettingActionPair::new(
@@ -952,6 +964,12 @@ impl WarpAgentPageView {
             me.handle_detection_denylist_editor_event(event, ctx);
         });
 
+        #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+        ctx.spawn_stream_local(
+            voice_input::microphone_mode::changes(),
+            |_, (), ctx| ctx.notify(),
+            |_, _| {},
+        );
         #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
         if ctx.has_singleton_model::<crate::voice::context_correction::VoiceCorrections>() {
             ctx.subscribe_to_model(
@@ -2891,6 +2909,7 @@ pub enum WarpAgentPageAction {
     ToggleVoiceDenoise,
     ToggleVoiceSmartEndOfTurn,
     ToggleSystemEchoCancellation,
+    ChooseMicrophoneMode,
     ToggleVoiceContextBiasing,
     ToggleVoiceSpeakerId,
     /// Switches "Recognize my voice" to the next sensitivity.
@@ -3340,6 +3359,10 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::ChooseMicrophoneMode => {
+                voice_input::microphone_mode::show_microphone_mode_picker();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             WarpAgentPageAction::ToggleSystemEchoCancellation => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.system_echo_cancellation.toggle_and_save_value(ctx));
@@ -3445,6 +3468,7 @@ impl TypedActionView for WarpAgentPageView {
             WarpAgentPageAction::ToggleVoiceDenoise
             | WarpAgentPageAction::ToggleVoiceSmartEndOfTurn
             | WarpAgentPageAction::ToggleSystemEchoCancellation
+            | WarpAgentPageAction::ChooseMicrophoneMode
             | WarpAgentPageAction::ToggleVoiceContextBiasing
             | WarpAgentPageAction::ToggleVoiceSpeakerId
             | WarpAgentPageAction::CycleVoiceSpeakerSensitivity
@@ -4892,6 +4916,7 @@ struct VoiceWidget {
     denoise_toggle: SwitchStateHandle,
     smart_end_of_turn_toggle: SwitchStateHandle,
     system_echo_cancellation_toggle: SwitchStateHandle,
+    microphone_mode_button: MouseStateHandle,
     speaker_id_toggle: SwitchStateHandle,
     speaker_model_button: MouseStateHandle,
     enroll_button: MouseStateHandle,
@@ -5062,6 +5087,26 @@ impl VoiceWidget {
                         self.system_echo_cancellation_toggle.clone(),
                         &view.local_only_icon_tooltip_states,
                         app,
+                    ));
+                }
+                if let Some(state) = voice_input::microphone_mode::microphone_mode() {
+                    let capturing = voice_input::microphone_mode::capture_backend()
+                        == Some(voice_input::AudioBackend::VoiceProcessing);
+                    let status = voice_input::microphone_mode::status_label(
+                        Some(state),
+                        *ai_settings.system_echo_cancellation,
+                        capturing,
+                    );
+                    column.add_child(render_cycle_row(
+                        "Microphone Mode",
+                        &format!(
+                            "{status}. Voice Isolation reduces background noise and distant \
+                             voices; it isn't based on your voiceprint."
+                        ),
+                        "Choose\u{2026}",
+                        WarpAgentPageAction::ChooseMicrophoneMode,
+                        self.microphone_mode_button.clone(),
+                        appearance,
                     ));
                 }
             }
@@ -5618,7 +5663,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn pause cut off smart turn biasing bias favor on-screen terms"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca rate code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
