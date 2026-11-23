@@ -471,6 +471,7 @@ impl Stream {
         let mut addresses_main_agent = false;
         let mut asked_about_running = false;
         let mut running: Option<(String, String)> = None;
+        let mut resumed = false;
         let mut finished = HashSet::new();
         #[allow(deprecated)]
         let executed = input
@@ -488,9 +489,15 @@ impl Stream {
                 for user_input in &user_inputs.inputs {
                     match &user_input.input {
                         Some(UserInput::UserQuery(query)) => {
-                            addresses_main_agent |=
+                            let for_main_agent =
                                 query.intended_agent == api::AgentType::Primary as i32;
-                            texts.push(query.query.clone());
+                            addresses_main_agent |= for_main_agent;
+                            texts.push(match &self.cli {
+                                Some(cli) if !for_main_agent => {
+                                    monitor::query_while_monitoring(&query.query, &cli.command_id)
+                                }
+                                _ => query.query.clone(),
+                            });
                             queries.push(query.query.clone());
                         }
                         Some(UserInput::CliAgentUserQuery(cli_query)) => {
@@ -590,6 +597,7 @@ impl Stream {
                 }
             }
             Some(Type::ResumeConversation(_)) => {
+                resumed = true;
                 if let Some(cli) = &self.cli
                     && let Some(command) = executed
                         .iter()
@@ -605,7 +613,9 @@ impl Stream {
                 )));
             }
         }
-        if !queries.is_empty() {
+        // A take over cancels the agent's pending poll without reporting it, so a resume after
+        // one answers it too.
+        if !queries.is_empty() || resumed {
             answer_open_tool_calls(messages, &answered, tasks, &mut result_echoes, self);
         }
         self.add_messages_in_order(result_echoes);

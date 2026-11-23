@@ -162,6 +162,14 @@ pub(super) fn query_with_running_command(
     )
 }
 
+/// A follow-up the user sent to the monitoring agent. The client attaches no output to these.
+pub(super) fn query_while_monitoring(query: &str, command_id: &str) -> String {
+    format!(
+        "{query}\n\n[The command is still running (command_id: {command_id}). Its latest output \
+         isn't attached; call read_shell_command_output without a wait if you need it.]"
+    )
+}
+
 /// The note added when control of the monitored command comes back to the agent.
 pub(super) fn resumed_text(command: &api::ExecutedShellCommand) -> String {
     if command.finished_ts.is_some() {
@@ -187,11 +195,14 @@ pub(super) fn instructions(command_id: &str) -> String {
     format!(
         "\n\n# Monitoring a running command\nA command you started is still running in the \
          user's terminal (command_id: {command_id}). Answer the user's messages about it, and \
-         keep the user informed. Use read_shell_command_output to check its output or to wait \
-         for it to finish, write_to_shell_command to answer its prompts, and stop_shell_command \
-         to interrupt it with Ctrl-C when the user asks you to stop it or it is clearly stuck. \
-         You can't run other commands until it exits. When you have nothing to do until the \
-         user replies, end your turn."
+         keep the user informed. Use read_shell_command_output to check its output. To wait for \
+         it, wait at most 30 seconds at a time and check again until it exits; you don't learn \
+         that it exited unless you check, and between checks the user can message you. Don't \
+         comment on every check, only on progress the user would care about. Use \
+         write_to_shell_command to answer its prompts, and stop_shell_command to interrupt it \
+         with Ctrl-C when the user asks you to stop it or it is clearly stuck. You can't run \
+         other commands until it exits. End your turn only when you have nothing to do until \
+         the user replies."
     )
 }
 
