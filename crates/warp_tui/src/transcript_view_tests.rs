@@ -992,6 +992,7 @@ fn markdown_output_status(markdown: &str) -> AIBlockOutputStatus {
                         text: markdown.to_owned().into(),
                     }],
                     spoken: None,
+                    voice_terms: Vec::new(),
                 }),
                 citations: Vec::new(),
             }],

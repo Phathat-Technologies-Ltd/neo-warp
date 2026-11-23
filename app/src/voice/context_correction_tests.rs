@@ -76,3 +76,33 @@ fn one_compact_toast_per_utterance_and_none_for_trivial_changes() {
         Some("Corrected pyproject.toml, kubectl")
     );
 }
+
+#[test]
+fn bias_terms_rank_agent_terms_first_and_decay_older_replies() {
+    let pane = PaneContext {
+        history: vec!["kubectl get pods".to_owned()],
+        screen_text: "Deployed atm-design-analyzer".to_owned(),
+        agent_replies: vec![
+            AgentReply {
+                text: "Ran the Cerebras build.".to_owned(),
+                terms: vec!["SAST-AI".to_owned()],
+            },
+            AgentReply {
+                text: String::new(),
+                terms: vec!["msl-muse-spark".to_owned(), "the".to_owned()],
+            },
+        ],
+        ..PaneContext::default()
+    };
+    let terms = build_bias_terms(&pane, 200);
+    let texts: Vec<&str> = terms.iter().map(|term| term.text.as_str()).collect();
+    assert_eq!(&texts[..2], ["SAST-AI", "msl-muse-spark"]);
+    assert!(!texts.contains(&"the"));
+    assert!(terms[0].trusted);
+    assert!(texts.contains(&"Cerebras"));
+    assert!(texts.contains(&"atm-design-analyzer"));
+    assert!(texts.contains(&"kubectl"));
+    assert!(texts.contains(&"kubectl get"));
+    let capped = build_bias_terms(&pane, 2);
+    assert_eq!(capped.len(), 2);
+}

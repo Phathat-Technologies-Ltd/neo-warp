@@ -24116,6 +24116,7 @@ impl TerminalView {
                         text: output.into(),
                     }],
                     spoken: None,
+                    voice_terms: Vec::new(),
                 },
             )],
             server_output_id: Some(Self::dummy_server_output_id()),
@@ -24189,6 +24190,7 @@ impl TerminalView {
                             text: summary.into(),
                         }],
                         spoken: None,
+                        voice_terms: Vec::new(),
                     },
                 ),
                 AIAgentOutputMessage::action(

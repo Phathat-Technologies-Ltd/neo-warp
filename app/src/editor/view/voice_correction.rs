@@ -1,9 +1,11 @@
+use local_transcription::bias::BiasTerm;
 use local_transcription::context_correction::{Correction, CorrectionContext};
 use string_offset::ByteOffset;
 use warp_core::ui::theme::AnsiColorIdentifier;
 use warpui::{SingletonEntity, ViewContext};
 
 use super::EditorView;
+use crate::ai::voice::transcribe::VoiceBiasTerm;
 use crate::appearance::Appearance;
 use crate::editor::TextStyleOperation;
 use crate::view_components::{DismissibleToast, ToastLink};
@@ -32,6 +34,26 @@ impl EditorView {
             });
         }
         self.voice_vocabulary = vocabulary;
+    }
+
+    /// Sets the terms local transcription of voice input into this editor is biased toward.
+    pub fn set_voice_bias_terms(&mut self, terms: Vec<BiasTerm>) {
+        self.voice_bias_terms = terms;
+    }
+
+    /// The bias terms to send with a transcription request: only to local transcription, so
+    /// screen contents never reach a hosted provider.
+    pub(super) fn voice_bias_terms_for_request(&self) -> Vec<VoiceBiasTerm> {
+        if !crate::voice::is_voice_transcribed_locally() {
+            return Vec::new();
+        }
+        self.voice_bias_terms
+            .iter()
+            .map(|term| VoiceBiasTerm {
+                text: term.text.clone(),
+                trusted: term.trusted,
+            })
+            .collect()
     }
 
     /// Corrects a voice transcript towards this editor's vocabulary. Returns the text unchanged

@@ -9,6 +9,7 @@ use std::time::Duration;
 use futures::channel::mpsc;
 use futures::{SinkExt as _, StreamExt as _};
 use instant::Instant;
+use local_transcription::bias::BiasTerm;
 use local_transcription::denoise::DenoiseStage;
 use local_transcription::speaker::Sensitivity;
 use local_transcription::speech::playback::BARGE_IN_CHECK_AFTER;
@@ -78,7 +79,15 @@ pub struct HandsFreeSession {
     dictation_mode: DictationMode,
     /// Whether the session follows app activation and system sleep.
     watching_app: bool,
+    /// The latest bias terms from the target input.
+    bias_terms: Vec<BiasTerm>,
+    /// Bias terms the socket writer has yet to send.
+    pending_bias_terms: PendingBiasTerms,
 }
+
+/// Bias terms handed from the session to its socket writer, which sends them before the next
+/// audio chunk.
+pub type PendingBiasTerms = Arc<Mutex<Option<Vec<BiasTerm>>>>;
 
 /// How long "Not you — ignored" shows.
 const REJECTION_NOTICE: Duration = Duration::from_secs(3);
@@ -91,6 +100,17 @@ impl HandsFreeSession {
     /// Whether the session is on, including while paused because Warp isn't the active app.
     pub fn is_active(&self) -> bool {
         self.controller.state().is_on()
+    }
+
+    /// Sets the terms utterances are biased toward; the server gets them before the next audio.
+    pub fn set_bias_terms(&mut self, terms: Vec<BiasTerm>) {
+        if terms == self.bias_terms {
+            return;
+        }
+        self.bias_terms = terms.clone();
+        if let Ok(mut pending) = self.pending_bias_terms.lock() {
+            *pending = Some(terms);
+        }
     }
 
     pub fn dictation_mode(&self) -> DictationMode {
@@ -538,6 +558,9 @@ impl HandsFreeSession {
         self.generation += 1;
         self.capture = Some(capture);
         self.audio_paused = Arc::new(AtomicBool::new(self.controller.is_paused()));
+        self.pending_bias_terms = Arc::new(Mutex::new(
+            (!self.bias_terms.is_empty()).then(|| self.bias_terms.clone()),
+        ));
         self.verify_speaker = verify_speaker;
         self.sensitivity = sensitivity;
         self.gate = SpeakerGate::default();
@@ -553,6 +576,7 @@ impl HandsFreeSession {
                 language,
                 audio_rx,
                 self.audio_paused.clone(),
+                self.pending_bias_terms.clone(),
                 update_tx,
             ),
             |_, _, _| {},
@@ -607,6 +631,7 @@ async fn run_socket(
     language: Option<String>,
     audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
     audio_paused: Arc<AtomicBool>,
+    bias_terms: PendingBiasTerms,
     update_tx: mpsc::UnboundedSender<SocketUpdate>,
 ) {
     let socket = match server_api.open_transcribe_stream().await {
@@ -616,7 +641,15 @@ async fn run_socket(
             return;
         }
     };
-    stream_session(socket, language, audio_rx, audio_paused, update_tx).await;
+    stream_session(
+        socket,
+        language,
+        audio_rx,
+        audio_paused,
+        bias_terms,
+        update_tx,
+    )
+    .await;
 }
 
 /// How many audio chunks pass between progress logs (about ten seconds of audio).
@@ -629,6 +662,7 @@ async fn stream_session(
     language: Option<String>,
     mut audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
     audio_paused: Arc<AtomicBool>,
+    bias_terms: PendingBiasTerms,
     update_tx: mpsc::UnboundedSender<SocketUpdate>,
 ) {
     let (mut sink, mut stream) = socket.split().await;
@@ -674,6 +708,17 @@ async fn stream_session(
         let mut sent: u64 = 0;
         let mut dropped: u64 = 0;
         while let Some(chunk) = audio_rx.next().await {
+            let terms = bias_terms
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.take());
+            if let Some(terms) = terms {
+                log::info!("Hands-free: sending {} bias terms", terms.len());
+                if let Err(error) = sink.send(text(&ClientMessage::Context { terms })).await {
+                    log::warn!("Hands-free: socket write failed: {error}");
+                    return Some(error.to_string());
+                }
+            }
             let paused = audio_paused.load(Ordering::Relaxed);
             if paused {
                 // Closing the open utterance stops the server decoding it; the final it sends is

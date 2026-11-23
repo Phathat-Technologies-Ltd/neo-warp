@@ -70,6 +70,20 @@ pub struct TranscribeRequest {
     /// Additional configuration fields specific to the Wispr API.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wispr_properties: Option<WisprProperties>,
+
+    /// Terms the user is likely to say, most relevant first, for local transcription to bias its
+    /// decoding toward. Only sent to the local transcription server.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bias_terms: Vec<VoiceBiasTerm>,
+}
+
+/// A term voice transcription is biased toward; matches `local_transcription::bias::BiasTerm`.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceBiasTerm {
+    pub text: String,
+    /// The agent named the term, so it is known not to be an everyday word.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trusted: bool,
 }
 
 /// Optional configuration fields for the OpenAI Whisper API.

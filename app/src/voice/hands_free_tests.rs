@@ -100,6 +100,7 @@ async fn speech_reaches_the_input_through_the_embedded_server() {
         None,
         audio_rx,
         Arc::new(AtomicBool::new(false)),
+        Arc::new(Mutex::new(Some(vec![BiasTerm::new("SAST-AI")]))),
         update_tx,
     ));
     for chunk in chunks(300, false)

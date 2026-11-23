@@ -5,7 +5,7 @@ use warpui::{Entity, SingletonEntity};
 
 use super::server_api::{ServerApi, TranscribeError};
 use super::team_scope::RequestTeamScope;
-use crate::ai::voice::transcribe::{Provider, TranscribeRequest};
+use crate::ai::voice::transcribe::{Provider, TranscribeRequest, VoiceBiasTerm};
 use crate::voice::transcriber::Transcriber;
 
 pub struct ServerVoiceTranscriber {
@@ -25,12 +25,14 @@ impl Transcriber for ServerVoiceTranscriber {
         &self,
         wav_base64: String,
         language: Option<String>,
+        bias_terms: Vec<VoiceBiasTerm>,
         team_scope: RequestTeamScope,
     ) -> Result<String, TranscribeError> {
         let request = TranscribeRequest {
             provider: Provider::Wispr,
             audio: Some(wav_base64),
             language,
+            bias_terms,
             ..Default::default()
         };
         let response = self.server_api.transcribe(&request, team_scope).await;

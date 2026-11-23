@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use warpui::{Entity, SingletonEntity};
 
+use crate::ai::voice::transcribe::VoiceBiasTerm;
 use crate::server::server_api::TranscribeError;
 use crate::server::team_scope::RequestTeamScope;
 
@@ -14,11 +15,13 @@ pub trait Transcriber: Send + Sync {
     ///
     /// `language` is an optional ISO-639-1 code (e.g. `"en"`). When `None`, the
     /// transcription provider auto-detects the spoken language.
+    /// `bias_terms` are terms the user is likely to say, for transcribers that can favor them.
     /// This is expected to be async and called off the main thread.
     async fn transcribe(
         &self,
         wav_base64: String,
         language: Option<String>,
+        bias_terms: Vec<VoiceBiasTerm>,
         team_scope: RequestTeamScope,
     ) -> Result<String, TranscribeError>;
 }

@@ -18,7 +18,10 @@ pub use convert_from::{
 #[cfg_attr(target_family = "wasm", allow(unused_imports))]
 pub(crate) use convert_to::{mcp_server_identity, serde_json_to_prost};
 use futures_lite::Stream;
-pub use r#impl::{NEXT_PROMPT_DICTATED, VOICE_CONVERSATION_ACTIVE, generate_multi_agent_output};
+pub use r#impl::{
+    NEXT_PROMPT_DICTATED, VOICE_CONVERSATION_ACTIVE, VOICE_TERMS_ACTIVE,
+    generate_multi_agent_output,
+};
 use serde::Serialize;
 use warp_core::channel::{Channel, ChannelState};
 use warp_core::execution_mode::AppExecutionMode;

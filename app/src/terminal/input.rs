@@ -2511,6 +2511,10 @@ impl Input {
                     self.claim_hands_free_target(ctx);
                     return;
                 }
+                crate::ai::agent::api::VOICE_TERMS_ACTIVE.store(
+                    state.is_on() && crate::voice::context_correction::is_biasing_enabled(ctx),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 let is_target = HandsFreeSession::as_ref(ctx).is_target(window_id, surface);
                 self.agent_input_footer.update(ctx, |footer, ctx| {
                     footer.set_voice_is_active(is_target && state.is_mic_on(), ctx);
@@ -2634,9 +2638,12 @@ impl Input {
     /// towards: the pane's directory, repository, history, and latest output.
     #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
     fn refresh_voice_vocabulary(&mut self, ctx: &mut ViewContext<Self>) {
-        use crate::voice::context_correction::{self, PaneContext};
+        use crate::voice::context_correction::{self, AgentReply, PaneContext};
+        use local_transcription::bias::DEFAULT_BIAS_CAP;
 
-        if !context_correction::is_enabled(ctx)
+        let correcting = context_correction::is_enabled(ctx);
+        let biasing = context_correction::is_biasing_enabled(ctx);
+        if !(correcting || biasing)
             || !AISettings::as_ref(ctx).is_voice_input_enabled(ctx)
             || self.voice_vocabulary_refresh.is_some()
         {
@@ -2671,12 +2678,39 @@ impl Input {
         if let Some(output) = output {
             pane.push_screen_text(&output);
         }
+        if let Some(conversation) =
+            BlocklistAIHistoryModel::as_ref(ctx).active_conversation(self.terminal_view_id)
+        {
+            pane.agent_replies = conversation
+                .exchanges_reversed()
+                .filter_map(|exchange| exchange.output_status.output())
+                .take(context_correction::MAX_AGENT_REPLIES)
+                .map(|output| AgentReply::from_output(&output.get()))
+                .collect();
+        }
         self.voice_vocabulary_refresh = Some(ctx.spawn(
-            async move { std::sync::Arc::new(context_correction::build_vocabulary(&pane)) },
-            |me, vocabulary, ctx| {
+            async move {
+                let vocabulary = std::sync::Arc::new(context_correction::build_vocabulary(&pane));
+                let bias_terms = if biasing {
+                    context_correction::build_bias_terms(&pane, DEFAULT_BIAS_CAP)
+                } else {
+                    Vec::new()
+                };
+                (vocabulary, bias_terms)
+            },
+            move |me, (vocabulary, bias_terms), ctx| {
                 me.voice_vocabulary_refresh = None;
+                let window_id = ctx.window_id();
+                let surface = me.terminal_view_id;
+                if crate::voice::hands_free::HandsFreeSession::as_ref(ctx)
+                    .is_target(window_id, surface)
+                {
+                    crate::voice::hands_free::HandsFreeSession::handle(ctx)
+                        .update(ctx, |session, _| session.set_bias_terms(bias_terms.clone()));
+                }
                 me.editor.update(ctx, |editor, ctx| {
-                    editor.set_voice_vocabulary(Some(vocabulary), ctx);
+                    editor.set_voice_vocabulary(correcting.then_some(vocabulary), ctx);
+                    editor.set_voice_bias_terms(bias_terms);
                 });
             },
         ));

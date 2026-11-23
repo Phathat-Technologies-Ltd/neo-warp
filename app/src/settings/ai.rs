@@ -1453,6 +1453,16 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.context_correction",
         description: "Whether voice transcripts are corrected towards file names, branches, and commands visible in the pane.",
     },
+    voice_context_biasing: VoiceContextBiasing {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.context_biasing",
+        description: "Whether local voice transcription favors terms visible in the pane and named in recent agent replies while decoding.",
+    },
     // The engine that speaks agent replies in voice conversation mode: "kokoro" or "tiny_voca".
     conversation_speech_engine: ConversationSpeechEngine {
         type: String,

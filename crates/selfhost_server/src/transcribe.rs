@@ -9,6 +9,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
+use local_transcription::bias::{BiasTerm, MAX_BIAS_TERMS};
 use local_transcription::{TranscribeError, decode_wav};
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +20,9 @@ pub(crate) struct TranscribeRequest {
     /// Base64-encoded WAV.
     audio: Option<String>,
     language: Option<String>,
+    /// Terms the user is likely to say, most relevant first; decoding is biased toward them.
+    #[serde(default)]
+    bias_terms: Vec<BiasTerm>,
 }
 
 #[derive(Serialize)]
@@ -54,9 +58,11 @@ pub(crate) async fn transcribe(
         }
     };
     let language = request.language;
+    let mut bias_terms = request.bias_terms;
+    bias_terms.truncate(MAX_BIAS_TERMS);
     let result = tokio::task::spawn_blocking(move || {
         let audio = decode_wav(&wav)?;
-        transcriber.transcribe(&audio, language.as_deref())
+        transcriber.transcribe_with_context(&audio, language.as_deref(), &bias_terms)
     })
     .await;
     match result {

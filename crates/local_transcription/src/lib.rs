@@ -8,6 +8,7 @@
 //! The crate has no dependency on Warp's code so it can be reused as is.
 
 mod audio;
+pub mod bias;
 pub mod context_correction;
 #[cfg(feature = "denoise")]
 pub mod denoise;
@@ -31,6 +32,8 @@ mod speaker_onnx;
 pub mod speech;
 mod state;
 pub mod stream;
+#[cfg(feature = "parakeet")]
+pub mod tdt;
 pub mod terminal_text;
 mod vad;
 mod voice_command;
@@ -71,6 +74,18 @@ pub trait Transcriber: Send + Sync {
     /// Transcribes `audio`. `language` is an optional ISO-639-1 hint; engines that detect the
     /// language themselves may ignore it.
     fn transcribe(&self, audio: &Audio, language: Option<&str>) -> Result<String, TranscribeError>;
+
+    /// Transcribes `audio` biased toward `terms` the user is likely to say. Engines that can't
+    /// bias their decoding transcribe as [`Self::transcribe`] does.
+    fn transcribe_with_context(
+        &self,
+        audio: &Audio,
+        language: Option<&str>,
+        terms: &[bias::BiasTerm],
+    ) -> Result<String, TranscribeError> {
+        let _ = terms;
+        self.transcribe(audio, language)
+    }
 
     /// Whether the engine can transcribe now, i.e. its model is installed.
     fn is_ready(&self) -> bool;
