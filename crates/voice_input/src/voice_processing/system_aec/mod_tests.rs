@@ -101,12 +101,36 @@ fn speech_plays_through_cpal_while_system_aec_runs() {
 fn blocked_notice_is_sent_once_until_the_setting_is_turned_back_on() {
     let notices = blocked_notices();
     set_system_echo_cancellation(true, false);
-    on_blocked();
+    on_blocked(BlockReason::Zeros, 0);
     assert!(notices.try_recv().is_ok());
-    on_blocked();
+    on_blocked(BlockReason::Zeros, 0);
     assert!(notices.try_recv().is_err());
     set_system_echo_cancellation(false, false);
     set_system_echo_cancellation(true, false);
-    on_blocked();
+    on_blocked(BlockReason::Zeros, 0);
     assert!(notices.try_recv().is_ok());
+}
+
+#[test]
+fn reset_clears_a_blocked_tap_and_failures() {
+    let mut selector = SystemAecSelector::default();
+    selector.set_wanted(true);
+    selector.on_blocked();
+    assert!(selector.is_held_back());
+    assert!(!selector.should_try(true));
+    selector.reset();
+    assert!(!selector.is_held_back());
+    assert!(selector.should_try(true));
+
+    selector.on_never_started();
+    assert!(selector.is_held_back());
+    selector.reset();
+    assert!(selector.should_try(true));
+}
+
+#[test]
+fn unwanted_pipeline_is_not_held_back() {
+    let mut selector = SystemAecSelector::default();
+    selector.on_blocked();
+    assert!(!selector.is_held_back());
 }

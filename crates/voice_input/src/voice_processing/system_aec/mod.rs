@@ -43,6 +43,39 @@ pub enum TapHealth {
     Blocked,
 }
 
+/// Why a pipeline was judged blocked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockReason {
+    /// The tap stream is present but carries only zeros: macOS withholds system audio, usually
+    /// because the app isn't allowed to record it.
+    Zeros,
+    /// The aggregate device's input has no tap stream to read.
+    Unmapped,
+}
+
+/// Levels measured from a short run of the system pipeline.
+#[derive(Debug, Clone, Copy)]
+pub struct TapLevels {
+    pub rate: u32,
+    pub input_buffers: u32,
+    pub mic_channels: u32,
+    pub tap_channels: u32,
+    /// 10 ms frames processed.
+    pub frames: u64,
+    pub tap_nonzero_frames: u64,
+    pub tap_unmapped_frames: u64,
+    pub tap_rms: f32,
+    pub mic_rms: f32,
+    /// Whether the health check judged the tap blocked during the run.
+    pub blocked: bool,
+}
+
+/// Runs a fresh system pipeline for `duration` and reports what its tap and microphone carried.
+/// Independent of the shared pipeline; meant for diagnostics.
+pub fn measure_tap(duration: Duration) -> anyhow::Result<TapLevels> {
+    imp::measure_tap(duration)
+}
+
 /// Decides from periodic observations whether the tap works.
 #[derive(Debug, Clone)]
 pub struct TapHealthDetector {
@@ -133,6 +166,17 @@ impl SystemAecSelector {
         self.blocked = true;
     }
 
+    /// Whether the pipeline is wanted but held back by earlier failures or a blocked tap.
+    pub fn is_held_back(&self) -> bool {
+        self.wanted && (self.blocked || self.failures >= MAX_START_FAILURES)
+    }
+
+    /// Forgets earlier failures and a blocked tap, as a manual retry.
+    pub fn reset(&mut self) {
+        self.failures = 0;
+        self.blocked = false;
+    }
+
     /// The default devices changed, so a pipeline that failed to start may work now.
     pub fn on_devices_changed(&mut self) {
         self.failures = 0;
@@ -180,6 +224,27 @@ pub fn set_system_echo_cancellation(wanted: bool, noise_suppression: bool) {
         imp::on_noise_suppression_changed();
     }
     if wanted_changed || suppression_changed {
+        super::reopen_captures();
+    }
+}
+
+/// Whether system-wide echo cancellation is on but not used because the tap was judged blocked or
+/// the pipeline failed to start.
+pub fn is_held_back() -> bool {
+    SELECTOR.lock().is_held_back()
+}
+
+/// Clears an earlier blocked or failed verdict and moves open microphones back to the system
+/// pipeline when it is wanted.
+pub fn retry() {
+    let wanted = {
+        let mut selector = SELECTOR.lock();
+        selector.reset();
+        selector.wanted
+    };
+    log::info!("System echo cancellation: retrying");
+    NOTICE_SENT.store(false, Ordering::Relaxed);
+    if wanted {
         super::reopen_captures();
     }
 }
@@ -233,11 +298,23 @@ pub(crate) fn acquire_capture(sink: CaptureSink) -> anyhow::Result<SystemCapture
     not(all(target_os = "macos", feature = "voice_processing")),
     allow(dead_code)
 )]
-fn on_blocked() {
+fn on_blocked(reason: BlockReason, input_layout: u32) {
     SELECTOR.lock().on_blocked();
-    log::info!(
-        "System echo cancellation: the system audio tap is silent while audio plays; falling back"
+    let (buffers, mic, tap) = (
+        input_layout >> 16,
+        (input_layout >> 8) & 0xff,
+        input_layout & 0xff,
     );
+    match reason {
+        BlockReason::Zeros => log::info!(
+            "System echo cancellation: the system audio tap delivers only zeros while audio \
+             plays (system audio recording likely not allowed); falling back"
+        ),
+        BlockReason::Unmapped => log::warn!(
+            "System echo cancellation: the aggregate device has no tap stream ({buffers} input \
+             buffers, microphone {mic} channels, tap {tap} channels); falling back"
+        ),
+    }
     if !NOTICE_SENT.swap(true, Ordering::Relaxed)
         && let Some(tx) = NOTICES.lock().as_ref()
     {

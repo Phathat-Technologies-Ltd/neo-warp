@@ -25,7 +25,9 @@ mod speaker_output;
 pub use speaker_output::SpeechOutput;
 pub mod voice_processing;
 pub use voice_processing::system_aec::{
-    blocked_notices as system_echo_cancellation_blocked_notices, set_system_echo_cancellation,
+    blocked_notices as system_echo_cancellation_blocked_notices,
+    is_held_back as system_echo_cancellation_held_back, retry as retry_system_echo_cancellation,
+    set_system_echo_cancellation,
 };
 pub use voice_processing::{
     AudioBackend, backend_changes, is_echo_cancelling, set_voice_processing_wanted,
