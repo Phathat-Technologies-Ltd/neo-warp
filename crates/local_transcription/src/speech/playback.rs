@@ -57,6 +57,9 @@ const ECHO_WORD_OVERLAP: f32 = 0.8;
 /// away is never spoken and requests that come in together share one prompt.
 pub const APPROVAL_DEBOUNCE: Duration = Duration::from_secs(1);
 
+/// Asked again when only part of a spoken approval answer was heard.
+const APPROVAL_REASK: &str = "Sorry, say run it, or no.";
+
 /// The least time between two approval prompts of a turn while the earlier one is unresolved.
 pub const APPROVAL_PROMPT_GAP: Duration = Duration::from_secs(8);
 
@@ -880,7 +883,13 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
 
     fn interrupt(&mut self, now: Instant) -> Vec<PlaybackAction<A>> {
         let reply = self.reply;
+        let prompt_cut_off = self.approval_prompt_seq.is_some();
         let mut actions = self.silence(Some(now));
+        // Talking over the approval prompt is often the answer itself; never leave it unanswerable.
+        if prompt_cut_off {
+            let talking_from = self.utterance.map_or(now, |utterance| utterance.started_at);
+            self.approvals.prompt_interrupted(talking_from, now);
+        }
         actions.push(PlaybackAction::Interrupted { reply });
         if let Some(utterance) = &mut self.utterance {
             utterance.barged_in = true;
@@ -889,6 +898,16 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         self.interrupted = true;
         self.state = ConversationState::Listening;
         actions
+    }
+
+    /// Repeats the question of the pending approval, whose answer window reopens once it played.
+    fn ask_approval_again(&mut self) -> Vec<PlaybackAction<A>> {
+        if self.muted || self.approval_prompt_seq.is_some() {
+            return Vec::new();
+        }
+        self.approval_prompt_seq = Some(self.next_seq);
+        self.enqueue(APPROVAL_REASK.to_owned());
+        self.pump()
     }
 
     /// Interprets a final utterance heard by `now`: likely echo is dropped, "stop" ends the speech
@@ -951,9 +970,14 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             self.state,
             ConversationState::Speaking | ConversationState::Thinking
         );
+        let started_at = utterance.map(|utterance| utterance.started_at);
+        // Once the approval prompt has played, "stop" answers it rather than stopping speech.
+        let answers_approval =
+            !self.is_speaking() && self.approvals.accepts_answer(started_at, now);
         // "Stop" is short enough never to barge in on loudspeakers, and the assistant doesn't say
         // it on its own, so it is honoured even when it overlapped the speech.
-        if (assistant_busy || barged_in || overlapped) && is_stop_phrase(text) {
+        if (assistant_busy || barged_in || overlapped) && !answers_approval && is_stop_phrase(text)
+        {
             let actions = self.silence(Some(now));
             self.reply_done = true;
             self.interrupted = true;
@@ -967,11 +991,16 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         {
             return (FinalOutcome::Echo, Vec::new());
         }
-        let started_at = utterance.map(|utterance| utterance.started_at);
         // Approval answers come first: they reuse the prompt's own words ("say run it, or no").
         match self.approvals.on_utterance(text, started_at, now) {
             ApprovalVerdict::NotAnAnswer => {}
-            ApprovalVerdict::Ignored => return (FinalOutcome::Ignored, Vec::new()),
+            ApprovalVerdict::Ignored | ApprovalVerdict::Held => {
+                return (FinalOutcome::Ignored, Vec::new());
+            }
+            ApprovalVerdict::Unclear => {
+                log::info!("Approval answer unclear; asking again");
+                return (FinalOutcome::Ignored, self.ask_approval_again());
+            }
             ApprovalVerdict::Answered(id, reply) => {
                 return (FinalOutcome::Answered(id, reply), Vec::new());
             }
