@@ -163,16 +163,43 @@ fn typing_pauses_until_the_input_resets() {
 }
 
 #[test]
-fn an_empty_final_clears_a_shown_partial() {
+fn a_rejected_utterance_clears_its_shown_partial() {
     let now = Instant::now();
     let mut controller = started();
     controller.on_message(partial(1, "uh"), now);
+    assert_eq!(controller.reject(1), vec![HandsFreeEffect::DiscardPartial]);
+    assert!(controller.reject(1).is_empty());
+    assert!(controller.on_message(final_(2, ""), now).is_empty());
+    assert_eq!(controller.tick(now + Duration::from_secs(60)), None);
+}
+
+#[test]
+fn an_empty_final_with_a_blank_partial_clears_it() {
+    let now = Instant::now();
+    let mut controller = started();
+    controller.on_message(partial(1, ""), now);
     assert_eq!(
         controller.on_message(final_(1, ""), now),
         vec![HandsFreeEffect::DiscardPartial]
     );
-    assert!(controller.on_message(final_(2, ""), now).is_empty());
     assert_eq!(controller.tick(now + Duration::from_secs(60)), None);
+}
+
+/// A long utterance whose final lost its text keeps the dictation the user watched appear.
+#[test]
+fn an_empty_final_commits_the_shown_partial() {
+    let now = Instant::now();
+    let mut controller = started();
+    let spoken = "please refactor the parser so it handles nested quotes and run the tests";
+    controller.on_message(ServerMessage::SpeechStart, now);
+    controller.on_message(partial(1, spoken), now);
+    controller.on_message(ServerMessage::SpeechEnd, now);
+    assert_eq!(
+        controller.on_message(final_(1, ""), now),
+        vec![HandsFreeEffect::Commit(spoken.to_owned())]
+    );
+    assert_eq!(controller.state(), HandsFreeState::Listening);
+    assert!(controller.auto_send_at().is_some());
 }
 
 #[test]

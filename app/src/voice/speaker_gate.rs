@@ -11,7 +11,7 @@ use local_transcription::stream::ServerMessage;
 
 const SAMPLE_RATE: u64 = 16_000;
 /// Audio kept for verification; longer than any utterance the server waits on.
-const TAP_SAMPLES: usize = 12 * SAMPLE_RATE as usize;
+const TAP_SAMPLES: usize = 32 * SAMPLE_RATE as usize;
 /// How far before `SpeechStart` arrives the utterance may have started: the server's pre-roll,
 /// VAD onset, and delivery.
 const START_SLACK_SAMPLES: u64 = SAMPLE_RATE / 2;
@@ -73,6 +73,10 @@ pub struct VerifyRequest {
 pub enum GateStep {
     /// Hand the message on to hands-free input.
     Deliver(ServerMessage),
+    /// The final of this utterance is accepted: its speaker check matched the enrolled user.
+    Verified(u64),
+    /// The speaker of this utterance isn't the enrolled user: clear its partial, if shown.
+    Reject(u64),
     /// Check the speaker of this final, then report the result with [`SpeakerGate::verdict`].
     Verify(VerifyRequest),
     /// Check the speaker of an utterance in progress, then report the result with
@@ -208,8 +212,7 @@ impl SpeakerGate {
     }
 
     /// Resolves the early check of `utterance`. A match releases its latest held partial; a
-    /// mismatch suppresses the rest of the utterance and delivers an empty final, which clears any
-    /// partial already shown. Returns the steps and whether the utterance was rejected.
+    /// mismatch suppresses the rest of the utterance and rejects it. Returns the steps and whether the utterance was rejected.
     pub fn early_verdict(&mut self, utterance: u64, verdict: Verdict) -> (Vec<GateStep>, bool) {
         let Some((id, _, check)) = &mut self.early else {
             return (Vec::new(), false);
@@ -232,32 +235,39 @@ impl SpeakerGate {
             }
             Verdict::NoMatch => {
                 *check = EarlyCheck::Rejected;
-                let clear = GateStep::Deliver(ServerMessage::Final {
-                    utterance,
-                    text: String::new(),
-                });
-                (vec![clear], true)
+                (vec![GateStep::Reject(utterance)], true)
             }
         }
     }
 
     /// Resolves the pending final and replays messages queued behind it, which may start the next
-    /// check. A rejected final is delivered with empty text so its partial is cleared. Returns the
-    /// steps and whether the final was rejected.
+    /// check. A rejected final is replaced by [`GateStep::Reject`]. Returns the steps and whether
+    /// the final was rejected.
     pub fn verdict(&mut self, verdict: Verdict, now: u64, verify: bool) -> (Vec<GateStep>, bool) {
         let Some(request) = self.pending.take() else {
             return (Vec::new(), false);
         };
-        let rejected = verdict == Verdict::NoMatch;
-        let text = if rejected {
-            String::new()
-        } else {
-            request.text
+        let utterance = request.utterance;
+        let (mut steps, rejected) = match verdict {
+            Verdict::NoMatch => (vec![GateStep::Reject(utterance)], true),
+            Verdict::Match => (
+                vec![
+                    GateStep::Verified(utterance),
+                    GateStep::Deliver(ServerMessage::Final {
+                        utterance,
+                        text: request.text,
+                    }),
+                ],
+                false,
+            ),
+            Verdict::Unavailable => (
+                vec![GateStep::Deliver(ServerMessage::Final {
+                    utterance,
+                    text: request.text,
+                })],
+                false,
+            ),
         };
-        let mut steps = vec![GateStep::Deliver(ServerMessage::Final {
-            utterance: request.utterance,
-            text,
-        })];
         while self.pending.is_none()
             && let Some(message) = self.queue.pop_front()
         {
