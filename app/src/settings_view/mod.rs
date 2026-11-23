@@ -655,6 +655,7 @@ pub mod flags {
     pub const AI_INPUT_AUTODETECTION_FLAG: &str = "AI_Input_Autodetection";
     pub const NLD_IN_TERMINAL_FLAG: &str = "NLD_In_Terminal";
     pub const INTELLIGENT_AUTOSUGGESTIONS_FLAG: &str = "Intelligent_Autosuggestions";
+    pub const AI_NEXT_COMMAND_SUGGESTIONS_FLAG: &str = "AI_Next_Command_Suggestions";
     pub const PROMPT_SUGGESTIONS_FLAG: &str = "Prompt_Suggestions";
     pub const CODE_SUGGESTIONS_FLAG: &str = "Code_Suggestions";
     pub const NATURAL_LANGUAGE_AUTOSUGGESTIONS_FLAG: &str = "Natural_Language_Autosuggestions";

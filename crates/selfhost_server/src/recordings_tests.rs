@@ -21,6 +21,7 @@ fn state(dir: &std::path::Path) -> Arc<AppState> {
         vad: None,
         turn_detector: None,
         ai_settings: Default::default(),
+        next_command: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
         recordings: Some(Arc::new(LocalDirStore::new(dir.to_owned()))),

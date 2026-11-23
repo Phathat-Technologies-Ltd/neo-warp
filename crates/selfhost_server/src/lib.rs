@@ -51,6 +51,8 @@ pub struct AppState {
     pub turn_detector: Option<local_transcription::TurnDetectorFactory>,
     /// Model settings for AI helper requests that carry no credentials of their own.
     pub ai_settings: agent::ModelSettingsCache,
+    /// Recent next-command answers and the per-user debounce of typed-prefix requests.
+    pub next_command: agent::NextCommandState,
     pub make_provider: agent::ProviderFactory,
     /// Answers codebase indexing operations; `None` leaves them unsupported.
     pub codebase_index: Option<Arc<CodebaseIndex>>,
@@ -72,6 +74,7 @@ impl AppState {
             vad: None,
             turn_detector: None,
             ai_settings: Default::default(),
+            next_command: Default::default(),
             make_provider: agent::default_provider_factory(),
             codebase_index: config
                 .codebase_index_dir
@@ -122,6 +125,7 @@ pub fn spawn_embedded(config: EmbeddedConfig) -> anyhow::Result<SocketAddr> {
         vad: config.vad,
         turn_detector: config.turn_detector,
         ai_settings: Default::default(),
+        next_command: Default::default(),
         make_provider: agent::default_provider_factory(),
         codebase_index: config
             .codebase_index_dir
@@ -178,6 +182,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/ai/transcribe/stream",
             get(transcribe_stream::transcribe_stream),
+        )
+        .route(
+            "/ai/generate_input_suggestions",
+            post(agent::next_command::generate_input_suggestions),
         )
         .route(
             "/ai/generate_am_query_suggestions",

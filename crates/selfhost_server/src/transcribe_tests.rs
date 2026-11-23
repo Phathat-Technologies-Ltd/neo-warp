@@ -46,6 +46,7 @@ fn state(transcriber: Option<Arc<FakeTranscriber>>) -> Arc<AppState> {
         vad: None,
         turn_detector: None,
         ai_settings: Default::default(),
+        next_command: Default::default(),
         make_provider: crate::agent::default_provider_factory(),
         codebase_index: None,
         recordings: None,

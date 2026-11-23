@@ -137,3 +137,30 @@ fn test_get_block_content_summary_extreme_narrow_vs_wide() {
     assert!(!output_wide.contains("Output line 974"));
     assert!(output_wide.contains("Output line 975"));
 }
+
+#[test]
+fn next_command_request_and_response_match_the_embedded_server() {
+    let request = GenerateAIInputSuggestionsRequest {
+        context_messages: vec!["{}".to_owned()],
+        history_context: "{\"command\":\"ls\"}".to_owned(),
+        prefix: Some("git st".to_owned()),
+        model: Some("cerebras:llama3.1-8b".to_owned()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["prefix"], "git st");
+    assert_eq!(json["model"], "cerebras:llama3.1-8b");
+    let without_model = serde_json::to_value(GenerateAIInputSuggestionsRequest::default()).unwrap();
+    assert!(without_model.get("model").is_none());
+    assert_eq!(json["history_context"], "{\"command\":\"ls\"}");
+
+    let suggestion: GenerateAIInputSuggestionsResponseV2 = serde_json::from_str(
+        r#"{"commands": ["git status"], "ai_queries": [], "most_likely_action": "git status"}"#,
+    )
+    .unwrap();
+    assert_eq!(suggestion.most_likely_action, "git status");
+    let declined: GenerateAIInputSuggestionsResponseV2 =
+        serde_json::from_str(r#"{"commands": [], "ai_queries": [], "most_likely_action": ""}"#)
+            .unwrap();
+    assert!(declined.most_likely_action.is_empty());
+}

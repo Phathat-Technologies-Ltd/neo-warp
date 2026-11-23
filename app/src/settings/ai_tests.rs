@@ -995,6 +995,48 @@ fn ai_autodetection_defaults_to_opt_in() {
 }
 
 #[test]
+fn ai_next_command_suggestions_default_off_and_need_next_command() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        add_ai_enablement_dependencies_for_test(&mut app);
+
+        AISettings::handle(&app).read(&app, |settings, ctx| {
+            assert!(settings.is_intelligent_autosuggestions_enabled(ctx));
+            assert!(!settings.is_ai_next_command_suggestions_enabled(ctx));
+            assert_eq!(settings.ai_next_command_model(), None);
+        });
+
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .ai_next_command_suggestions_enabled_internal
+                .set_value(true, ctx)
+                .unwrap();
+            settings
+                .ai_next_command_model
+                .set_value(" cerebras:llama3.1-8b ".to_owned(), ctx)
+                .unwrap();
+        });
+        AISettings::handle(&app).read(&app, |settings, ctx| {
+            assert!(settings.is_ai_next_command_suggestions_enabled(ctx));
+            assert_eq!(
+                settings.ai_next_command_model(),
+                Some("cerebras:llama3.1-8b")
+            );
+        });
+
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .intelligent_autosuggestions_enabled_internal
+                .set_value(false, ctx)
+                .unwrap();
+        });
+        AISettings::handle(&app).read(&app, |settings, ctx| {
+            assert!(!settings.is_ai_next_command_suggestions_enabled(ctx));
+        });
+    });
+}
+
+#[test]
 fn ai_autodetection_setting_can_be_toggled_on_and_off() {
     App::test((), |mut app| async move {
         initialize_settings_for_tests(&mut app);

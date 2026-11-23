@@ -23769,6 +23769,9 @@ impl Workspace {
         if ai_settings.is_intelligent_autosuggestions_enabled(app) {
             context.set.insert(flags::INTELLIGENT_AUTOSUGGESTIONS_FLAG);
         }
+        if ai_settings.is_ai_next_command_suggestions_enabled(app) {
+            context.set.insert(flags::AI_NEXT_COMMAND_SUGGESTIONS_FLAG);
+        }
         if ai_settings.is_prompt_suggestions_enabled(app) {
             context.set.insert(flags::PROMPT_SUGGESTIONS_FLAG);
         }

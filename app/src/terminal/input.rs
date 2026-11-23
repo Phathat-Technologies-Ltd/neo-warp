@@ -10623,7 +10623,12 @@ impl Input {
         };
         self.abort_latest_autosuggestion_future();
 
-        if FeatureFlag::PartialNextCommandSuggestions.is_enabled() && is_next_command_enabled(ctx) {
+        // Opting into AI next-command suggestions also turns on Next Command for typed prefixes,
+        // where the model is the last resort after history and completions.
+        if (FeatureFlag::PartialNextCommandSuggestions.is_enabled()
+            || AISettings::as_ref(ctx).is_ai_next_command_suggestions_enabled(ctx))
+            && is_next_command_enabled(ctx)
+        {
             let Some(session) = self.active_session(ctx) else {
                 return;
             };

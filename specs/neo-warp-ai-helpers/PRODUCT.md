@@ -4,7 +4,7 @@
 
 neo-warp runs without Warp's backend. In organization builds the app talks to its embedded server
 (`crates/selfhost_server`), which answers the agent conversation but not the small AI helpers
-around it. Two of them matter to users:
+around it. Three of them matter to users:
 
 - **Prompt suggestions.** After a shell command finishes (or an agent response completes), Warp
   offers a one-click prompt chip such as "Fix the failing test in `auth_tests.rs`". The embedded
@@ -12,6 +12,10 @@ around it. Two of them matter to users:
 - **AI command search.** Typing `#` followed by a description turns natural language into shell
   commands. The embedded server rejects the GraphQL `GenerateCommands` operation, so the search
   shows an error.
+- **Next Command (AI part).** After a command finishes, or while the user types, Warp suggests
+  the next command as ghost text. History-based suggestions work offline, but when history isn't
+  confident the client asks `/ai/generate_input_suggestions`, which the embedded server didn't
+  answer, so the AI half silently never worked.
 
 Both must run on the user's own model and credentials, the same ones the agent uses. Nothing is
 sent to Warp.
@@ -26,17 +30,19 @@ sent to Warp.
 3. Each helper can be switched off on its own with the `ai_prompt_suggestions` and
    `ai_command_search` feature flags. When a flag is off, the feature's UI is hidden completely
    and the client makes no request for it.
-4. Helpers are quick and cheap: short prompts, a small output budget, no tools, and no
+4. Next Command can ask the user's model when history has no confident prediction, behind a
+   user setting, **AI next-command suggestions**, that is off by default. History-based
+   suggestions don't depend on it.
+5. Helpers are quick and cheap: short prompts, a small output budget, no tools, and no
    conversation history beyond what the suggestion needs.
 
 ## Non-goals
 
-- Next-command autosuggestions (`/ai/generate_input_suggestions`) and agent-query autocompletion
-  (`/ai/predict_am_queries`). They keep their current behavior: the request fails and the client
-  shows nothing.
+- Agent-query autocompletion (`/ai/predict_am_queries`). It keeps its current behavior: the
+  request fails and the client shows nothing.
 - Passive code diffs (the `ApplyFileDiffs` half of passive suggestions).
-- A separate "fast model" for helpers. Helpers use the model the user selected for the agent. A
-  later change can add a per-feature model choice.
+- A separate "fast model" for prompt suggestions and command search. They use the model the user
+  selected for the agent. Only Next Command has its own model choice.
 - Storing credentials anywhere except process memory.
 
 ## Behavior
@@ -64,16 +70,39 @@ sent to Warp.
   - Provider overloaded or rate-limited: the client's "rate limited" message.
   - The model returns nothing usable: the client's "try rephrasing" (bad prompt) message.
 
+### AI next-command suggestions
+
+- Settings → AI → Active AI has an **AI next-command suggestions** toggle under **Next Command**
+  (off by default, also in the Command Palette). It needs Next Command on.
+- With it on, a **Next command model** dropdown appears: **Same as agent** (default) or any model
+  from the agent model picker that the user can use (Claude, Cerebras, ChatGPT, custom
+  endpoints). Auto models and custom routers aren't offered. If the chosen model can't be used
+  (its key was removed, it's no longer listed), suggestions use the agent's model.
+- The model is asked only when history isn't confident: right after a command finishes, and,
+  while typing, only when neither history nor completions offer anything for the typed text.
+  Turning the setting on also enables Next Command for typed prefixes in neo-warp.
+- The model sees the last few blocks (command, output tail, directory, branch, exit code, with
+  secrets already redacted by the client), similar sequences from history, the shell and OS, and
+  the typed text. It answers with one command or nothing.
+- A completion always starts with exactly what the user typed. Answers that aren't a single line,
+  are too long, or look destructive (recursive `rm`, force or delete pushes, hard resets,
+  `git clean -f`, disk formatting, piping into a shell, `kubectl delete`, `DROP TABLE`, and
+  similar) are dropped: no suggestion appears.
+- No suggestion appears when the model is slow (over 2.5 seconds), fails, or no model settings
+  have been seen yet this session (see Credentials). Nothing is shown as an error.
+
 ### Credentials
 
 Agent and passive-suggestion requests carry the selected model and the user's credentials in their
-settings. Command search (a GraphQL operation) and the legacy prompt-suggestion endpoint carry
-neither. For those, the embedded server remembers, in memory only, the model settings from the
+settings. Command search (a GraphQL operation), Next Command, and the legacy prompt-suggestion endpoint
+carry neither. For those, the embedded server remembers, in memory only, the model settings from the
 user's most recent agent or suggestion request and uses them. Until the user has sent one such
-request, command search reports an AI provider error. The server forgets remembered settings after
+request, command search reports an AI provider error and Next Command shows only history-based
+suggestions. The server forgets remembered settings after
 12 hours, and when the app quits.
 
 ## Rollout
 
-Both flags default on in organization builds. They can be turned off through the feature-flag
+Both flags default on in organization builds. AI next-command suggestions are a per-user setting,
+off by default. They can be turned off through the feature-flag
 plumbing shared with the rest of neo-warp.
