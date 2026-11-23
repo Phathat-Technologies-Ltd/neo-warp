@@ -23,6 +23,8 @@ tiny_voca = ["dep:parakeet-rs"]
 speaker_id = ["dep:parakeet-rs"]
 # Detects the end of a speaker's turn with Smart Turn v3 on the same ONNX Runtime.
 smart_turn = ["dep:parakeet-rs"]
+# Speaks with the macOS system voices through AVSpeechSynthesizer (no download; macOS only).
+apple = ["dep:block2", "dep:objc2", "dep:objc2-avf-audio", "dep:objc2-foundation"]
 # Suppresses background noise with RNNoise (pure Rust).
 denoise = ["dep:nnnoiseless"]
 
@@ -42,6 +44,12 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6", optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVAudioBuffer", "AVAudioFormat", "AVAudioTypes", "AVSpeechSynthesis"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDate", "NSObjCRuntime", "NSRunLoop", "NSString"], optional = true }
 
 [dev-dependencies]
 axum.workspace = true

@@ -68,6 +68,8 @@ struct SpokenReply {
 pub struct ConversationSession {
     controller: ConversationController<Arc<Audio>, AIAgentActionId>,
     speaker: Option<Arc<dyn Speaker>>,
+    /// The engine `speaker` runs.
+    engine: SpeechOutputEngine,
     voice: VoiceId,
     rate: f32,
     output: Option<SpeechOutput>,
@@ -134,6 +136,7 @@ impl ConversationSession {
         Self {
             controller: ConversationController::default(),
             speaker: None,
+            engine: SpeechOutputEngine::Kokoro,
             voice: VoiceId::new(""),
             rate: 1.0,
             output: None,
@@ -200,6 +203,7 @@ impl ConversationSession {
         let settings = AISettings::as_ref(ctx);
         let engine = SpeechOutputEngine::from_setting(&settings.conversation_speech_engine);
         let speaker = new_speaker(engine);
+        self.engine = engine;
         self.voice = choose_voice(&speaker.voices(), settings.conversation_voice.as_str())
             .ok_or_else(|| "The speech output model has no voices".to_owned())?;
         self.rate = if engine.has_voice_and_rate_controls() {
@@ -257,7 +261,7 @@ impl ConversationSession {
         let Some(fallback) = engine.fallback() else {
             return;
         };
-        if !self.is_active() {
+        if !self.is_active() || self.engine != engine {
             return;
         }
         let speaker = new_speaker(fallback);
@@ -266,16 +270,17 @@ impl ConversationSession {
             self.voice = choose_voice(&speaker.voices(), "").unwrap_or_else(|| self.voice.clone());
             self.rate = 1.0;
             self.speaker = Some(speaker);
+            self.engine = fallback;
             format!(
                 "Couldn't load {}, so replies are read with {} instead.",
-                engine.spec().display_name,
-                fallback.spec().display_name
+                engine.display_name(),
+                fallback.display_name()
             )
         } else {
             format!(
                 "Couldn't load {}. Download {} in Settings to have replies read aloud.",
-                engine.spec().display_name,
-                fallback.spec().display_name
+                engine.display_name(),
+                fallback.display_name()
             )
         };
         if let Some(window_id) = self.window_id {
@@ -606,6 +611,7 @@ impl ConversationSession {
                     let (tx, rx) = oneshot::channel();
                     let voice = self.voice.clone();
                     let rate = self.rate;
+                    let engine = self.engine;
                     std::thread::spawn(move || {
                         let _ = tx.send(speaker.synthesize(&text, &voice, rate));
                     });
@@ -614,6 +620,11 @@ impl ConversationSession {
                             Ok(Ok(audio)) => Some(Arc::new(audio)),
                             Ok(Err(error)) => {
                                 log::warn!("Speech synthesis failed: {error}");
+                                // The system synthesizer has no model to load up front, so its
+                                // failures surface here rather than in the warm-up.
+                                if engine == SpeechOutputEngine::Apple {
+                                    me.speech_model_failed(engine, error.to_string(), ctx);
+                                }
                                 None
                             }
                             Err(_) => None,
@@ -721,11 +732,19 @@ pub fn toggle_conversation(window_id: WindowId, surface: Option<EntityId>, ctx: 
 }
 
 fn new_speaker(engine: SpeechOutputEngine) -> Arc<dyn Speaker> {
-    let store = speech_output_store(engine);
+    let store = || speech_output_store(engine).expect("engines other than Apple download a model");
     match engine {
-        SpeechOutputEngine::Kokoro => Arc::new(KokoroSpeaker::new(store)),
-        SpeechOutputEngine::TinyVoca => Arc::new(TinyVocaSpeaker::new(store)),
-        SpeechOutputEngine::Pocket => Arc::new(PocketSpeaker::new(store)),
+        SpeechOutputEngine::Kokoro => Arc::new(KokoroSpeaker::new(store())),
+        SpeechOutputEngine::TinyVoca => Arc::new(TinyVocaSpeaker::new(store())),
+        SpeechOutputEngine::Pocket => Arc::new(PocketSpeaker::new(store())),
+        #[cfg(target_os = "macos")]
+        SpeechOutputEngine::Apple => Arc::new(local_transcription::speech::AppleSpeaker::new(
+            super::local_model::CONVERSATION_LANGUAGE,
+        )),
+        #[cfg(not(target_os = "macos"))]
+        SpeechOutputEngine::Apple => Arc::new(KokoroSpeaker::new(
+            speech_output_store(SpeechOutputEngine::Kokoro).expect("Kokoro downloads a model"),
+        )),
     }
 }
 

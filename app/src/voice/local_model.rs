@@ -59,20 +59,28 @@ fn model_bundle() -> ModelBundle {
     ModelBundle::new(stores)
 }
 
-/// The on-device engines that read agent replies aloud in conversation mode.
+/// The language conversation mode speaks, as an ISO 639-1 code.
+#[cfg(target_os = "macos")]
+pub const CONVERSATION_LANGUAGE: &str = "en";
+
+/// The engines that read agent replies aloud in conversation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpeechOutputEngine {
     Kokoro,
     TinyVoca,
     Pocket,
+    /// The macOS system voices; needs no download.
+    Apple,
 }
 
 impl SpeechOutputEngine {
-    /// Parses the `conversation_speech_engine` setting, defaulting to Kokoro.
+    /// Parses the `conversation_speech_engine` setting, defaulting to Kokoro. "apple" means Kokoro
+    /// off macOS.
     pub fn from_setting(value: &str) -> Self {
         match value {
             "tiny_voca" => SpeechOutputEngine::TinyVoca,
             "pocket" => SpeechOutputEngine::Pocket,
+            "apple" if cfg!(target_os = "macos") => SpeechOutputEngine::Apple,
             _ => SpeechOutputEngine::Kokoro,
         }
     }
@@ -83,6 +91,7 @@ impl SpeechOutputEngine {
             SpeechOutputEngine::Kokoro => "kokoro",
             SpeechOutputEngine::TinyVoca => "tiny_voca",
             SpeechOutputEngine::Pocket => "pocket",
+            SpeechOutputEngine::Apple => "apple",
         }
     }
 
@@ -91,17 +100,18 @@ impl SpeechOutputEngine {
         match self {
             SpeechOutputEngine::Kokoro => SpeechOutputEngine::TinyVoca,
             SpeechOutputEngine::TinyVoca => SpeechOutputEngine::Pocket,
-            SpeechOutputEngine::Pocket => SpeechOutputEngine::Kokoro,
+            SpeechOutputEngine::Pocket if cfg!(target_os = "macos") => SpeechOutputEngine::Apple,
+            SpeechOutputEngine::Pocket | SpeechOutputEngine::Apple => SpeechOutputEngine::Kokoro,
         }
     }
 
-    /// The engine to speak with when this one's model fails to load.
+    /// The engine to speak with when this one fails.
     pub fn fallback(self) -> Option<Self> {
         match self {
             SpeechOutputEngine::Kokoro => None,
-            SpeechOutputEngine::TinyVoca | SpeechOutputEngine::Pocket => {
-                Some(SpeechOutputEngine::Kokoro)
-            }
+            SpeechOutputEngine::TinyVoca
+            | SpeechOutputEngine::Pocket
+            | SpeechOutputEngine::Apple => Some(SpeechOutputEngine::Kokoro),
         }
     }
 
@@ -109,23 +119,36 @@ impl SpeechOutputEngine {
     /// can't change its speed.
     pub fn has_voice_and_rate_controls(self) -> bool {
         match self {
-            SpeechOutputEngine::Kokoro | SpeechOutputEngine::TinyVoca => true,
+            SpeechOutputEngine::Kokoro
+            | SpeechOutputEngine::TinyVoca
+            | SpeechOutputEngine::Apple => true,
             SpeechOutputEngine::Pocket => false,
         }
     }
 
-    pub fn spec(self) -> ModelSpec {
+    /// The model the engine downloads, if any.
+    pub fn spec(self) -> Option<ModelSpec> {
         match self {
-            SpeechOutputEngine::Kokoro => kokoro_82m_v1_int8(),
-            SpeechOutputEngine::TinyVoca => tiny_voca(),
-            SpeechOutputEngine::Pocket => pocket_tts_int8(),
+            SpeechOutputEngine::Kokoro => Some(kokoro_82m_v1_int8()),
+            SpeechOutputEngine::TinyVoca => Some(tiny_voca()),
+            SpeechOutputEngine::Pocket => Some(pocket_tts_int8()),
+            SpeechOutputEngine::Apple => None,
+        }
+    }
+
+    pub fn display_name(self) -> String {
+        match self.spec() {
+            Some(spec) => spec.display_name,
+            None => "the macOS voice".to_owned(),
         }
     }
 }
 
-/// The store holding the speech output model for `engine`.
-pub fn speech_output_store(engine: SpeechOutputEngine) -> ModelStore {
-    ModelStore::new(warp_core::paths::data_dir().join("models"), engine.spec())
+/// The store holding the speech output model for `engine`, if it has one.
+pub fn speech_output_store(engine: SpeechOutputEngine) -> Option<ModelStore> {
+    engine
+        .spec()
+        .map(|spec| ModelStore::new(warp_core::paths::data_dir().join("models"), spec))
 }
 
 /// The store holding the speaker embedding model that recognizes the user's voice.
@@ -347,13 +370,15 @@ impl SpeakerIdModel {
 
 impl SpeechOutputModel {
     pub fn new(engine: SpeechOutputEngine) -> Self {
-        Self::with_bundle(ModelBundle::new(vec![speech_output_store(engine)]))
+        Self::with_bundle(ModelBundle::new(
+            speech_output_store(engine).into_iter().collect(),
+        ))
     }
 
     #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
     /// Switches to `engine`'s model, cancelling a download of the previous one.
     pub fn set_engine(&mut self, engine: SpeechOutputEngine, ctx: &mut ModelContext<Self>) {
-        let bundle = ModelBundle::new(vec![speech_output_store(engine)]);
+        let bundle = ModelBundle::new(speech_output_store(engine).into_iter().collect());
         if bundle.display_name() == self.store.display_name() {
             return;
         }

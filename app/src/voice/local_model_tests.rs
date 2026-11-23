@@ -88,7 +88,7 @@ fn speech_output_engine_defaults_to_kokoro() {
         SpeechOutputEngine::from_setting(""),
         SpeechOutputEngine::Kokoro
     );
-    let size = SpeechOutputEngine::Kokoro.spec().total_size();
+    let size = SpeechOutputEngine::Kokoro.spec().unwrap().total_size();
     assert!(
         SpeechOutputKind::consent_prompt("Kokoro 82M", size).contains("(99 MB)"),
         "{size}"
@@ -129,7 +129,10 @@ fn pocket_engine_round_trips_through_the_setting() {
         SpeechOutputEngine::from_setting("unknown"),
         SpeechOutputEngine::Kokoro
     );
-    assert_eq!(SpeechOutputEngine::Pocket.spec().display_name, "Pocket TTS");
+    assert_eq!(
+        SpeechOutputEngine::Pocket.spec().unwrap().display_name,
+        "Pocket TTS"
+    );
 }
 
 #[test]
@@ -148,6 +151,10 @@ fn engine_picker_cycles_through_every_engine() {
             SpeechOutputEngine::Pocket
         ]
     );
+    if cfg!(target_os = "macos") {
+        engine = engine.next();
+        assert_eq!(engine, SpeechOutputEngine::Apple);
+    }
     assert_eq!(engine.next(), SpeechOutputEngine::Kokoro);
 }
 
@@ -164,4 +171,19 @@ fn failed_engines_fall_back_to_kokoro() {
     assert_eq!(SpeechOutputEngine::Kokoro.fallback(), None);
     assert!(!SpeechOutputEngine::Pocket.has_voice_and_rate_controls());
     assert!(SpeechOutputEngine::Kokoro.has_voice_and_rate_controls());
+}
+
+#[test]
+fn apple_engine_round_trips_through_the_setting() {
+    let engine = SpeechOutputEngine::from_setting("apple");
+    if cfg!(target_os = "macos") {
+        assert_eq!(engine, SpeechOutputEngine::Apple);
+        assert_eq!(engine.setting_value(), "apple");
+        assert_eq!(engine.spec(), None);
+        assert!(speech_output_store(engine).is_none());
+        assert_eq!(engine.fallback(), Some(SpeechOutputEngine::Kokoro));
+        assert!(engine.has_voice_and_rate_controls());
+    } else {
+        assert_eq!(engine, SpeechOutputEngine::Kokoro);
+    }
 }

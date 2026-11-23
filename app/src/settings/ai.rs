@@ -1463,7 +1463,7 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.context_biasing",
         description: "Whether local voice transcription favors terms visible in the pane and named in recent agent replies while decoding.",
     },
-    // The engine that speaks agent replies in voice conversation mode: "kokoro", "tiny_voca", or "pocket".
+    // The engine that speaks agent replies in voice conversation mode: "kokoro", "tiny_voca", "pocket", or "apple".
     conversation_speech_engine: ConversationSpeechEngine {
         type: String,
         default: "kokoro".to_owned(),
@@ -1472,7 +1472,7 @@ define_settings_group!(AISettings, settings: [
         surface: settings::SettingSurfaces::GUI,
         private: false,
         toml_path: "agents.voice.conversation_speech_engine",
-        description: "The on-device model that reads agent replies aloud in voice conversation mode: kokoro, tiny_voca, or pocket.",
+        description: "The engine that reads agent replies aloud in voice conversation mode: kokoro, tiny_voca, pocket, or apple (macOS system voices).",
     },
     conversation_voice: ConversationVoice {
         type: String,
