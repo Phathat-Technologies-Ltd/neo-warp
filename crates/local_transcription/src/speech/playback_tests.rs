@@ -1055,3 +1055,110 @@ fn unverified_barge_in_interrupts_without_ducking() {
     assert_eq!(h.log[0], "stop");
     assert_eq!(h.controller.state(), ConversationState::Listening);
 }
+
+#[test]
+fn an_approval_answer_that_lost_its_first_word_is_asked_again() {
+    let mut h = Harness::new();
+    h.play_approval_prompt(5, "look around the project");
+    h.log.clear();
+    // "Run it" reached the recognizer as just "It.": never a prompt, and the question is repeated.
+    assert_eq!(h.say("It."), FinalOutcome::Ignored);
+    assert_eq!(h.log, vec!["synth Sorry, say run it, or no."]);
+    assert!(h.controller.approvals().pending().is_some());
+    h.run_synthesis();
+    h.finish_playback();
+    h.advance(ECHO_TAIL);
+    assert_eq!(
+        h.say("Run it."),
+        FinalOutcome::Answered(5, ApprovalReply::Approve)
+    );
+}
+
+#[test]
+fn an_approval_answer_split_in_two_utterances_answers_once() {
+    let mut h = Harness::new();
+    h.play_approval_prompt(5, "ls");
+    assert_eq!(
+        h.say("Run"),
+        FinalOutcome::Answered(5, ApprovalReply::Approve)
+    );
+    h.advance(Duration::from_millis(500));
+    assert_eq!(h.say("it."), FinalOutcome::Ignored);
+
+    let mut h = Harness::new();
+    h.play_approval_prompt(6, "ls");
+    assert_eq!(h.say("Okay"), FinalOutcome::Ignored);
+    h.advance(Duration::from_millis(500));
+    assert_eq!(
+        h.say("run it"),
+        FinalOutcome::Answered(6, ApprovalReply::Approve)
+    );
+}
+
+#[test]
+fn stop_rejects_a_played_approval_prompt() {
+    let mut h = Harness::new();
+    let actions = h.controller.prompt_sent();
+    h.apply(actions);
+    // The agent's turn is still open while it waits on the approval.
+    h.play_approval_prompt(5, "ls");
+    assert_eq!(
+        h.say("stop"),
+        FinalOutcome::Answered(5, ApprovalReply::Reject)
+    );
+}
+
+#[test]
+fn barging_in_on_an_approval_prompt_keeps_the_approval_answerable() {
+    let mut h = Harness::new();
+    h.controller.set_echo_cancelled(true);
+    h.controller.set_verify_barge_in(true);
+    h.request_approval(5, "look around the project", false);
+    h.run_synthesis();
+    let now = h.now;
+    h.controller.speech_started(now);
+    let actions = h
+        .controller
+        .check_barge_in(now + BARGE_IN_AFTER_WITH_ECHO_CANCELLATION);
+    h.apply(actions);
+    // A one-word partial neither interrupts nor answers.
+    let actions = h
+        .controller
+        .barge_in_transcript("run", now + Duration::from_millis(400));
+    assert!(actions.is_empty());
+    let actions = h
+        .controller
+        .barge_in_verdict(BargeInSpeaker::Match, now + BARGE_IN_CHECK_AFTER);
+    h.apply(actions);
+    assert_eq!(h.controller.state(), ConversationState::Listening);
+    // The interruption alone answers nothing.
+    assert!(h.controller.approvals().pending().is_some());
+    h.controller.speech_ended();
+    let (outcome, _) =
+        h.controller
+            .on_final_from("Run it.", true, now + Duration::from_millis(900));
+    assert_eq!(outcome, FinalOutcome::Answered(5, ApprovalReply::Approve));
+}
+
+#[test]
+fn barging_in_on_an_approval_prompt_with_other_words_never_answers_it() {
+    let mut h = Harness::new();
+    h.controller.set_headphones(true);
+    h.request_approval(5, "ls", false);
+    h.run_synthesis();
+    let now = h.now;
+    h.controller.speech_started(now);
+    let actions = h.controller.check_barge_in(now + BARGE_IN_AFTER);
+    h.apply(actions);
+    h.controller.speech_ended();
+    let (outcome, _) = h
+        .controller
+        .on_final("what does it do", now + Duration::from_secs(1));
+    assert_eq!(outcome, FinalOutcome::NotConsumed);
+    assert!(h.controller.approvals().pending().is_some());
+    h.advance(Duration::from_secs(2));
+    assert_eq!(
+        h.say("yes"),
+        FinalOutcome::Answered(5, ApprovalReply::Approve)
+    );
+}
