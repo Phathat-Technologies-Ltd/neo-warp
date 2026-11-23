@@ -11,7 +11,9 @@ use futures::{SinkExt as _, StreamExt as _};
 use instant::Instant;
 use local_transcription::denoise::DenoiseStage;
 use local_transcription::speaker::Sensitivity;
-use local_transcription::speech::playback::BARGE_IN_CHECK_AFTER;
+use local_transcription::speech::playback::{
+    BARGE_IN_CHECK_AFTER, BARGE_IN_RECHECKS, BargeInSpeaker,
+};
 use local_transcription::stream::{ClientMessage, ServerMessage, VadOptions};
 use settings::Setting as _;
 use voice_input::{LiveCapture, LiveChunk};
@@ -78,6 +80,12 @@ pub struct HandsFreeSession {
     dictation_mode: DictationMode,
     /// Whether the session follows app activation and system sleep.
     watching_app: bool,
+    /// The newest utterance id the server has sent.
+    latest_utterance: Option<u64>,
+    /// The utterance id of the speech the VAD last heard start, once the server names it.
+    speech_utterance: Option<u64>,
+    /// Counts speech starts so barge-in checks of earlier speech are dropped.
+    speech_starts: u64,
 }
 
 /// How long "Not you — ignored" shows.
@@ -204,6 +212,17 @@ impl HandsFreeSession {
         if self.controller.state() == HandsFreeState::Paused {
             return;
         }
+        match &message {
+            ServerMessage::SpeechStart => {
+                self.speech_starts += 1;
+                self.speech_utterance = None;
+            }
+            ServerMessage::Partial { utterance, .. } | ServerMessage::Final { utterance, .. } => {
+                self.latest_utterance = Some(*utterance);
+                self.speech_utterance.get_or_insert(*utterance);
+            }
+            ServerMessage::SpeechEnd | ServerMessage::Error { .. } => {}
+        }
         let now = self.tap_total();
         let verify = self.should_verify(ctx);
         let steps = self.gate.push(message, now, verify);
@@ -264,15 +283,29 @@ impl HandsFreeSession {
         });
     }
 
-    /// Checks the speaker of the speech that just started once enough of it has arrived, so a
-    /// reply ducked for barge-in either stops (the user) or resumes (its own echo).
+    /// Checks the speaker of the speech that just started once enough of it has arrived, and again
+    /// on more audio, so a reply ducked for barge-in stops once the user is recognised.
     fn schedule_barge_in_check(&mut self, ctx: &mut ModelContext<Self>) {
         let start = self
             .tap_total()
             .saturating_sub(BARGE_IN_START_SLACK_SAMPLES);
+        let speech_start = self.speech_starts;
+        for after in std::iter::once(BARGE_IN_CHECK_AFTER).chain(BARGE_IN_RECHECKS) {
+            self.run_barge_in_check(start, speech_start, after, ctx);
+        }
+    }
+
+    fn run_barge_in_check(
+        &mut self,
+        start: u64,
+        speech_start: u64,
+        after: Duration,
+        ctx: &mut ModelContext<Self>,
+    ) {
         let generation = self.generation;
-        ctx.spawn(Timer::after(BARGE_IN_CHECK_AFTER), move |me, _, ctx| {
+        ctx.spawn(Timer::after(after), move |me, _, ctx| {
             if me.generation != generation
+                || me.speech_starts != speech_start
                 || !ConversationSession::as_ref(ctx).wants_barge_in_verdict()
             {
                 return;
@@ -283,15 +316,24 @@ impl HandsFreeSession {
                 .map(|tap| tap.slice(start..tap.total()))
                 .unwrap_or_default();
             let sensitivity = me.sensitivity;
+            // Before the server names the utterance, it is the one after the latest it named.
+            let utterance = me
+                .speech_utterance
+                .unwrap_or_else(|| me.latest_utterance.map_or(0, |id| id + 1));
             let verdict = SpeakerProfile::handle(ctx).update(ctx, |profile, _| {
-                profile.verify(samples, sensitivity, 0, "barge-in")
+                profile.verify(samples, sensitivity, utterance, "barge-in")
             });
             ctx.spawn(verdict, move |me, verdict, ctx| {
-                if me.generation != generation {
+                if me.generation != generation || me.speech_starts != speech_start {
                     return;
                 }
+                let verdict = match verdict {
+                    Verdict::Match => BargeInSpeaker::Match,
+                    Verdict::NoMatch => BargeInSpeaker::NoMatch,
+                    Verdict::Unavailable => BargeInSpeaker::Unavailable,
+                };
                 ConversationSession::handle(ctx).update(ctx, |conversation, ctx| {
-                    conversation.barge_in_verdict(verdict == Verdict::Match, ctx)
+                    conversation.barge_in_verdict(verdict, ctx)
                 });
             });
         });
@@ -373,7 +415,10 @@ impl HandsFreeSession {
             }
             ServerMessage::Partial { utterance, text } => ServerMessage::Partial {
                 utterance,
-                text: if conversation.as_ref(ctx).is_echo_window() {
+                text: if conversation.update(ctx, |conversation, ctx| {
+                    conversation.barge_in_transcript(&text, ctx);
+                    conversation.is_echo_window()
+                }) {
                     String::new()
                 } else {
                     text
