@@ -480,12 +480,15 @@ impl ConversationSession {
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         self.refresh_echo_cancellation();
-        let (outcome, actions) = self
-            .controller
-            .on_final_from(text, speaker_verified, Instant::now());
+        let (outcome, actions) =
+            self.controller
+                .on_final_from(text, speaker_verified, Instant::now());
         self.apply(actions, ctx);
         if !matches!(outcome, FinalOutcome::NotConsumed) {
-            log::info!("Voice conversation took the final ({})", outcome_label(&outcome));
+            log::info!(
+                "Voice conversation took the final ({})",
+                outcome_label(&outcome)
+            );
         }
         match outcome {
             FinalOutcome::NotConsumed => false,

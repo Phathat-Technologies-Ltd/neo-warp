@@ -239,7 +239,11 @@ impl HandsFreeController {
         if self.state == HandsFreeState::Transcribing {
             self.state = HandsFreeState::Listening;
         }
-        if self.showing.as_ref().is_some_and(|(id, _)| *id == utterance) {
+        if self
+            .showing
+            .as_ref()
+            .is_some_and(|(id, _)| *id == utterance)
+        {
             self.showing = None;
             return vec![HandsFreeEffect::DiscardPartial];
         }
