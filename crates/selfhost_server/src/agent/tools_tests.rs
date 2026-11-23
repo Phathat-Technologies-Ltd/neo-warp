@@ -2,6 +2,10 @@ use serde_json::json;
 
 use super::*;
 
+fn to_warp_tool(name: &str, arguments: Option<&Map<String, Value>>) -> Result<call::Tool, String> {
+    super::to_warp_tool(name, arguments, None)
+}
+
 fn args(value: Value) -> Map<String, Value> {
     match value {
         Value::Object(map) => map,
@@ -142,4 +146,142 @@ fn long_results_keep_their_start_and_end() {
 #[test]
 fn short_results_are_unchanged() {
     assert_eq!(truncate_middle("ok".to_owned(), 1000), "ok");
+}
+
+#[test]
+fn command_tools_address_the_monitored_command_by_default() {
+    use call::read_shell_command_output::Delay;
+    use call::write_to_long_running_shell_command::mode::Mode;
+
+    let call::Tool::ReadShellCommandOutput(read) = super::to_warp_tool(
+        "read_shell_command_output",
+        Some(&args(json!({ "until_complete": true }))),
+        Some("block-1"),
+    )
+    .unwrap() else {
+        panic!("expected ReadShellCommandOutput")
+    };
+    assert_eq!(read.command_id, "block-1");
+    assert_eq!(read.delay, Some(Delay::OnCompletion(())));
+
+    let call::Tool::ReadShellCommandOutput(read) = super::to_warp_tool(
+        "read_shell_command_output",
+        Some(&args(
+            json!({ "command_id": "block-2", "wait_seconds": 500 }),
+        )),
+        Some("block-1"),
+    )
+    .unwrap() else {
+        panic!("expected ReadShellCommandOutput")
+    };
+    assert_eq!(read.command_id, "block-2");
+    assert_eq!(
+        read.delay,
+        Some(Delay::Duration(prost_types::Duration {
+            seconds: 120,
+            nanos: 0
+        }))
+    );
+
+    let call::Tool::WriteToLongRunningShellCommand(write) = super::to_warp_tool(
+        "write_to_shell_command",
+        Some(&args(json!({ "input": "y" }))),
+        Some("block-1"),
+    )
+    .unwrap() else {
+        panic!("expected WriteToLongRunningShellCommand")
+    };
+    assert_eq!(write.command_id, "block-1");
+    assert_eq!(write.input, b"y");
+    assert_eq!(write.mode.unwrap().mode, Some(Mode::Line(())));
+
+    let call::Tool::WriteToLongRunningShellCommand(stop) =
+        super::to_warp_tool("stop_shell_command", None, Some("block-1")).unwrap()
+    else {
+        panic!("expected WriteToLongRunningShellCommand")
+    };
+    assert_eq!(stop.command_id, "block-1");
+    assert_eq!(stop.input, b"\x03");
+    assert_eq!(stop.mode.unwrap().mode, Some(Mode::Raw(())));
+}
+
+#[test]
+fn command_tools_need_a_command() {
+    assert!(
+        to_warp_tool("stop_shell_command", None)
+            .unwrap_err()
+            .contains("command_id")
+    );
+}
+
+#[test]
+fn command_tools_are_offered_when_the_client_supports_them() {
+    let names: Vec<String> = definitions(&[
+        api::ToolType::ReadShellCommandOutput as i32,
+        api::ToolType::WriteToLongRunningShellCommand as i32,
+    ])
+    .into_iter()
+    .map(|tool| tool.name.to_string())
+    .collect();
+    assert_eq!(
+        names,
+        vec![
+            "read_shell_command_output",
+            "write_to_shell_command",
+            "stop_shell_command"
+        ]
+    );
+}
+
+#[test]
+fn running_command_results_tell_the_model_how_to_continue() {
+    use api::message::tool_call_result::Result as R;
+    let snapshot = api::LongRunningShellCommandSnapshot {
+        output: "partial".to_owned(),
+        command_id: "block-1".to_owned(),
+        is_preempted: true,
+        ..Default::default()
+    };
+    let (text, failed) = result_text(&R::RunShellCommand(api::RunShellCommandResult {
+        result: Some(
+            api::run_shell_command_result::Result::LongRunningCommandSnapshot(snapshot.clone()),
+        ),
+        ..Default::default()
+    }));
+    assert!(!failed);
+    assert!(text.contains("still running (command_id: block-1)"));
+    assert!(text.contains("partial"));
+    assert!(text.contains("before the command exited"));
+    assert!(text.contains("stop_shell_command"));
+
+    let (text, failed) = result_text(&R::ReadShellCommandOutput(
+        api::ReadShellCommandOutputResult {
+            result: Some(
+                api::read_shell_command_output_result::Result::CommandFinished(
+                    api::ShellCommandFinished {
+                        output: "^C".to_owned(),
+                        exit_code: 130,
+                        ..Default::default()
+                    },
+                ),
+            ),
+            ..Default::default()
+        },
+    ));
+    assert!(failed);
+    assert!(text.contains("exit code 130"));
+
+    let (text, failed) = result_text(&R::WriteToLongRunningShellCommand(
+        api::WriteToLongRunningShellCommandResult {
+            result: Some(
+                api::write_to_long_running_shell_command_result::Result::Error(
+                    api::ShellCommandError {
+                        r#type: Some(api::shell_command_error::Type::CommandNotFound(())),
+                    },
+                ),
+            ),
+        },
+    ));
+    assert!(failed);
+    assert!(text.contains("No running command"));
 }

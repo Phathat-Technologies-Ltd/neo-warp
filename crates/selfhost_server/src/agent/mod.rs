@@ -7,6 +7,7 @@ pub mod command_search;
 mod helpers;
 mod mcp;
 pub mod next_command;
+mod monitor;
 mod prompt;
 mod responses;
 #[cfg(test)]

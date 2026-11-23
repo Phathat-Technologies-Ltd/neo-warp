@@ -36,6 +36,7 @@ use warp_multi_agent_api::message::{
 use warp_multi_agent_api::request::settings::custom_model_providers::CustomEndpointSchema;
 
 use super::mcp::McpTools;
+use super::monitor::{self, CliSubtask};
 use super::responses::{self, ResponsesProvider};
 use super::{helpers, prompt, tools};
 
@@ -142,7 +143,10 @@ struct Stream {
     out: mpsc::UnboundedSender<api::ResponseEvent>,
     conversation_id: String,
     request_id: String,
+    root_task_id: String,
+    /// The task this turn's replies go to: the root task, or the open CLI subagent's subtask.
     task_id: String,
+    cli: Option<CliSubtask>,
     /// The streamed text message the next text delta extends.
     open_text_message: Option<String>,
     mcp_tools: McpTools,
@@ -160,7 +164,9 @@ impl Stream {
             out,
             conversation_id,
             request_id: Uuid::new_v4().to_string(),
+            root_task_id: String::new(),
             task_id: String::new(),
+            cli: None,
             open_text_message: None,
             mcp_tools: McpTools::from_request(request),
         };
@@ -198,9 +204,13 @@ impl Stream {
     }
 
     fn new_message(&self, kind: Kind) -> api::Message {
+        self.new_message_in(&self.task_id, kind)
+    }
+
+    fn new_message_in(&self, task_id: &str, kind: Kind) -> api::Message {
         api::Message {
             id: Uuid::new_v4().to_string(),
-            task_id: self.task_id.clone(),
+            task_id: task_id.to_owned(),
             request_id: self.request_id.clone(),
             timestamp: Some(prost_types::Timestamp::from(SystemTime::now())),
             message: Some(kind),
@@ -213,6 +223,65 @@ impl Stream {
             task_id: self.task_id.clone(),
             messages,
         })
+    }
+
+    /// Adds messages to the tasks they name, keeping their order.
+    fn add_messages_in_order(&self, messages: Vec<api::Message>) {
+        let mut actions: Vec<client_action::Action> = Vec::new();
+        for message in messages {
+            if let Some(client_action::Action::AddMessagesToTask(add)) = actions.last_mut()
+                && add.task_id == message.task_id
+            {
+                add.messages.push(message);
+                continue;
+            }
+            actions.push(client_action::Action::AddMessagesToTask(
+                AddMessagesToTask {
+                    task_id: message.task_id.clone(),
+                    messages: vec![message],
+                },
+            ));
+        }
+        self.actions(actions);
+    }
+
+    /// Opens a CLI subagent for a command that is still running, closing any other one first.
+    fn open_cli_subagent(&mut self, command_id: String, command: &str) {
+        if self
+            .cli
+            .as_ref()
+            .is_some_and(|cli| cli.command_id == command_id)
+        {
+            return;
+        }
+        self.close_cli_subagent("The agent moved on to another command.");
+        let cli = CliSubtask::new(command_id);
+        let opening = self.new_message_in(&self.root_task_id, cli.opening_call(command));
+        // The opening call must reach the root task before the subtask: the client finds the
+        // subtask's command through it.
+        self.actions(vec![
+            client_action::Action::AddMessagesToTask(AddMessagesToTask {
+                task_id: self.root_task_id.clone(),
+                messages: vec![opening],
+            }),
+            client_action::Action::CreateTask(CreateTask {
+                task: Some(cli.task(&self.root_task_id)),
+            }),
+        ]);
+        self.cli = Some(cli);
+    }
+
+    fn close_cli_subagent(&mut self, summary: &str) {
+        let Some(cli) = self.cli.take() else {
+            return;
+        };
+        let closing = self.new_message_in(&self.root_task_id, cli.closing_result(summary));
+        self.actions(vec![client_action::Action::AddMessagesToTask(
+            AddMessagesToTask {
+                task_id: self.root_task_id.clone(),
+                messages: vec![closing],
+            },
+        )]);
     }
 
     fn stream_text(&mut self, text: &str) {
@@ -263,49 +332,70 @@ impl Stream {
         request: api::Request,
         make_provider: &ProviderFactory,
     ) -> Result<(), TurnError> {
-        let root = request
+        let tasks = request
             .task_context
             .as_ref()
-            .and_then(|context| context.tasks.iter().find(|task| is_root(task)));
+            .map(|context| context.tasks.as_slice())
+            .unwrap_or(&[]);
+        let root = tasks.iter().find(|task| is_root(task));
         let mut messages = match root {
             Some(task) => {
-                self.task_id = task.id.clone();
+                self.root_task_id = task.id.clone();
+                self.cli = CliSubtask::open_in(task);
                 restore_conversation(task)
             }
             None => {
-                self.task_id = Uuid::new_v4().to_string();
+                self.root_task_id = Uuid::new_v4().to_string();
                 self.actions(vec![client_action::Action::CreateTask(CreateTask {
                     task: Some(api::Task {
-                        id: self.task_id.clone(),
+                        id: self.root_task_id.clone(),
                         ..Default::default()
                     }),
                 })]);
                 Vec::new()
             }
         };
+        self.task_id = self.current_task_id();
 
         let input = request
             .input
             .as_ref()
             .ok_or_else(|| internal("the request has no input"))?;
-        let echoes = self.apply_input(input, &mut messages)?;
-        self.actions(vec![self.add_messages(echoes)]);
+        self.apply_input(input, tasks, &mut messages)?;
 
         let settings = request.settings.as_ref();
         let (endpoint, model) = resolve_model(settings)?;
-        let mut tools = tools::definitions(
-            settings
-                .map(|settings| settings.supported_tools.as_slice())
-                .unwrap_or(&[]),
-        );
-        tools.extend(self.mcp_tools.definitions());
+        let mut tools = match (&self.cli, settings) {
+            (Some(_), Some(settings)) if !settings.supported_cli_agent_tools.is_empty() => {
+                tools::definitions(&settings.supported_cli_agent_tools)
+            }
+            (Some(_), _) => tools::definitions(
+                &settings
+                    .map(|settings| settings.supported_tools.clone())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|tool| *tool != api::ToolType::RunShellCommand as i32)
+                    .collect::<Vec<_>>(),
+            ),
+            (None, _) => tools::definitions(
+                settings
+                    .map(|settings| settings.supported_tools.as_slice())
+                    .unwrap_or(&[]),
+            ),
+        };
+        if self.cli.is_none() {
+            tools.extend(self.mcp_tools.definitions());
+        }
         let spoken_summary = prompt::wants_spoken_summary(request.metadata.as_ref());
-        let system_prompt = prompt::system_prompt(
+        let mut system_prompt = prompt::system_prompt(
             input.context.as_ref(),
             spoken_summary,
             prompt::is_dictated(request.metadata.as_ref()),
             prompt::wants_voice_terms(request.metadata.as_ref()),
         );
+        if let Some(cli) = &self.cli {
+            system_prompt.push_str(&monitor::instructions(&cli.command_id));
+        }
 
         let provider = make_provider(&endpoint).map_err(|error| internal(format!("{error:#}")))?;
         let messages = self
@@ -319,7 +409,7 @@ impl Stream {
             .map_err(|error| internal(format!("couldn't save the conversation: {error}")))?;
         self.actions(vec![client_action::Action::UpdateTaskServerData(
             UpdateTaskServerData {
-                task_id: self.task_id.clone(),
+                task_id: self.root_task_id.clone(),
                 server_data,
             },
         )]);
@@ -355,28 +445,108 @@ impl Stream {
         }
     }
 
-    /// Adds the request's input to the model conversation and returns the Warp messages that
-    /// echo it into the task history, which the client doesn't record itself.
+    fn current_task_id(&self) -> String {
+        self.cli
+            .as_ref()
+            .map_or_else(|| self.root_task_id.clone(), |cli| cli.task_id.clone())
+    }
+
+    /// Adds the request's input to the model conversation and echoes it into the task history,
+    /// which the client doesn't record itself. Opens a CLI subagent when the input shows a command
+    /// still running, and closes the open one once its command finishes or the user addresses the
+    /// main agent.
     fn apply_input(
-        &self,
+        &mut self,
         input: &api::request::Input,
+        tasks: &[api::Task],
         messages: &mut Vec<Message>,
-    ) -> Result<Vec<api::Message>, TurnError> {
+    ) -> Result<(), TurnError> {
         use api::request::input::Type;
         use api::request::input::user_inputs::user_input::Input as UserInput;
-        let mut echoes = Vec::new();
+        let mut tool_responses = Message::user();
+        let mut answered = HashSet::new();
+        let mut texts = Vec::new();
+        let mut queries = Vec::new();
+        let mut result_echoes = Vec::new();
+        let mut addresses_main_agent = false;
+        let mut asked_about_running = false;
+        let mut running: Option<(String, String)> = None;
+        let mut finished = HashSet::new();
+        #[allow(deprecated)]
+        let executed = input
+            .context
+            .as_ref()
+            .map(|context| context.executed_shell_commands.as_slice())
+            .unwrap_or(&[]);
+        for command in executed {
+            if command.finished_ts.is_some() {
+                finished.insert(command.command_id.clone());
+            }
+        }
         match &input.r#type {
             Some(Type::UserInputs(user_inputs)) => {
-                let mut tool_responses = Message::user();
-                let mut queries = Vec::new();
                 for user_input in &user_inputs.inputs {
                     match &user_input.input {
                         Some(UserInput::UserQuery(query)) => {
+                            addresses_main_agent |=
+                                query.intended_agent == api::AgentType::Primary as i32;
+                            texts.push(query.query.clone());
                             queries.push(query.query.clone());
-                            echoes.push(self.new_message(Kind::UserQuery(UserQuery {
-                                query: query.query.clone(),
-                                ..Default::default()
-                            })));
+                        }
+                        Some(UserInput::CliAgentUserQuery(cli_query)) => {
+                            let query = cli_query
+                                .user_query
+                                .as_ref()
+                                .map(|query| query.query.clone())
+                                .unwrap_or_default();
+                            let running_command = cli_query.running_command.as_ref();
+                            texts
+                                .push(monitor::query_with_running_command(&query, running_command));
+                            queries.push(query);
+                            // The user can write before the client reports the command's first
+                            // snapshot; its snapshot then answers the command's tool call.
+                            let call_id = &cli_query.run_shell_command_tool_call_id;
+                            if !call_id.is_empty()
+                                && !has_tool_response(messages, call_id)
+                                && let Some(command) = running_command
+                                && let Some(snapshot) = &command.snapshot
+                            {
+                                tool_responses = tool_responses.with_tool_response(
+                                    call_id.clone(),
+                                    Ok(tool_result(tools::still_running_text(snapshot), false)),
+                                );
+                                answered.insert(call_id.clone());
+                                let owner = owner_task(tasks, call_id)
+                                    .unwrap_or_else(|| self.root_task_id.clone());
+                                result_echoes.push(self.new_message_in(
+                                    &owner,
+                                    Kind::ToolCallResult(ToolCallResult {
+                                        tool_call_id: call_id.clone(),
+                                        result: Some(
+                                            api::message::tool_call_result::Result::RunShellCommand(
+                                                api::RunShellCommandResult {
+                                                    command: command.command.clone(),
+                                                    result: Some(
+                                                        api::run_shell_command_result::Result::LongRunningCommandSnapshot(
+                                                            snapshot.clone(),
+                                                        ),
+                                                    ),
+                                                    ..Default::default()
+                                                },
+                                            ),
+                                        ),
+                                        ..Default::default()
+                                    }),
+                                ));
+                            }
+                            if let Some(command) = running_command
+                                && let Some(snapshot) = &command.snapshot
+                                && !snapshot.command_id.is_empty()
+                            {
+                                running =
+                                    Some((snapshot.command_id.clone(), command.command.clone()));
+                                asked_about_running = true;
+                            }
                         }
                         Some(UserInput::ToolCallResult(result)) => {
                             let message_result = result.result.clone().map(to_message_result);
@@ -388,28 +558,46 @@ impl Stream {
                                 result.tool_call_id.clone(),
                                 Ok(tool_result(text, is_error)),
                             );
-                            echoes.push(self.new_message(Kind::ToolCallResult(ToolCallResult {
-                                tool_call_id: result.tool_call_id.clone(),
-                                result: message_result,
-                                ..Default::default()
-                            })));
+                            answered.insert(result.tool_call_id.clone());
+                            match message_result.as_ref().and_then(monitor::command_status) {
+                                Some((command_id, true)) => {
+                                    finished.insert(command_id);
+                                }
+                                Some((command_id, false)) if !asked_about_running => {
+                                    let command = message_result
+                                        .as_ref()
+                                        .map(monitor::command_line)
+                                        .unwrap_or_default();
+                                    running = Some((command_id, command));
+                                }
+                                Some(_) | None => {}
+                            }
+                            let owner = owner_task(tasks, &result.tool_call_id)
+                                .unwrap_or_else(|| self.task_id.clone());
+                            result_echoes.push(self.new_message_in(
+                                &owner,
+                                Kind::ToolCallResult(ToolCallResult {
+                                    tool_call_id: result.tool_call_id.clone(),
+                                    result: message_result,
+                                    ..Default::default()
+                                }),
+                            ));
                         }
                         other => {
                             log::debug!("Ignoring unsupported user input: {other:?}");
                         }
                     }
                 }
-                if !queries.is_empty() {
-                    answer_open_tool_calls(messages, &mut echoes, self);
-                }
-                if !tool_responses.content.is_empty() {
-                    messages.push(tool_responses);
-                }
-                if !queries.is_empty() {
-                    messages.push(Message::user().with_text(queries.join("\n\n")));
+            }
+            Some(Type::ResumeConversation(_)) => {
+                if let Some(cli) = &self.cli
+                    && let Some(command) = executed
+                        .iter()
+                        .find(|command| command.command_id == cli.command_id)
+                {
+                    texts.push(monitor::resumed_text(command));
                 }
             }
-            Some(Type::ResumeConversation(_)) => {}
             other => {
                 return Err(internal(format!(
                     "this server doesn't support {} requests yet",
@@ -417,7 +605,46 @@ impl Stream {
                 )));
             }
         }
-        Ok(echoes)
+        if !queries.is_empty() {
+            answer_open_tool_calls(messages, &answered, tasks, &mut result_echoes, self);
+        }
+        self.add_messages_in_order(result_echoes);
+
+        if self
+            .cli
+            .as_ref()
+            .is_some_and(|cli| finished.contains(&cli.command_id))
+        {
+            self.close_cli_subagent("The command finished.");
+        } else if addresses_main_agent || asked_about_running {
+            self.close_cli_subagent("The user moved on.");
+        }
+        if let Some((command_id, command)) = running
+            && !finished.contains(&command_id)
+        {
+            self.open_cli_subagent(command_id, &command);
+        }
+        self.task_id = self.current_task_id();
+
+        let echoes: Vec<api::Message> = queries
+            .into_iter()
+            .map(|query| {
+                self.new_message(Kind::UserQuery(UserQuery {
+                    query,
+                    ..Default::default()
+                }))
+            })
+            .collect();
+        if !echoes.is_empty() {
+            self.actions(vec![self.add_messages(echoes)]);
+        }
+        if !tool_responses.content.is_empty() {
+            messages.push(tool_responses);
+        }
+        if !texts.is_empty() {
+            messages.push(Message::user().with_text(texts.join("\n\n")));
+        }
+        Ok(())
     }
 
     async fn run_agent(
@@ -498,7 +725,11 @@ impl Stream {
                             let arguments = call.arguments.as_ref();
                             match self.mcp_tools.to_warp_tool(&call.name, arguments) {
                                 Some(tool) => Ok(tool),
-                                None => tools::to_warp_tool(&call.name, arguments),
+                                None => tools::to_warp_tool(
+                                    &call.name,
+                                    arguments,
+                                    self.cli.as_ref().map(|cli| cli.command_id.as_str()),
+                                ),
                             }
                         });
                     match tool {
@@ -550,10 +781,13 @@ fn restore_conversation(task: &api::Task) -> Vec<Message> {
         .collect()
 }
 
-/// Gives every tool call the client never answered (the user cancelled or rejected it) a
-/// cancelled result, since the model API rejects a conversation with unanswered calls.
+/// Gives every tool call the client never answered (the user cancelled or rejected it, or
+/// interrupted a wait with a follow-up) a cancelled result, since the model API rejects a
+/// conversation with unanswered calls. `answered` holds the calls this request answers.
 fn answer_open_tool_calls(
     messages: &mut Vec<Message>,
+    answered: &HashSet<String>,
+    tasks: &[api::Task],
     echoes: &mut Vec<api::Message>,
     stream: &Stream,
 ) {
@@ -564,6 +798,7 @@ fn answer_open_tool_calls(
             MessageContentBlock::ToolResponse(response) => Some(response.id.as_str()),
             _ => None,
         })
+        .chain(answered.iter().map(String::as_str))
         .collect();
     let open: Vec<String> = messages
         .iter()
@@ -586,13 +821,36 @@ fn answer_open_tool_calls(
             id.clone(),
             Ok(tool_result(CANCELLED_TOOL_RESULT.to_owned(), true)),
         );
-        echoes.push(stream.new_message(Kind::ToolCallResult(ToolCallResult {
-            tool_call_id: id,
-            result: Some(api::message::tool_call_result::Result::Cancel(())),
-            ..Default::default()
-        })));
+        let owner = owner_task(tasks, &id).unwrap_or_else(|| stream.task_id.clone());
+        echoes.push(stream.new_message_in(
+            &owner,
+            Kind::ToolCallResult(ToolCallResult {
+                tool_call_id: id,
+                result: Some(api::message::tool_call_result::Result::Cancel(())),
+                ..Default::default()
+            }),
+        ));
     }
     messages.push(responses);
+}
+
+fn has_tool_response(messages: &[Message], tool_call_id: &str) -> bool {
+    messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .any(|block| matches!(block, MessageContentBlock::ToolResponse(response) if response.id == tool_call_id))
+}
+
+/// The task holding the tool call with this id.
+fn owner_task(tasks: &[api::Task], tool_call_id: &str) -> Option<String> {
+    tasks
+        .iter()
+        .find(|task| {
+            task.messages.iter().any(|message| {
+                matches!(&message.message, Some(Kind::ToolCall(call)) if call.tool_call_id == tool_call_id)
+            })
+        })
+        .map(|task| task.id.clone())
 }
 
 fn tool_result(text: String, is_error: bool) -> CallToolResult {

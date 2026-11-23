@@ -152,7 +152,7 @@ Parsing (`app/src/ai/agent/api/convert_from.rs:640-819`, `crates/ai/src/agent/ac
   2. Then, depending on the user's setting, `is_risky == false` may auto-run (behind `AgentDecidesCommandExecution`), redirections need confirmation, and otherwise `is_read_only` decides.
   3. If the command is not auto-approved, the user confirms it in the UI.
   4. An unsupervised/autonomous run instead gets a `PermissionDenied` result (`execute.rs:712-722`).
-- `wait_until_complete = false` lets the client return a `long_running_command_snapshot` early. Leave it unset.
+- The client ignores `wait_until_complete`: any command still running after 2 s (`ShellCommandExecutor::MAX_WAIT_DURATION`) comes back as a `long_running_command_snapshot`. The server then opens a CLI subagent for it: a `Subagent{task_id, cli{command_id}}` tool call in the root task, then `CreateTask` with `parent_task_id = root`. While that call has no result, the client marks the block agent-monitored, routes follow-ups to the subtask (`UserQuery.intended_agent = CLI`, or `CliAgentUserQuery` with a snapshot when no subagent exists yet, which upgrades the client's optimistic subtask on that `CreateTask`), and runs `ReadShellCommandOutput` / `WriteToLongRunningShellCommand` calls. A `ToolCallResult{subagent}` in the root closes it (`crates/selfhost_server/src/agent/monitor.rs`).
 
 **How the turn ends:** send `Finished{done}`.
 - `mark_request_completed` sees new actions, so the turn does not end (`conversation.rs:2550-2585`).

@@ -19,16 +19,22 @@ pub enum AgentTool {
     WriteFile,
     Grep,
     FindFiles,
+    ReadShellCommandOutput,
+    WriteToShellCommand,
+    StopShellCommand,
 }
 
 impl AgentTool {
-    const ALL: [AgentTool; 6] = [
+    const ALL: [AgentTool; 9] = [
         AgentTool::RunShellCommand,
         AgentTool::ReadFiles,
         AgentTool::EditFile,
         AgentTool::WriteFile,
         AgentTool::Grep,
         AgentTool::FindFiles,
+        AgentTool::ReadShellCommandOutput,
+        AgentTool::WriteToShellCommand,
+        AgentTool::StopShellCommand,
     ];
 
     fn name(self) -> &'static str {
@@ -39,6 +45,9 @@ impl AgentTool {
             AgentTool::WriteFile => "write_file",
             AgentTool::Grep => "grep",
             AgentTool::FindFiles => "find_files",
+            AgentTool::ReadShellCommandOutput => "read_shell_command_output",
+            AgentTool::WriteToShellCommand => "write_to_shell_command",
+            AgentTool::StopShellCommand => "stop_shell_command",
         }
     }
 
@@ -53,6 +62,10 @@ impl AgentTool {
             AgentTool::EditFile | AgentTool::WriteFile => api::ToolType::ApplyFileDiffs,
             AgentTool::Grep => api::ToolType::Grep,
             AgentTool::FindFiles => api::ToolType::FileGlobV2,
+            AgentTool::ReadShellCommandOutput => api::ToolType::ReadShellCommandOutput,
+            AgentTool::WriteToShellCommand | AgentTool::StopShellCommand => {
+                api::ToolType::WriteToLongRunningShellCommand
+            }
         }
     }
 
@@ -85,6 +98,23 @@ impl AgentTool {
             AgentTool::FindFiles => {
                 "Find files whose paths match glob patterns (for example **/*.rs) under a \
                  directory."
+            }
+            AgentTool::ReadShellCommandOutput => {
+                "Read the current output of a command that is still running in the terminal. \
+                 By default it returns right away; set wait_seconds to wait that long first, or \
+                 until_complete to wait until the command exits (at most 120 seconds, after \
+                 which you get the output so far)."
+            }
+            AgentTool::WriteToShellCommand => {
+                "Send input to a command that is still running in the terminal, such as an \
+                 answer to a prompt or a REPL line. mode line (the default) types the text and \
+                 presses Enter, block pastes multi-line text, and raw writes the bytes exactly \
+                 (use escapes such as \\u001b for control keys). Returns the output shortly \
+                 after the write."
+            }
+            AgentTool::StopShellCommand => {
+                "Stop a command that is still running in the terminal by sending it Ctrl-C. \
+                 Returns its output shortly after."
             }
         }
     }
@@ -151,6 +181,29 @@ impl AgentTool {
                 },
                 "required": ["patterns"]
             }),
+            AgentTool::ReadShellCommandOutput => json!({
+                "type": "object",
+                "properties": {
+                    "command_id": { "type": "string", "description": COMMAND_ID_DESCRIPTION },
+                    "wait_seconds": { "type": "integer", "minimum": 1, "maximum": 120 },
+                    "until_complete": { "type": "boolean" }
+                }
+            }),
+            AgentTool::WriteToShellCommand => json!({
+                "type": "object",
+                "properties": {
+                    "command_id": { "type": "string", "description": COMMAND_ID_DESCRIPTION },
+                    "input": { "type": "string" },
+                    "mode": { "type": "string", "enum": ["line", "block", "raw"] }
+                },
+                "required": ["input"]
+            }),
+            AgentTool::StopShellCommand => json!({
+                "type": "object",
+                "properties": {
+                    "command_id": { "type": "string", "description": COMMAND_ID_DESCRIPTION }
+                }
+            }),
         }
     }
 
@@ -161,6 +214,12 @@ impl AgentTool {
         Tool::new(self.name(), self.description(), Arc::new(schema))
     }
 }
+
+const COMMAND_ID_DESCRIPTION: &str =
+    "The running command's command_id. Defaults to the command you are monitoring.";
+
+/// The bytes a terminal sends for Ctrl-C.
+const CTRL_C: &[u8] = b"\x03";
 
 /// The model-facing definitions of the tools the client supports in this session.
 pub fn definitions(supported: &[i32]) -> Vec<Tool> {
@@ -178,6 +237,40 @@ struct RunShellCommandArgs {
     read_only: bool,
     #[serde(default)]
     risky: bool,
+}
+
+#[derive(Deserialize)]
+struct ReadShellCommandOutputArgs {
+    #[serde(default)]
+    command_id: Option<String>,
+    #[serde(default)]
+    wait_seconds: Option<u32>,
+    #[serde(default)]
+    until_complete: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum WriteMode {
+    #[default]
+    Line,
+    Block,
+    Raw,
+}
+
+#[derive(Deserialize)]
+struct WriteToShellCommandArgs {
+    #[serde(default)]
+    command_id: Option<String>,
+    input: String,
+    #[serde(default)]
+    mode: WriteMode,
+}
+
+#[derive(Deserialize)]
+struct StopShellCommandArgs {
+    #[serde(default)]
+    command_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -212,15 +305,23 @@ struct SearchArgs {
     path: Option<String>,
 }
 
-/// Converts a model tool call into the Warp tool the client executes.
+/// Converts a model tool call into the Warp tool the client executes. `monitored_command_id` is the
+/// running command that command tools address when the model names none.
 pub fn to_warp_tool(
     name: &str,
     arguments: Option<&Map<String, Value>>,
+    monitored_command_id: Option<&str>,
 ) -> Result<call::Tool, String> {
     let tool =
         AgentTool::from_name(name).ok_or_else(|| format!("Tool '{name}' is not available."))?;
     let arguments = Value::Object(arguments.cloned().unwrap_or_default());
     let parse_error = |error: serde_json::Error| format!("Invalid arguments for {name}: {error}");
+    let command_id = |named: Option<String>| {
+        named
+            .filter(|id| !id.is_empty())
+            .or_else(|| monitored_command_id.map(str::to_owned))
+            .ok_or_else(|| format!("{name} needs the command_id of a running command"))
+    };
     Ok(match tool {
         AgentTool::RunShellCommand => {
             let args: RunShellCommandArgs =
@@ -298,6 +399,52 @@ pub fn to_warp_tool(
                 ..Default::default()
             })
         }
+        AgentTool::ReadShellCommandOutput => {
+            let args: ReadShellCommandOutputArgs =
+                serde_json::from_value(arguments).map_err(parse_error)?;
+            use call::read_shell_command_output::Delay;
+            let delay = if args.until_complete {
+                Some(Delay::OnCompletion(()))
+            } else {
+                args.wait_seconds.map(|seconds| {
+                    Delay::Duration(prost_types::Duration {
+                        seconds: i64::from(seconds.clamp(1, 120)),
+                        nanos: 0,
+                    })
+                })
+            };
+            call::Tool::ReadShellCommandOutput(call::ReadShellCommandOutput {
+                command_id: command_id(args.command_id)?,
+                delay,
+            })
+        }
+        AgentTool::WriteToShellCommand => {
+            let args: WriteToShellCommandArgs =
+                serde_json::from_value(arguments).map_err(parse_error)?;
+            use call::write_to_long_running_shell_command::{Mode, mode};
+            let mode = match args.mode {
+                WriteMode::Line => mode::Mode::Line(()),
+                WriteMode::Block => mode::Mode::Block(()),
+                WriteMode::Raw => mode::Mode::Raw(()),
+            };
+            call::Tool::WriteToLongRunningShellCommand(call::WriteToLongRunningShellCommand {
+                input: args.input.into_bytes(),
+                mode: Some(Mode { mode: Some(mode) }),
+                command_id: command_id(args.command_id)?,
+            })
+        }
+        AgentTool::StopShellCommand => {
+            let args: StopShellCommandArgs =
+                serde_json::from_value(arguments).map_err(parse_error)?;
+            use call::write_to_long_running_shell_command::{Mode, mode};
+            call::Tool::WriteToLongRunningShellCommand(call::WriteToLongRunningShellCommand {
+                input: CTRL_C.to_vec(),
+                mode: Some(Mode {
+                    mode: Some(mode::Mode::Raw(())),
+                }),
+                command_id: command_id(args.command_id)?,
+            })
+        }
     })
 }
 
@@ -358,6 +505,8 @@ fn full_result_text(result: &api::message::tool_call_result::Result) -> (String,
         R::Grep(result) => grep_text(result),
         R::FileGlobV2(result) => glob_text(result),
         R::CallMcpTool(result) => super::mcp::result_text(result),
+        R::ReadShellCommandOutput(result) => read_output_text(result),
+        R::WriteToLongRunningShellCommand(result) => write_result_text(result),
         R::Cancel(()) => ("The user cancelled this tool call.".to_owned(), true),
         other => (format!("{other:?}"), false),
     }
@@ -370,13 +519,7 @@ fn shell_result_text(result: &api::RunShellCommandResult) -> (String, bool) {
             format!("Exit code {}\n{}", finished.exit_code, finished.output),
             finished.exit_code != 0,
         ),
-        Some(R::LongRunningCommandSnapshot(snapshot)) => (
-            format!(
-                "The command is still running. Output so far:\n{}",
-                snapshot.output
-            ),
-            false,
-        ),
+        Some(R::LongRunningCommandSnapshot(snapshot)) => (still_running_text(snapshot), false),
         Some(R::PermissionDenied(_)) => (
             "The command was not run: it is denied by the user's command policy.".to_owned(),
             true,
@@ -387,6 +530,66 @@ fn shell_result_text(result: &api::RunShellCommandResult) -> (String, bool) {
         ),
         None => ("The command produced no result.".to_owned(), true),
     }
+}
+
+fn read_output_text(result: &api::ReadShellCommandOutputResult) -> (String, bool) {
+    use api::read_shell_command_output_result::Result as R;
+    match &result.result {
+        Some(R::LongRunningCommandSnapshot(snapshot)) => (still_running_text(snapshot), false),
+        Some(R::CommandFinished(finished)) => finished_text(finished),
+        Some(R::Error(error)) => shell_error_text(error),
+        None => ("No result.".to_owned(), true),
+    }
+}
+
+fn write_result_text(result: &api::WriteToLongRunningShellCommandResult) -> (String, bool) {
+    use api::write_to_long_running_shell_command_result::Result as R;
+    match &result.result {
+        Some(R::LongRunningCommandSnapshot(snapshot)) => (still_running_text(snapshot), false),
+        Some(R::CommandFinished(finished)) => finished_text(finished),
+        Some(R::Error(error)) => shell_error_text(error),
+        None => ("No result.".to_owned(), true),
+    }
+}
+
+/// How the model sees a command that hasn't exited, with what it needs to keep working on it.
+pub(super) fn still_running_text(snapshot: &api::LongRunningShellCommandSnapshot) -> String {
+    let screen = if snapshot.is_alt_screen_active {
+        " It shows a full-screen program; this is its current screen."
+    } else {
+        ""
+    };
+    let waited = if snapshot.is_preempted {
+        " The wait ended before the command exited."
+    } else {
+        ""
+    };
+    format!(
+        "The command is still running (command_id: {}).{waited}{screen} Output so far:\n{}\n\n\
+         You are monitoring it. The user can talk to you while it runs. Use \
+         read_shell_command_output to wait for more output or for it to finish, \
+         write_to_shell_command to send it input, and stop_shell_command to interrupt it.",
+        snapshot.command_id, snapshot.output
+    )
+}
+
+fn finished_text(finished: &api::ShellCommandFinished) -> (String, bool) {
+    (
+        format!(
+            "The command finished with exit code {}\n{}",
+            finished.exit_code, finished.output
+        ),
+        finished.exit_code != 0,
+    )
+}
+
+fn shell_error_text(error: &api::ShellCommandError) -> (String, bool) {
+    use api::shell_command_error::Type;
+    let text = match error.r#type {
+        Some(Type::CommandNotFound(())) => "No running command has that command_id.",
+        None => "The command could not be reached.",
+    };
+    (text.to_owned(), true)
 }
 
 fn read_files_text(result: &api::ReadFilesResult) -> (String, bool) {
