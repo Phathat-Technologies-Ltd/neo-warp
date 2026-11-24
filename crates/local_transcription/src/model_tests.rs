@@ -145,6 +145,50 @@ fn parakeet_spec_is_pinned() {
     assert_eq!(spec.total_size(), 670_479_942);
 }
 
+#[test]
+fn fp16_encoder_spec_is_pinned_into_the_parakeet_dir() {
+    let spec = parakeet_fp16_encoder();
+    assert_eq!(spec.id, parakeet_tdt_0_6b_v3().id);
+    let [file] = spec.files.as_slice() else {
+        panic!("expected one file, got {:?}", spec.files);
+    };
+    #[cfg(feature = "parakeet")]
+    assert_eq!(file.name, crate::tdt::FP16_ENCODER_FILE);
+    assert_eq!(file.size, 1_238_960_470);
+    assert_eq!(file.sha256.len(), 64);
+    let revision = file
+        .url
+        .strip_prefix("https://huggingface.co/phathat/parakeet-tdt-0.6b-v3-fp16-coreml/resolve/")
+        .and_then(|rest| rest.strip_suffix("/encoder-model.fp16.onnx"))
+        .expect("a file URL in the fp16 repo");
+    assert!(
+        revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "pinned to a commit, got {revision}"
+    );
+}
+
+#[test]
+fn fp16_encoder_installs_beside_the_int8_model() {
+    let root = tempfile::tempdir().unwrap();
+    let parakeet = ModelStore::new(root.path(), parakeet_tdt_0_6b_v3());
+    let fp16 = ModelStore::new(root.path(), parakeet_fp16_encoder());
+    assert_eq!(fp16.model_dir(), parakeet.model_dir());
+    std::fs::create_dir_all(fp16.model_dir()).unwrap();
+    std::fs::write(fp16.model_dir().join(VERIFIED_MARKER), b"").unwrap();
+    let file = &fp16.spec().files[0];
+    let encoder = std::fs::File::create(fp16.model_dir().join(&file.name)).unwrap();
+    encoder.set_len(file.size - 1).unwrap();
+    assert_eq!(
+        fp16.status(),
+        ModelStatus::Partial {
+            downloaded: file.size - 1
+        }
+    );
+    encoder.set_len(file.size).unwrap();
+    assert_eq!(fp16.status(), ModelStatus::Installed);
+    assert_eq!(parakeet.status(), ModelStatus::NotInstalled);
+}
+
 #[tokio::test]
 async fn progress_counts_bytes_across_files_against_the_total() {
     let url = serve(Arc::default()).await;

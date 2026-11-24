@@ -1638,6 +1638,15 @@ define_settings_group!(AISettings, settings: [
         surface: settings::SettingSurfaces::GUI,
         private: true,
     },
+    // Not user-visible: whether the user was offered the Neural Engine speech model download.
+    voice_neural_engine_model_offered: VoiceNeuralEngineModelOffered {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::MAC,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: true,
+    },
     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
     // explicitly interacted with voice input. We use this to determine whether we should show a toast
     // to inform the user about voice input and auto-set the keybinding.

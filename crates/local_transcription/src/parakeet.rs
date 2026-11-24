@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::bias::{BiasConfig, BiasTerm, BoostingTree};
-use crate::tdt::{Acceleration, TdtModel};
+use crate::tdt::{Acceleration, FP16_ENCODER_FILE, TdtModel};
 use crate::{Audio, ModelStore, TranscribeError, Transcriber};
 
 /// Asks, before each transcription, where the encoder should run.
@@ -12,12 +12,29 @@ pub type AccelerationSource = Arc<dyn Fn() -> Acceleration + Send + Sync>;
 /// [`TranscribeError::ModelNotInstalled`].
 pub struct ParakeetTranscriber {
     store: ModelStore,
-    /// The loaded model and the acceleration it was loaded with.
-    model: Mutex<Option<(TdtModel, Acceleration)>>,
+    /// The loaded model and what it was loaded with.
+    model: Mutex<Option<(TdtModel, LoadedWith)>>,
     acceleration: AccelerationSource,
     /// The boosting tree of the last term list, rebuilt only when the list changes.
     bias: Mutex<Option<(Vec<BiasTerm>, Arc<BoostingTree>)>>,
     bias_config: BiasConfig,
+}
+
+/// What a model was loaded with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LoadedWith {
+    acceleration: Acceleration,
+    /// Whether the fp16 encoder Core ML runs was in the model directory.
+    fp16_encoder: bool,
+}
+
+/// Whether a model loaded with `loaded` must reload to run as `wanted`. The fp16 encoder only
+/// matters with [`Acceleration::Auto`]: a download finishing then moves the encoder to Core ML.
+fn needs_reload(loaded: LoadedWith, wanted: LoadedWith) -> bool {
+    match wanted.acceleration {
+        Acceleration::Auto => loaded != wanted,
+        Acceleration::Cpu => loaded.acceleration != Acceleration::Cpu,
+    }
 }
 
 impl ParakeetTranscriber {
@@ -56,15 +73,19 @@ impl ParakeetTranscriber {
                 audio.sample_rate
             )));
         }
-        let acceleration = (self.acceleration)();
+        let wanted = LoadedWith {
+            acceleration: (self.acceleration)(),
+            fp16_encoder: self.store.model_dir().join(FP16_ENCODER_FILE).is_file(),
+        };
         if model
             .as_ref()
-            .is_none_or(|(_, loaded)| *loaded != acceleration)
+            .is_none_or(|(_, loaded)| needs_reload(*loaded, wanted))
         {
             *model = None;
-            let loaded = TdtModel::load_accelerated(self.store.model_dir(), acceleration, None)?;
-            log::info!("Parakeet loaded ({acceleration:?})");
-            *model = Some((loaded, acceleration));
+            let loaded =
+                TdtModel::load_accelerated(self.store.model_dir(), wanted.acceleration, None)?;
+            log::info!("Parakeet loaded ({wanted:?})");
+            *model = Some((loaded, wanted));
         }
         let Some((model, _)) = model.as_mut() else {
             return Err(TranscribeError::ModelNotInstalled);

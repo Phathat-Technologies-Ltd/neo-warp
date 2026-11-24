@@ -4,6 +4,9 @@
     python export_parakeet_fp16.py encoder-model.onnx encoder-model.fp16.onnx
 
 `encoder-model.onnx` needs its `encoder-model.onnx.data` beside it. Inputs and outputs stay fp32.
+
+The published encoder (phathat/parakeet-tdt-0.6b-v3-fp16-coreml) was made from istupakov's revision
+8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce with onnx 1.23.2 and onnxconverter-common 1.16.0.
 """
 
 import re

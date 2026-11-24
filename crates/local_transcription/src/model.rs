@@ -66,6 +66,25 @@ pub fn parakeet_tdt_0_6b_v3() -> ModelSpec {
     }
 }
 
+const PARAKEET_FP16_REPO: &str = "https://huggingface.co/phathat/parakeet-tdt-0.6b-v3-fp16-coreml/resolve/eb17ca2d5fbe1c5a865a10714bd6ee3a87c6672a";
+
+/// The fp16 conversion of Parakeet TDT 0.6B v3's encoder (CC BY 4.0) that Core ML runs on the
+/// Neural Engine, from istupakov's fp32 export by `scripts/export_parakeet_fp16.py`. It shares
+/// [`parakeet_tdt_0_6b_v3`]'s directory, where the engine looks for it, so removing that model
+/// removes it too, and removing this one would remove both.
+pub fn parakeet_fp16_encoder() -> ModelSpec {
+    ModelSpec {
+        id: parakeet_tdt_0_6b_v3().id,
+        display_name: "Parakeet Neural Engine encoder".to_owned(),
+        files: vec![ModelFile {
+            name: "encoder-model.fp16.onnx".to_owned(),
+            url: format!("{PARAKEET_FP16_REPO}/encoder-model.fp16.onnx"),
+            size: 1_238_960_470,
+            sha256: "6e2cf61d33b79a89b4322f08c7678e75b288bde4c4bb29cbbd76aea3e2b4eaa7".to_owned(),
+        }],
+    }
+}
+
 /// Silero VAD v5 (MIT), from the `v5.1.2` release of `snakers4/silero-vad`.
 pub fn silero_vad_v5() -> ModelSpec {
     ModelSpec {
