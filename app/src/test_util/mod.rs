@@ -32,6 +32,10 @@ pub(crate) use assert_eventually;
 
 /// Registers the voice models views read at construction, as the app does at startup. Skips any
 /// a test already registered.
+/// Without voice input there are no voice models to register.
+#[cfg(not(all(not(target_family = "wasm"), feature = "voice_input")))]
+pub fn register_voice_models_for_tests(_app: &mut warpui::App) {}
+
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 pub fn register_voice_models_for_tests(app: &mut warpui::App) {
     use crate::voice;
