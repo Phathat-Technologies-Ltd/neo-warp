@@ -235,3 +235,14 @@ fn surface_forms_combine_word_alternatives() {
     assert!(forms.contains(&"s a s t ai".to_owned()), "{forms:?}");
     assert!(forms.len() <= 24);
 }
+
+#[test]
+fn screen_decoration_and_common_words_are_not_bias_terms() {
+    assert_eq!(clean_term("---LATEST---"), None);
+    assert_eq!(clean_term("---FOLDERS---"), None);
+    assert_eq!(clean_term("Latest folders"), None);
+    assert_eq!(clean_term("\"main.rs\","), Some("main.rs".to_owned()));
+    assert_eq!(clean_term("--force"), Some("--force".to_owned()));
+    assert_eq!(clean_term("SAST-AI"), Some("SAST-AI".to_owned()));
+    assert_eq!(clean_term("kubectl"), Some("kubectl".to_owned()));
+}

@@ -286,6 +286,51 @@ pub struct BiasMatch {
     pub term: u32,
 }
 
+/// Strips screen decoration from a term (`---LATEST---` → `LATEST`, `"main.rs",` → `main.rs`),
+/// keeping a real flag prefix (`-v`, `--force`), and drops terms that are then only common words:
+/// boosting those would rewrite what the user said into the screen's spelling.
+pub fn clean_term(text: &str) -> Option<String> {
+    let text = text.trim();
+    let dashes = text.len() - text.trim_start_matches('-').len();
+    let core = text.trim_matches(|c: char| !c.is_alphanumeric());
+    if core.is_empty() {
+        return None;
+    }
+    let is_flag = (1..=2).contains(&dashes) && text[dashes..].starts_with(core);
+    let cleaned = if is_flag {
+        &text[..dashes + core.len()]
+    } else {
+        core
+    };
+    let plain_words = core
+        .split_whitespace()
+        .all(|word| word.chars().all(char::is_alphabetic) && is_english_word(word));
+    if plain_words && !is_flag {
+        return None;
+    }
+    Some(cleaned.to_owned())
+}
+
+/// Whether `word` is an ordinary English word: a common word, or a whole word (or its plural) in
+/// the bundled English WordPiece vocabulary. Tool names like `kubectl` or `git` aren't in it.
+fn is_english_word(word: &str) -> bool {
+    static WORDS: std::sync::OnceLock<HashSet<&'static str>> = std::sync::OnceLock::new();
+    let words = WORDS.get_or_init(|| {
+        include_str!("../models/disfluency/vocab.txt")
+            .lines()
+            .filter(|piece| piece.len() > 2 && piece.chars().all(|c| c.is_ascii_lowercase()))
+            .collect()
+    });
+    let word = word.to_lowercase();
+    is_common_word(&word)
+        || words.contains(word.as_str())
+        || word
+            .strip_suffix("es")
+            .into_iter()
+            .chain(word.strip_suffix('s'))
+            .any(|stem| words.contains(stem))
+}
+
 impl BoostingTree {
     pub fn build(terms: &[BiasTerm], config: BiasConfig) -> Self {
         let mut tree = Self {
@@ -295,14 +340,20 @@ impl BoostingTree {
         };
         let mut seen = HashSet::new();
         for term in terms.iter().take(MAX_BIAS_TERMS) {
-            if !seen.insert(term.text.to_lowercase()) {
+            let Some(text) = clean_term(&term.text) else {
+                continue;
+            };
+            if !seen.insert(text.to_lowercase()) {
                 continue;
             }
             let index = tree.terms.len() as u32;
-            for form in surface_forms(&term.text) {
+            for form in surface_forms(&text) {
                 tree.insert(&format!(" {form}"), index, term.trusted);
             }
-            tree.terms.push(term.clone());
+            tree.terms.push(BiasTerm {
+                text,
+                ..term.clone()
+            });
         }
         tree
     }
