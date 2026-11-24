@@ -18,7 +18,7 @@ neo-warp is a fork of [Warp](https://github.com/warpdotdev/warp). It signs in th
 2. Get `organization.toml` from your administrator and place it at `/Library/Application Support/Warp/organization.toml`.
 3. Launch neo-warp, sign in, and connect a model when prompted (or type `/api-keys`).
 
-neo-warp is not affiliated with or endorsed by Warp (Denver Technologies, Inc.). Warp is open source under [AGPL-3.0](LICENSE-AGPL) and [MIT](LICENSE-MIT), and neo-warp keeps those licenses. ## Building from source
+neo-warp is not affiliated with or endorsed by Warp. Warp is open source under [AGPL-3.0](LICENSE-AGPL) and [MIT](LICENSE-MIT), and neo-warp keeps those licenses. ## Building from source
 
 ```bash
 ./script/bootstrap                     # platform-specific setup
@@ -32,8 +32,6 @@ Signing and release steps are in [docs/neo-warp/AGENTS.md](docs/neo-warp/AGENTS.
 
 File bugs and feature requests in this repository's [issues](https://github.com/Phathat-Technologies-Ltd/neo-warp/issues). Report security vulnerabilities privately through [GitHub security advisories](https://github.com/Phathat-Technologies-Ltd/neo-warp/security/advisories/new), not in public issues.
 
-Problems that also happen in Warp itself belong upstream at [warpdotdev/warp](https://github.com/warpdotdev/warp).
-
 ## Licensing
 
 neo-warp keeps Warp's licenses: the UI framework (the `warpui_core` and `warpui` crates) is under the [MIT license](LICENSE-MIT), and the rest of the code is under the [AGPL v3](LICENSE-AGPL). Third-party licenses ship with the app in `THIRD_PARTY_LICENSES.txt`.
@@ -42,4 +40,4 @@ Downloadable voice models keep their own licenses, for example NVIDIA Parakeet (
 
 ## Acknowledgements
 
-neo-warp is built on [Warp](https://github.com/warpdotdev/warp) by Denver Technologies, Inc., and on the open source projects Warp credits, including [Tokio](https://github.com/tokio-rs/tokio), [NuShell](https://github.com/nushell/nushell), [Fig Completion Specs](https://github.com/withfig/autocomplete), [Alacritty](https://github.com/alacritty/alacritty), and [Hyper](https://github.com/hyperium/hyper). Voice features use [Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), [Silero VAD](https://github.com/snakers4/silero-vad), [Smart Turn](https://github.com/pipecat-ai/smart-turn), [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M), [Pocket TTS](https://kyutai.org/tts/), [3D-Speaker CAM++](https://github.com/modelscope/3D-Speaker), and [ONNX Runtime](https://onnxruntime.ai).
+neo-warp is based on the open source [Warp](https://github.com/warpdotdev/warp) client. The open source libraries and models it uses are listed with their licenses in `THIRD_PARTY_LICENSES.txt` (shipped with the app) and, for voice models, next to each download in `crates/local_transcription/src/model.rs`.
