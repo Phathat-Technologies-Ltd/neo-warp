@@ -15,6 +15,7 @@ neo-warp is a fork of [Warp](https://github.com/warpdotdev/warp). It signs in th
 
 **Install**
 1. Download the latest `.dmg` from [Releases](https://github.com/Phathat-Technologies-Ltd/neo-warp/releases/latest), open it, and drag **neo-warp** onto **Applications**. Builds are signed and notarized.
+   Or with Homebrew: `brew tap phathat-technologies-ltd/tap && brew trust phathat-technologies-ltd/tap && brew install --cask neo-warp`.
 2. Get `organization.toml` from your administrator and place it at `/Library/Application Support/Warp/organization.toml`.
 3. Launch neo-warp, sign in, and connect a model when prompted (or type `/api-keys`).
 
