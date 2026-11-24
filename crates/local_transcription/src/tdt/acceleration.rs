@@ -250,6 +250,7 @@ mod core_ml {
         let spawned = std::thread::Builder::new()
             .name("parakeet-coreml".to_owned())
             .spawn(move || {
+                super::lower_thread_priority();
                 let started = Instant::now();
                 let result = std::panic::catch_unwind(|| load(&encoder, &cache, &probe))
                     .unwrap_or_else(|_| Err(TranscribeError::Engine("Core ML panicked".into())));
@@ -420,5 +421,20 @@ mod core_ml {
 
     pub(super) fn start(_model: &mut TdtModel, _dir: &Path) -> Accelerator {
         Accelerator
+    }
+}
+
+/// Runs the calling thread, and the Core ML compile work it starts, at background QoS: the
+/// one-time compile takes minutes and dictation keeps running on the CPU meanwhile, so it must not
+/// compete with the user's work.
+fn lower_thread_priority() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: only changes the calling thread's QoS class; no pointers are involved.
+    unsafe {
+        let status =
+            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_BACKGROUND, 0);
+        if status != 0 {
+            log::warn!("Parakeet: couldn't lower the Core ML compile priority ({status})");
+        }
     }
 }
