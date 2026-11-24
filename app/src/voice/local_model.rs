@@ -11,11 +11,14 @@ use futures::channel::mpsc;
 use local_transcription::{
     DownloadError, DownloadProgress, ModelAction, ModelBundle, ModelEvent, ModelSpec, ModelState,
     ModelStore, ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8,
-    parakeet_tdt_0_6b_v3, pocket_tts_int8, silero_vad_v5, smart_turn_v3_2, tiny_voca,
+    parakeet_fp16_encoder, parakeet_tdt_0_6b_v3, pocket_tts_int8, silero_vad_v5, smart_turn_v3_2,
+    tiny_voca,
 };
+use settings::Setting as _;
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity, WindowId};
 
+use crate::settings::AISettings;
 use crate::view_components::{DismissibleToast, ToastLink};
 use crate::workspace::{ToastStack, WorkspaceAction};
 
@@ -27,6 +30,15 @@ pub fn model_store() -> ModelStore {
     ModelStore::new(
         warp_core::paths::data_dir().join("models"),
         parakeet_tdt_0_6b_v3(),
+    )
+}
+
+/// The store holding the fp16 speech encoder that runs on the Apple Neural Engine, inside the
+/// speech model's directory.
+pub fn accelerated_speech_store() -> ModelStore {
+    ModelStore::new(
+        warp_core::paths::data_dir().join("models"),
+        parakeet_fp16_encoder(),
     )
 }
 
@@ -244,6 +256,30 @@ impl VoiceModelKind for SpeechInputKind {
     }
 }
 
+/// The fp16 speech encoder that runs on the Apple Neural Engine, faster than the CPU model.
+pub struct AcceleratedSpeechKind;
+
+impl VoiceModelKind for AcceleratedSpeechKind {
+    const TOAST_ID: &'static str = "accelerated-speech-model";
+    const NOUN: &'static str = "Neural Engine speech model";
+
+    fn download_action() -> WorkspaceAction {
+        WorkspaceAction::DownloadAcceleratedSpeechModel
+    }
+
+    fn cancel_action() -> WorkspaceAction {
+        WorkspaceAction::CancelAcceleratedSpeechModelDownload
+    }
+
+    fn consent_prompt(_display_name: &str, size: u64) -> String {
+        format!(
+            "Download the faster Apple Neural Engine speech model ({})? Voice input keeps \
+             working on the CPU until it's ready.",
+            format_gigabytes(size)
+        )
+    }
+}
+
 /// The text-to-speech model conversation mode reads replies with.
 pub struct SpeechOutputKind;
 
@@ -298,6 +334,7 @@ impl VoiceModelKind for SpeakerIdKind {
 pub type LocalVoiceModel = VoiceModel<SpeechInputKind>;
 pub type SpeechOutputModel = VoiceModel<SpeechOutputKind>;
 pub type SpeakerIdModel = VoiceModel<SpeakerIdKind>;
+pub type AcceleratedSpeechModel = VoiceModel<AcceleratedSpeechKind>;
 
 enum DownloadUpdate {
     Progress(DownloadProgress),
@@ -371,6 +408,12 @@ impl SpeakerIdModel {
     }
 }
 
+impl AcceleratedSpeechModel {
+    pub fn new() -> Self {
+        Self::with_bundle(ModelBundle::new(vec![accelerated_speech_store()]))
+    }
+}
+
 impl SpeechOutputModel {
     pub fn new(engine: SpeechOutputEngine) -> Self {
         Self::with_bundle(ModelBundle::new(
@@ -424,10 +467,7 @@ impl<K: VoiceModelKind> VoiceModel<K> {
     #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
     /// Records the user's attempt to record and says whether recording can go ahead.
     pub fn request_recording(&mut self, ctx: &mut ModelContext<Self>) -> RecordingReadiness {
-        if self.state.is_installed() && !self.store.is_installed() {
-            // The files were deleted outside the app.
-            self.apply(ModelEvent::Loaded(self.store.status()), ctx);
-        }
+        self.sync_with_disk(ctx);
         let download_ended = self
             .download_thread
             .as_ref()
@@ -449,6 +489,14 @@ impl<K: VoiceModelKind> VoiceModel<K> {
                 debug_assert!(asked);
                 RecordingReadiness::NeedsConsent
             }
+        }
+    }
+
+    /// Notices installed files that were deleted, e.g. outside the app or with a model sharing
+    /// their directory.
+    fn sync_with_disk(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.state.is_installed() && !self.store.is_installed() {
+            self.apply(ModelEvent::Loaded(self.store.status()), ctx);
         }
     }
 
@@ -645,6 +693,11 @@ fn download_blocking(
     }
 }
 
+/// Formats a byte count as gigabytes, to one decimal, for the UI.
+pub fn format_gigabytes(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1e9)
+}
+
 /// Formats a byte count as megabytes for the UI.
 pub fn format_megabytes(bytes: u64) -> String {
     format!("{} MB", bytes.div_ceil(1_000_000))
@@ -683,7 +736,69 @@ pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool
     if !is_local_voice_enabled() {
         return true;
     }
-    ensure_model_ready::<SpeechInputKind>(window_id, ctx)
+    let ready = ensure_model_ready::<SpeechInputKind>(window_id, ctx);
+    if ready {
+        offer_accelerated_speech_model(window_id, ctx);
+    }
+    ready
+}
+
+/// Whether to offer the Neural Engine speech encoder: once, with acceleration on Auto, on Apple
+/// silicon, after the CPU speech model is installed and before the encoder is.
+fn should_offer_accelerated_speech_model(
+    acceleration: local_transcription::tdt::Acceleration,
+    apple_silicon: bool,
+    speech_model_installed: bool,
+    accelerated: &ModelState,
+    already_offered: bool,
+) -> bool {
+    use local_transcription::tdt::Acceleration;
+    let wanted = match acceleration {
+        Acceleration::Auto => true,
+        Acceleration::Cpu => false,
+    };
+    let missing = match accelerated {
+        ModelState::NotInstalled | ModelState::AwaitingConsent => true,
+        ModelState::Downloading(_) | ModelState::Installed | ModelState::Failed(_) => false,
+    };
+    wanted && apple_silicon && speech_model_installed && missing && !already_offered
+}
+
+/// Asks once whether to download the Neural Engine speech encoder. Transcription stays on the CPU
+/// model meanwhile.
+#[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
+fn offer_accelerated_speech_model(window_id: WindowId, ctx: &mut AppContext) {
+    let accelerated = AcceleratedSpeechModel::handle(ctx);
+    accelerated.update(ctx, |model, ctx| model.sync_with_disk(ctx));
+    let offer = should_offer_accelerated_speech_model(
+        transcription_acceleration(),
+        cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        LocalVoiceModel::as_ref(ctx).state().is_installed(),
+        accelerated.as_ref(ctx).state(),
+        *AISettings::as_ref(ctx).voice_neural_engine_model_offered,
+    );
+    if !offer {
+        return;
+    }
+    AISettings::handle(ctx).update(ctx, |settings, ctx| {
+        if let Err(error) = settings
+            .voice_neural_engine_model_offered
+            .set_value(true, ctx)
+        {
+            log::warn!("Couldn't record the Neural Engine speech model offer: {error}");
+        }
+    });
+    let model = accelerated.as_ref(ctx);
+    let toast = DismissibleToast::default(AcceleratedSpeechKind::consent_prompt(
+        &model.display_name(),
+        model.download_size(),
+    ))
+    .with_link(
+        ToastLink::new("Download".to_owned())
+            .with_onclick_action(AcceleratedSpeechKind::download_action()),
+    )
+    .with_object_id(AcceleratedSpeechKind::TOAST_ID.to_owned());
+    add_toast::<AcceleratedSpeechKind>(toast, window_id, ctx);
 }
 
 /// Checks that the speaker model is installed before enrollment, asking for consent to download

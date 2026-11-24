@@ -43,6 +43,9 @@ pub fn register_voice_models_for_tests(app: &mut warpui::App) {
         if !ctx.has_singleton_model::<voice::local_model::SpeakerIdModel>() {
             ctx.add_singleton_model(|_| voice::local_model::SpeakerIdModel::new());
         }
+        if !ctx.has_singleton_model::<voice::local_model::AcceleratedSpeechModel>() {
+            ctx.add_singleton_model(|_| voice::local_model::AcceleratedSpeechModel::new());
+        }
         if !ctx.has_singleton_model::<voice::speaker_id::SpeakerProfile>() {
             ctx.add_singleton_model(|_| voice::speaker_id::SpeakerProfile::new());
         }

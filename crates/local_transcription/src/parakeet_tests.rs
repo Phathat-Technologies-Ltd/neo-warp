@@ -38,3 +38,19 @@ fn reports_missing_model() {
         Err(TranscribeError::ModelNotInstalled)
     ));
 }
+
+#[test]
+fn reloads_when_the_fp16_encoder_arrives_only_under_auto() {
+    let with = |acceleration, fp16_encoder| LoadedWith {
+        acceleration,
+        fp16_encoder,
+    };
+    let auto = Acceleration::Auto;
+    let cpu = Acceleration::Cpu;
+    assert!(needs_reload(with(auto, false), with(auto, true)));
+    assert!(needs_reload(with(auto, true), with(auto, false)));
+    assert!(!needs_reload(with(auto, true), with(auto, true)));
+    assert!(!needs_reload(with(cpu, false), with(cpu, true)));
+    assert!(needs_reload(with(auto, false), with(cpu, false)));
+    assert!(needs_reload(with(cpu, true), with(auto, true)));
+}

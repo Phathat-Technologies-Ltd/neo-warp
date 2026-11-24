@@ -183,3 +183,55 @@ fn apple_engine_round_trips_through_the_setting() {
         assert_eq!(engine, SpeechOutputEngine::Kokoro);
     }
 }
+
+#[test]
+fn offers_the_neural_engine_model_once_on_auto_apple_silicon() {
+    use local_transcription::tdt::Acceleration;
+    let offer = |acceleration, apple_silicon, installed, state: &ModelState, offered| {
+        should_offer_accelerated_speech_model(
+            acceleration,
+            apple_silicon,
+            installed,
+            state,
+            offered,
+        )
+    };
+    let missing = ModelState::NotInstalled;
+    assert!(offer(Acceleration::Auto, true, true, &missing, false));
+    assert!(offer(
+        Acceleration::Auto,
+        true,
+        true,
+        &ModelState::AwaitingConsent,
+        false
+    ));
+    assert!(!offer(Acceleration::Auto, true, true, &missing, true));
+    assert!(!offer(Acceleration::Cpu, true, true, &missing, false));
+    assert!(!offer(Acceleration::Auto, false, true, &missing, false));
+    assert!(!offer(Acceleration::Auto, true, false, &missing, false));
+    for state in [
+        ModelState::Installed,
+        ModelState::Downloading(DownloadProgress {
+            downloaded: 0,
+            total: 0,
+        }),
+        ModelState::Failed("offline".to_owned()),
+    ] {
+        assert!(!offer(Acceleration::Auto, true, true, &state, false));
+    }
+}
+
+#[test]
+fn neural_engine_model_lands_in_the_speech_model_dir() {
+    let store = accelerated_speech_store();
+    assert_eq!(store.model_dir(), model_store().model_dir());
+    assert_eq!(
+        store.spec().files[0].name,
+        local_transcription::tdt::FP16_ENCODER_FILE
+    );
+    assert_eq!(
+        AcceleratedSpeechKind::consent_prompt("", store.spec().total_size()),
+        "Download the faster Apple Neural Engine speech model (1.2 GB)? Voice input keeps working \
+         on the CPU until it's ready."
+    );
+}

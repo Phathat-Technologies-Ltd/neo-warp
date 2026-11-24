@@ -3,12 +3,12 @@
 //! `parakeet-rs` (NeMo's preprocessing: pre-emphasis, 512-point STFT, 128 Slaney mel bins, log,
 //! per-feature normalization); without bias terms the output is the same.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parakeet_rs::ExecutionConfig;
 use parakeet_rs::ort::inputs;
-use parakeet_rs::ort::session::Session;
+use parakeet_rs::ort::session::{Session, SessionOutputs};
 use parakeet_rs::ort::value::Tensor;
 use realfft::{RealFftPlanner, RealToComplex};
 
@@ -31,7 +31,8 @@ const LSTM_HIDDEN: usize = 640;
 
 mod acceleration;
 
-pub use acceleration::{Acceleration, DEFAULT_INTRA_THREADS, EncoderDevice};
+use acceleration::Accelerator;
+pub use acceleration::{Acceleration, DEFAULT_INTRA_THREADS, EncoderDevice, FP16_ENCODER_FILE};
 
 pub(crate) fn engine_error(error: impl std::fmt::Display) -> TranscribeError {
     TranscribeError::Engine(error.to_string())
@@ -53,11 +54,25 @@ pub struct Encoded {
     steps: usize,
 }
 
+impl Encoded {
+    /// Cosine similarity with `other`, 0 when their shapes differ.
+    pub fn similarity(&self, other: &Encoded) -> f32 {
+        if (self.dim, self.steps) != (other.dim, other.steps) {
+            return 0.0;
+        }
+        cosine_similarity(&self.data, &other.data)
+    }
+}
+
 pub(crate) const ENCODER_FILE: &str = "encoder-model.int8.onnx";
 const JOINT_FILE: &str = "decoder_joint-model.int8.onnx";
 
 pub struct TdtModel {
-    encoder: Session,
+    /// The CPU encoder, dropped while Core ML encodes and reloaded for inputs Core ML can't take.
+    encoder: Option<Session>,
+    dir: PathBuf,
+    config: ExecutionConfig,
+    accelerator: Accelerator,
     joint: Session,
     vocab: PieceVocab,
     blank: u32,
@@ -80,6 +95,18 @@ impl TdtModel {
         Self::with_encoder(dir, encoder, config)
     }
 
+    fn cpu_encoder(&mut self) -> Result<&mut Session, TranscribeError> {
+        if self.encoder.is_none() {
+            log::info!("Parakeet: loading the CPU encoder for an input Core ML can't take");
+            let session = self
+                .config
+                .build_session(&self.dir.join(ENCODER_FILE))
+                .map_err(engine_error)?;
+            self.encoder = Some(session);
+        }
+        Ok(self.encoder.as_mut().expect("loaded above"))
+    }
+
     /// Loads the model in `dir` with `encoder` already built from its `encoder-model.int8.onnx`.
     pub(crate) fn with_encoder(
         dir: &Path,
@@ -98,7 +125,10 @@ impl TdtModel {
             .map_err(engine_error)?;
         let blank = vocab.len() as u32 - 1;
         Ok(Self {
-            encoder,
+            encoder: Some(encoder),
+            dir: dir.to_owned(),
+            config: joint_config.clone(),
+            accelerator: Accelerator::off(),
             joint,
             vocab,
             blank,
@@ -213,29 +243,26 @@ impl TdtModel {
         features: Vec<f32>,
         frames: usize,
     ) -> Result<(Vec<f32>, usize, usize), TranscribeError> {
+        if let Some(encoded) = self.accelerator.encode(&features, frames)? {
+            self.encoder = None;
+            return Ok(encoded);
+        }
+        self.run_cpu_encoder(features, frames)
+    }
+
+    fn run_cpu_encoder(
+        &mut self,
+        features: Vec<f32>,
+        frames: usize,
+    ) -> Result<(Vec<f32>, usize, usize), TranscribeError> {
         let signal =
             Tensor::from_array(([1usize, N_MELS, frames], features)).map_err(engine_error)?;
         let length = Tensor::from_array(([1usize], vec![frames as i64])).map_err(engine_error)?;
         let outputs = self
-            .encoder
+            .cpu_encoder()?
             .run(inputs!["audio_signal" => signal, "length" => length])
             .map_err(engine_error)?;
-        let (shape, data) = outputs["outputs"]
-            .try_extract_tensor::<f32>()
-            .map_err(engine_error)?;
-        let dim = shape[1] as usize;
-        let steps = shape[2] as usize;
-        let (_, lengths) = outputs["encoded_lengths"]
-            .try_extract_tensor::<i64>()
-            .map_err(engine_error)?;
-        let valid = lengths
-            .first()
-            .map_or(steps, |&len| (len.max(0) as usize).min(steps));
-        let mut encoded = Vec::with_capacity(dim * valid);
-        for d in 0..dim {
-            encoded.extend_from_slice(&data[d * steps..d * steps + valid]);
-        }
-        Ok((encoded, dim, valid))
+        encoder_output(&outputs)
     }
 
     fn decode_frames(
@@ -358,6 +385,47 @@ impl TdtModel {
             tokens,
             matches,
         })
+    }
+}
+
+/// Reads the encoder's output `[dim][steps]` row-major, trimmed to its valid steps, with `dim` and
+/// the number of valid steps.
+fn encoder_output(
+    outputs: &SessionOutputs<'_>,
+) -> Result<(Vec<f32>, usize, usize), TranscribeError> {
+    let (shape, data) = outputs["outputs"]
+        .try_extract_tensor::<f32>()
+        .map_err(engine_error)?;
+    let dim = shape[1] as usize;
+    let steps = shape[2] as usize;
+    let (_, lengths) = outputs["encoded_lengths"]
+        .try_extract_tensor::<i64>()
+        .map_err(engine_error)?;
+    let valid = lengths
+        .first()
+        .map_or(steps, |&len| (len.max(0) as usize).min(steps));
+    let mut encoded = Vec::with_capacity(dim * valid);
+    for d in 0..dim {
+        encoded.extend_from_slice(&data[d * steps..d * steps + valid]);
+    }
+    Ok((encoded, dim, valid))
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| f64::from(*x) * f64::from(*y))
+        .sum();
+    let norm = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
+    let similarity = dot / (norm(a) * norm(b));
+    if similarity.is_finite() {
+        similarity as f32
+    } else {
+        0.0
     }
 }
 
