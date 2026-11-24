@@ -1260,7 +1260,9 @@ define_settings_group!(AISettings, settings: [
     // `is_ai_autodetection_enabled()` getter.
     ai_autodetection_enabled_internal: AIAutoDetectionEnabled {
         type: bool,
-        default: false,
+        // Organization builds turn natural-language detection on: Warp enables it through
+        // server-side onboarding, which they don't have.
+        default: crate::auth::is_organization_sign_in(),
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         surface: settings::SettingSurfaces::ALL,
@@ -1275,7 +1277,9 @@ define_settings_group!(AISettings, settings: [
     // This is only used when `FeatureFlag::AgentView` is enabled.
     nld_in_terminal_enabled_internal: NLDInTerminalEnabled {
         type: bool,
-        default: false,
+        // Organization builds turn natural-language detection on: Warp enables it through
+        // server-side onboarding, which they don't have.
+        default: crate::auth::is_organization_sign_in(),
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         surface: settings::SettingSurfaces::GUI,
