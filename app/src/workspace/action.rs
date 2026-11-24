@@ -328,6 +328,11 @@ pub enum WorkspaceAction {
     DownloadAcceleratedSpeechModel,
     /// Cancels a running Neural Engine speech model download.
     CancelAcceleratedSpeechModelDownload,
+    /// Downloads every model the voice control the user clicked needs, after they agreed in its
+    /// prompt.
+    DownloadVoiceModels,
+    /// Cancels the download started by [`WorkspaceAction::DownloadVoiceModels`].
+    CancelVoiceModelsDownload,
     /// Reverts the voice transcript corrections with these ids.
     RevertVoiceCorrection(Vec<u64>),
     /// Turns voice conversation mode on or off.
@@ -1073,6 +1078,8 @@ impl WorkspaceAction {
             | CancelSpeakerModelDownload
             | DownloadAcceleratedSpeechModel
             | CancelAcceleratedSpeechModelDownload
+            | DownloadVoiceModels
+            | CancelVoiceModelsDownload
             | RevertVoiceCorrection(_)
             | ToggleVoiceConversation
             | StopVoiceSpeaking

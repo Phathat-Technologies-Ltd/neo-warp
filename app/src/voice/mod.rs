@@ -17,6 +17,9 @@ pub mod hands_free_controller;
 pub mod local_model;
 #[cfg(not(target_family = "wasm"))]
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
+pub mod setup;
+#[cfg(not(target_family = "wasm"))]
+#[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
 mod speaker_gate;
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 pub mod speaker_id;

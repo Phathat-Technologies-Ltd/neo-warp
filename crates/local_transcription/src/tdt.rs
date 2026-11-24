@@ -35,7 +35,7 @@ mod acceleration;
 use acceleration::Accelerator;
 pub use acceleration::{
     Acceleration, COREML_ENCODER_DIR, DEFAULT_INTRA_THREADS, EncoderDevice, FP16_ENCODER_FILE,
-    has_accelerated_encoder,
+    has_accelerated_encoder, supports_coreml_package,
 };
 
 pub(crate) fn engine_error(error: impl std::fmt::Display) -> TranscribeError {
