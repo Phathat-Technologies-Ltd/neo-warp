@@ -58,7 +58,7 @@ const ECHO_WORD_OVERLAP: f32 = 0.8;
 pub const APPROVAL_DEBOUNCE: Duration = Duration::from_secs(1);
 
 /// Asked again when only part of a spoken approval answer was heard.
-const APPROVAL_REASK: &str = "Sorry, say run it, or no.";
+const APPROVAL_REASK: &str = "Sorry, say yes, or no.";
 
 /// The least time between two approval prompts of a turn while the earlier one is unresolved.
 pub const APPROVAL_PROMPT_GAP: Duration = Duration::from_secs(8);
@@ -952,7 +952,9 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
         if !self.is_on() {
             let overlapped =
                 utterance.is_some_and(|utterance| utterance.overlapped) || self.is_audible(now);
-            let echo = (overlapped && !self.headphones && !speaker_verified)
+            // With echo cancellation, overlapping the assistant isn't evidence of echo by itself;
+            // only words that repeat what it said are.
+            let echo = (overlapped && self.is_half_duplex() && !speaker_verified)
                 || self.repeats_recent_speech(text, now);
             let outcome = if echo {
                 FinalOutcome::Echo
@@ -984,14 +986,10 @@ impl<A, Id: Clone + PartialEq> ConversationController<A, Id> {
             self.state = ConversationState::Listening;
             return (FinalOutcome::Stopped, actions);
         }
-        if overlapped
-            && !self.headphones
-            && !speaker_verified
-            && (self.is_half_duplex() || !barged_in)
-        {
+        if overlapped && self.is_half_duplex() && !speaker_verified {
             return (FinalOutcome::Echo, Vec::new());
         }
-        // Approval answers come first: they reuse the prompt's own words ("say run it, or no").
+        // Approval answers come first: they reuse the prompt's own words ("say yes, or no").
         match self.approvals.on_utterance(text, started_at, now) {
             ApprovalVerdict::NotAnAnswer => {}
             ApprovalVerdict::Ignored | ApprovalVerdict::Held => {

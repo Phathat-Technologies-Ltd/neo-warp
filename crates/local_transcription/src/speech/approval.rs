@@ -25,6 +25,9 @@ pub enum ApprovalReply {
 
 const APPROVE: &[&[&str]] = &[
     &["yes"],
+    // "Run it" is often heard as "right".
+    &["right"],
+    &["all", "right"],
     &["yeah"],
     &["yep"],
     &["sure"],
@@ -163,7 +166,7 @@ pub fn approval_prompt(subject: &str, needs_screen: bool) -> String {
     if needs_screen {
         format!("I want to {subject}. Approve on screen.")
     } else {
-        format!("I want to {subject}. Say run it, or no.")
+        format!("I want to {subject}. Say yes, or no.")
     }
 }
 

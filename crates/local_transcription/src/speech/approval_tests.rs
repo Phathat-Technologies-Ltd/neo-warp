@@ -40,7 +40,7 @@ fn recognizes_stop() {
 fn prompt_speaks_the_subject_verbatim() {
     assert_eq!(
         approval_prompt("run a cargo command", false),
-        "I want to run a cargo command. Say run it, or no."
+        "I want to run a cargo command. Say yes, or no."
     );
     assert_eq!(
         approval_prompt("run a command that deletes files", true),

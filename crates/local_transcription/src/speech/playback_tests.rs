@@ -491,8 +491,8 @@ fn approval_prompt_is_spoken_and_answered_by_voice() {
         vec![
             "synth Let me check",
             "play Let me check",
-            "synth I want to run cargo check. Say run it, or no.",
-            "play I want to run cargo check. Say run it, or no.",
+            "synth I want to run cargo check. Say yes, or no.",
+            "play I want to run cargo check. Say yes, or no.",
         ]
     );
     // Said while the prompt plays: dropped, the approval stays pending.
@@ -1063,7 +1063,7 @@ fn an_approval_answer_that_lost_its_first_word_is_asked_again() {
     h.log.clear();
     // "Run it" reached the recognizer as just "It.": never a prompt, and the question is repeated.
     assert_eq!(h.say("It."), FinalOutcome::Ignored);
-    assert_eq!(h.log, vec!["synth Sorry, say run it, or no."]);
+    assert_eq!(h.log, vec!["synth Sorry, say yes, or no."]);
     assert!(h.controller.approvals().pending().is_some());
     h.run_synthesis();
     h.finish_playback();
