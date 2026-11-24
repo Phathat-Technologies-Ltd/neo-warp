@@ -1439,6 +1439,15 @@ define_settings_group!(AISettings, settings: [
         surface: settings::SettingSurfaces::GUI,
         private: true,
     },
+    // Not user-visible: whether the organization build already suggested connecting a model.
+    connect_model_toast_shown: ConnectModelToastShown {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        surface: settings::SettingSurfaces::GUI,
+        private: true,
+    },
     // This field is used to store the key used for voice input toggling.
     // Note this is not the named key, but rather corresponds to the physical key.
     voice_input_toggle_key: VoiceInputToggleKey,

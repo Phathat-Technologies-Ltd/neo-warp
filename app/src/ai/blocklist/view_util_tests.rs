@@ -307,3 +307,27 @@ fn usage_label_uses_credits_wording_when_dollars_requested_but_cost_unavailable(
         "Credits spent"
     );
 }
+
+#[test]
+fn missing_model_credential_offers_to_connect_a_model() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let error = RenderableAIError::from(&std::sync::Arc::new(
+                crate::server::server_api::AIApiError::NoModelCredential,
+            ));
+            let Some(FailedOutputPresentation::InvalidApiKey {
+                detail,
+                button_label,
+                ..
+            }) = failed_output_presentation(&error, false, ctx)
+            else {
+                panic!("expected the credential error presentation");
+            };
+            assert_eq!(button_label, "Connect a model");
+            assert!(detail.contains("/api-keys"));
+            assert!(!should_show_failed_output_usage_notice(
+                &error, true, false, false
+            ));
+        });
+    });
+}

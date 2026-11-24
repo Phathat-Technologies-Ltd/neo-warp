@@ -78,6 +78,7 @@ pub enum FailedOutputPresentation {
     InvalidApiKey {
         title: &'static str,
         detail: String,
+        button_label: &'static str,
     },
     ContextWindowExceeded {
         message: String,
@@ -159,6 +160,14 @@ pub fn failed_output_presentation(
                 "Failed to authenticate with {provider} when using {model_name}. \
                  Double-check that your API key is correct."
             ),
+            button_label: "Edit API Keys",
+        },
+        RenderableAIError::NoModelCredential => FailedOutputPresentation::InvalidApiKey {
+            title: "No model credential is connected",
+            detail: "Sign in with Claude or ChatGPT, or add an Anthropic or Cerebras API key. \
+                     You can also type /api-keys."
+                .to_owned(),
+            button_label: "Connect a model",
         },
         RenderableAIError::AwsBedrockCredentialsExpiredOrInvalid { model_name } => {
             FailedOutputPresentation::AwsBedrockCredentialsExpiredOrInvalid {

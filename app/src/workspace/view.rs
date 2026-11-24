@@ -4,6 +4,7 @@ mod build_plan_migration_modal;
 pub(crate) mod chatgpt_plan_modal;
 pub(crate) mod cloud_agent_capacity_modal;
 pub(crate) mod codex_modal;
+pub(crate) mod connect_model_toast;
 pub mod conversation_list;
 #[cfg(enable_crash_recovery)]
 mod crash_recovery;
@@ -3641,6 +3642,7 @@ impl Workspace {
         // any) read from `GlobalResourceHandles`. Subsequent updates are
         // pushed by `subscribe_to_settings_errors` and `dismiss_workspace_banner`.
         ws.sync_settings_error_state_into_settings_pane(ctx);
+        ws.maybe_show_connect_model_toast(ctx);
 
         let weak_handle = ctx.handle();
         WorkspaceRegistry::handle(ctx).update(ctx, |registry, _| {

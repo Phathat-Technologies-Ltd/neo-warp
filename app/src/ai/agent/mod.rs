@@ -723,6 +723,8 @@ pub enum RenderableAIError {
         model_name: String,
     },
     GeminiEnterpriseCredentialsExpiredOrInvalid,
+    /// Under organization sign-in, no model has a connected credential.
+    NoModelCredential,
     /// A transient network failure (lost connection or truncated response stream). Carries its
     /// own complete user-facing copy; `kind` preserves the structured cause (including the raw
     /// API error) so user reports can disambiguate the different causes behind the shared message.
@@ -856,8 +858,9 @@ impl RenderableAIError {
         error.status().is_none()
     }
 
+    /// Whether the error asks the user to connect or fix a model credential.
     pub fn is_invalid_api_key(&self) -> bool {
-        matches!(self, Self::InvalidApiKey { .. })
+        matches!(self, Self::InvalidApiKey { .. } | Self::NoModelCredential)
     }
 
     pub fn is_aws_bedrock_credentials_error(&self) -> bool {
@@ -963,9 +966,8 @@ impl From<&Arc<AIApiError>> for RenderableAIError {
                 "Grok subscription token could not be refreshed. Please try reconnecting your subscription.",
                 true,
             ),
-            AIApiError::WarpCloudModelsDisabled | AIApiError::NoModelCredential => {
-                Self::other(value.to_string(), true)
-            }
+            AIApiError::WarpCloudModelsDisabled => Self::other(value.to_string(), true),
+            AIApiError::NoModelCredential => Self::NoModelCredential,
             AIApiError::Deserialization(DeserializationError::Json(_))
             | AIApiError::NoContextFound
             | AIApiError::ErrorStatus(_, _)
@@ -1011,6 +1013,7 @@ impl Display for RenderableAIError {
             Self::GeminiEnterpriseCredentialsExpiredOrInvalid => {
                 write!(f, "Gemini Enterprise credentials expired or invalid")
             }
+            Self::NoModelCredential => write!(f, "{}", AIApiError::NoModelCredential),
             Self::TransientNetworkError { kind, .. } => {
                 write!(
                     f,
