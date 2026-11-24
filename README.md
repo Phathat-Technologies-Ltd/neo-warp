@@ -18,7 +18,9 @@ neo-warp is a fork of [Warp](https://github.com/warpdotdev/warp). It signs in th
 2. Get `organization.toml` from your administrator and place it at `/Library/Application Support/Warp/organization.toml`.
 3. Launch neo-warp, sign in, and connect a model when prompted (or type `/api-keys`).
 
-neo-warp is not affiliated with or endorsed by Warp. Warp is open source under [AGPL-3.0](LICENSE-AGPL) and [MIT](LICENSE-MIT), and neo-warp keeps those licenses. ## Building from source
+neo-warp is not affiliated with or endorsed by Warp. Warp is open source under [AGPL-3.0](LICENSE-AGPL) and [MIT](LICENSE-MIT), and neo-warp keeps those licenses.
+
+## Building from source
 
 ```bash
 ./script/bootstrap                     # platform-specific setup
