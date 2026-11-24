@@ -16,6 +16,11 @@ fn sha(bytes: &[u8]) -> String {
 
 /// Serves `BODY` at `/file`, honoring `Range: bytes=N-`, and counts requests.
 async fn serve(hits: Arc<AtomicUsize>) -> String {
+    serve_body(BODY, hits).await
+}
+
+/// Serves `body` at `/file`, honoring `Range: bytes=N-`, and counts requests.
+async fn serve_body(body: &'static [u8], hits: Arc<AtomicUsize>) -> String {
     let app = Router::new().route(
         "/file",
         get(move |headers: HeaderMap| {
@@ -28,8 +33,8 @@ async fn serve(hits: Arc<AtomicUsize>) -> String {
                     .and_then(|value| value.strip_prefix("bytes="))
                     .and_then(|value| value.trim_end_matches('-').parse::<usize>().ok());
                 match start {
-                    Some(start) => (AxumStatus::PARTIAL_CONTENT, BODY[start..].to_vec()),
-                    None => (AxumStatus::OK, BODY.to_vec()),
+                    Some(start) => (AxumStatus::PARTIAL_CONTENT, body[start..].to_vec()),
+                    None => (AxumStatus::OK, body.to_vec()),
                 }
                 .into_response()
             }
@@ -50,6 +55,7 @@ fn spec(url: &str, sha256: String) -> ModelSpec {
             url: url.to_owned(),
             size: BODY.len() as u64,
             sha256,
+            unpack: false,
         }],
     }
 }
@@ -189,6 +195,137 @@ fn fp16_encoder_installs_beside_the_int8_model() {
     assert_eq!(parakeet.status(), ModelStatus::NotInstalled);
 }
 
+#[test]
+fn coreml_encoder_spec_is_pinned_into_the_parakeet_dir() {
+    let spec = parakeet_coreml_encoder();
+    assert_eq!(spec.id, parakeet_tdt_0_6b_v3().id);
+    let [file] = spec.files.as_slice() else {
+        panic!("expected one file, got {:?}", spec.files);
+    };
+    #[cfg(feature = "parakeet")]
+    assert_eq!(file.name, format!("{}.tar", crate::tdt::COREML_ENCODER_DIR));
+    assert!(file.unpack);
+    assert_eq!(file.size, 1_231_820_800);
+    assert_eq!(file.sha256.len(), 64);
+    let revision = file
+        .url
+        .strip_prefix("https://huggingface.co/phathat/parakeet-tdt-0.6b-v3-fp16-coreml/resolve/")
+        .and_then(|rest| rest.strip_suffix("/encoder-model.fp16.mlmodelc.tar"))
+        .expect("a file URL in the fp16 repo");
+    assert!(
+        revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "pinned to a commit, got {revision}"
+    );
+}
+
+/// A tar archive holding `model.mlmodelc/` with two files.
+fn model_archive() -> &'static [u8] {
+    let mut builder = tar::Builder::new(Vec::new());
+    for (path, contents) in [
+        ("model.mlmodelc/model.mil", &b"program"[..]),
+        ("model.mlmodelc/weights/weight.bin", &b"weights"[..]),
+    ] {
+        let mut header = tar::Header::new_ustar();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, path, contents).unwrap();
+    }
+    Box::leak(builder.into_inner().unwrap().into_boxed_slice())
+}
+
+fn archive_spec(url: &str, archive: &[u8]) -> ModelSpec {
+    ModelSpec {
+        id: "test-model".to_owned(),
+        display_name: "Test".to_owned(),
+        files: vec![ModelFile {
+            name: "model.mlmodelc.tar".to_owned(),
+            url: url.to_owned(),
+            size: archive.len() as u64,
+            sha256: sha(archive),
+            unpack: true,
+        }],
+    }
+}
+
+#[tokio::test]
+async fn unpacks_a_verified_archive_and_drops_it() {
+    let archive = model_archive();
+    let url = serve_body(archive, Arc::default()).await;
+    let root = tempfile::tempdir().unwrap();
+    let store = ModelStore::new(root.path(), archive_spec(&url, archive));
+    let mut last = None;
+    store
+        .download(
+            &reqwest::Client::new(),
+            &AtomicBool::new(false),
+            |progress| last = Some(progress),
+        )
+        .await
+        .unwrap();
+    let total = archive.len() as u64;
+    assert_eq!(
+        last,
+        Some(DownloadProgress {
+            downloaded: total,
+            total
+        })
+    );
+    let dir = store.model_dir();
+    assert_eq!(
+        std::fs::read(dir.join("model.mlmodelc/weights/weight.bin")).unwrap(),
+        b"weights"
+    );
+    assert!(!dir.join("model.mlmodelc.tar").exists());
+    assert!(!dir.join("model.mlmodelc.tar.unpacking").exists());
+    assert_eq!(store.status(), ModelStatus::Installed);
+}
+
+#[tokio::test]
+async fn finishes_an_interrupted_unpack_without_downloading_again() {
+    let archive = model_archive();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let url = serve_body(archive, hits.clone()).await;
+    let root = tempfile::tempdir().unwrap();
+    let store = ModelStore::new(root.path(), archive_spec(&url, archive));
+    let dir = store.model_dir();
+    std::fs::create_dir_all(dir.join("model.mlmodelc")).unwrap();
+    std::fs::write(dir.join("model.mlmodelc/stale.bin"), b"old").unwrap();
+    std::fs::write(dir.join("model.mlmodelc.tar"), archive).unwrap();
+    std::fs::create_dir_all(dir.join("model.mlmodelc.tar.unpacking/model.mlmodelc")).unwrap();
+    assert_eq!(
+        store.status(),
+        ModelStatus::Partial {
+            downloaded: archive.len() as u64
+        }
+    );
+    store
+        .download(&reqwest::Client::new(), &AtomicBool::new(false), |_| {})
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    assert!(!dir.join("model.mlmodelc/stale.bin").exists());
+    assert_eq!(
+        std::fs::read(dir.join("model.mlmodelc/model.mil")).unwrap(),
+        b"program"
+    );
+    assert_eq!(store.status(), ModelStatus::Installed);
+}
+
+#[test]
+fn an_unpacked_archive_counts_only_for_its_checksum() {
+    let archive = model_archive();
+    let root = tempfile::tempdir().unwrap();
+    let store = ModelStore::new(root.path(), archive_spec("http://unused", archive));
+    let dir = store.model_dir();
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(VERIFIED_MARKER), b"").unwrap();
+    std::fs::write(dir.join("model.mlmodelc.tar.unpacked"), "an older archive").unwrap();
+    assert_eq!(store.status(), ModelStatus::NotInstalled);
+    std::fs::write(dir.join("model.mlmodelc.tar.unpacked"), sha(archive)).unwrap();
+    assert_eq!(store.status(), ModelStatus::Installed);
+}
+
 #[tokio::test]
 async fn progress_counts_bytes_across_files_against_the_total() {
     let url = serve(Arc::default()).await;
@@ -285,4 +422,26 @@ fn silero_spec_is_pinned() {
     assert_eq!(spec.files.len(), 1);
     assert!(spec.files[0].url.contains("/v5.1.2/"));
     assert_eq!(spec.files[0].sha256.len(), 64);
+}
+
+/// Downloads the real Core ML encoder (~1.2 GB) into `PARAKEET_MODEL_ROOT` and checks it unpacks.
+/// Run with `--run-ignored only`.
+#[cfg(feature = "parakeet")]
+#[tokio::test]
+#[ignore = "downloads the 1.2 GB Core ML encoder"]
+async fn downloads_and_unpacks_the_coreml_encoder() {
+    let root = std::env::var("PARAKEET_MODEL_ROOT").expect("set PARAKEET_MODEL_ROOT");
+    let store = ModelStore::new(root, parakeet_coreml_encoder());
+    store
+        .download(&reqwest::Client::new(), &AtomicBool::new(false), |_| {})
+        .await
+        .unwrap();
+    let dir = store.model_dir();
+    assert!(
+        dir.join(crate::tdt::COREML_ENCODER_DIR)
+            .join("weights/weight.bin")
+            .is_file()
+    );
+    assert!(crate::tdt::has_accelerated_encoder(dir));
+    assert_eq!(store.status(), ModelStatus::Installed);
 }

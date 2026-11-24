@@ -11,7 +11,7 @@ use futures::channel::mpsc;
 use local_transcription::{
     DownloadError, DownloadProgress, ModelAction, ModelBundle, ModelEvent, ModelSpec, ModelState,
     ModelStore, ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8,
-    parakeet_fp16_encoder, parakeet_tdt_0_6b_v3, pocket_tts_int8, silero_vad_v5, smart_turn_v3_2,
+    parakeet_coreml_encoder, parakeet_tdt_0_6b_v3, pocket_tts_int8, silero_vad_v5, smart_turn_v3_2,
     tiny_voca,
 };
 use settings::Setting as _;
@@ -33,12 +33,12 @@ pub fn model_store() -> ModelStore {
     )
 }
 
-/// The store holding the fp16 speech encoder that runs on the Apple Neural Engine, inside the
-/// speech model's directory.
+/// The store holding the speech encoder compiled for the Apple Neural Engine, inside the speech
+/// model's directory.
 pub fn accelerated_speech_store() -> ModelStore {
     ModelStore::new(
         warp_core::paths::data_dir().join("models"),
-        parakeet_fp16_encoder(),
+        parakeet_coreml_encoder(),
     )
 }
 
@@ -256,7 +256,7 @@ impl VoiceModelKind for SpeechInputKind {
     }
 }
 
-/// The fp16 speech encoder that runs on the Apple Neural Engine, faster than the CPU model.
+/// The speech encoder compiled for the Apple Neural Engine, faster than the CPU model.
 pub struct AcceleratedSpeechKind;
 
 impl VoiceModelKind for AcceleratedSpeechKind {

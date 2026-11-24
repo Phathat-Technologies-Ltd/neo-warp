@@ -32,7 +32,10 @@ const LSTM_HIDDEN: usize = 640;
 mod acceleration;
 
 use acceleration::Accelerator;
-pub use acceleration::{Acceleration, DEFAULT_INTRA_THREADS, EncoderDevice, FP16_ENCODER_FILE};
+pub use acceleration::{
+    Acceleration, COREML_ENCODER_DIR, DEFAULT_INTRA_THREADS, EncoderDevice, FP16_ENCODER_FILE,
+    has_accelerated_encoder,
+};
 
 pub(crate) fn engine_error(error: impl std::fmt::Display) -> TranscribeError {
     TranscribeError::Engine(error.to_string())
@@ -244,7 +247,10 @@ impl TdtModel {
         frames: usize,
     ) -> Result<(Vec<f32>, usize, usize), TranscribeError> {
         if let Some(encoded) = self.accelerator.encode(&features, frames)? {
-            self.encoder = None;
+            // Inputs too long for the input lengths loaded so far still need the CPU encoder.
+            if !self.accelerator.is_loading() {
+                self.encoder = None;
+            }
             return Ok(encoded);
         }
         self.run_cpu_encoder(features, frames)

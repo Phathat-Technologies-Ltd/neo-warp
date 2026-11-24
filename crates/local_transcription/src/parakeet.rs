@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::bias::{BiasConfig, BiasTerm, BoostingTree};
-use crate::tdt::{Acceleration, FP16_ENCODER_FILE, TdtModel};
+use crate::tdt::{Acceleration, TdtModel, has_accelerated_encoder};
 use crate::{Audio, ModelStore, TranscribeError, Transcriber};
 
 /// Asks, before each transcription, where the encoder should run.
@@ -24,12 +24,13 @@ pub struct ParakeetTranscriber {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LoadedWith {
     acceleration: Acceleration,
-    /// Whether the fp16 encoder Core ML runs was in the model directory.
-    fp16_encoder: bool,
+    /// Whether an encoder Core ML runs was in the model directory.
+    accelerated_encoder: bool,
 }
 
-/// Whether a model loaded with `loaded` must reload to run as `wanted`. The fp16 encoder only
-/// matters with [`Acceleration::Auto`]: a download finishing then moves the encoder to Core ML.
+/// Whether a model loaded with `loaded` must reload to run as `wanted`. The accelerated encoder
+/// only matters with [`Acceleration::Auto`]: a download finishing then moves the encoder to Core
+/// ML.
 fn needs_reload(loaded: LoadedWith, wanted: LoadedWith) -> bool {
     match wanted.acceleration {
         Acceleration::Auto => loaded != wanted,
@@ -75,7 +76,7 @@ impl ParakeetTranscriber {
         }
         let wanted = LoadedWith {
             acceleration: (self.acceleration)(),
-            fp16_encoder: self.store.model_dir().join(FP16_ENCODER_FILE).is_file(),
+            accelerated_encoder: has_accelerated_encoder(self.store.model_dir()),
         };
         if model
             .as_ref()

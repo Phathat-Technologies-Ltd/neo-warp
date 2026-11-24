@@ -10,7 +10,18 @@ license.workspace = true
 # the trait and the model store don't build ONNX Runtime.
 parakeet = ["dep:parakeet-rs", "dep:realfft"]
 # Lets Parakeet's encoder run on Core ML (Apple Neural Engine / GPU) on macOS.
-coreml = ["parakeet", "parakeet-rs/coreml"]
+coreml = [
+    "parakeet",
+    "parakeet-rs/coreml",
+    "dep:block2",
+    "dep:objc2",
+    "dep:objc2-core-ml",
+    "dep:objc2-foundation",
+    "objc2-foundation/NSDictionary",
+    "objc2-foundation/NSError",
+    "objc2-foundation/NSURL",
+    "objc2-foundation/NSValue",
+]
 # Runs Silero VAD v5 on the same ONNX Runtime.
 silero = ["dep:parakeet-rs"]
 # Speaks with Kokoro-82M v1.0 on the same ONNX Runtime.
@@ -42,13 +53,15 @@ reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tar = "0.4"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc.workspace = true
 block2 = { version = "0.6", optional = true }
 objc2 = { version = "0.6", optional = true }
+objc2-core-ml = { version = "0.3.2", default-features = false, features = ["std", "block2", "MLDictionaryFeatureProvider", "MLFeatureProvider", "MLFeatureValue", "MLModel", "MLModelConfiguration", "MLMultiArray"], optional = true }
 objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVAudioBuffer", "AVAudioFormat", "AVAudioTypes", "AVSpeechSynthesis"], optional = true }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDate", "NSObjCRuntime", "NSRunLoop", "NSString"], optional = true }
 

@@ -15,6 +15,9 @@ pub struct ModelFile {
     pub url: String,
     pub size: u64,
     pub sha256: String,
+    /// A tar archive that the store unpacks into the model directory once it verifies, keeping
+    /// only what it contains.
+    pub unpack: bool,
 }
 
 /// A downloadable model: the files an engine loads from one directory.
@@ -42,6 +45,7 @@ pub fn parakeet_tdt_0_6b_v3() -> ModelSpec {
         url: format!("{PARAKEET_REPO}/{name}"),
         size,
         sha256: sha256.to_owned(),
+        unpack: false,
     };
     ModelSpec {
         id: "parakeet-tdt-0.6b-v3-int8".to_owned(),
@@ -69,9 +73,12 @@ pub fn parakeet_tdt_0_6b_v3() -> ModelSpec {
 const PARAKEET_FP16_REPO: &str = "https://huggingface.co/phathat/parakeet-tdt-0.6b-v3-fp16-coreml/resolve/eb17ca2d5fbe1c5a865a10714bd6ee3a87c6672a";
 
 /// The fp16 conversion of Parakeet TDT 0.6B v3's encoder (CC BY 4.0) that Core ML runs on the
-/// Neural Engine, from istupakov's fp32 export by `scripts/export_parakeet_fp16.py`. It shares
-/// [`parakeet_tdt_0_6b_v3`]'s directory, where the engine looks for it, so removing that model
-/// removes it too, and removing this one would remove both.
+/// Neural Engine through ONNX Runtime, from istupakov's fp32 export by
+/// `scripts/export_parakeet_fp16.py`. Converting and compiling it on first load takes minutes, so
+/// [`parakeet_coreml_encoder`] replaced it as the download; the engine still runs it when it's
+/// there and the precompiled model isn't or fails. It shares [`parakeet_tdt_0_6b_v3`]'s
+/// directory, where the engine looks for it, so removing that model removes it too, and removing
+/// this one would remove both.
 pub fn parakeet_fp16_encoder() -> ModelSpec {
     ModelSpec {
         id: parakeet_tdt_0_6b_v3().id,
@@ -81,6 +88,26 @@ pub fn parakeet_fp16_encoder() -> ModelSpec {
             url: format!("{PARAKEET_FP16_REPO}/encoder-model.fp16.onnx"),
             size: 1_238_960_470,
             sha256: "6e2cf61d33b79a89b4322f08c7678e75b288bde4c4bb29cbbd76aea3e2b4eaa7".to_owned(),
+            unpack: false,
+        }],
+    }
+}
+
+const PARAKEET_COREML_REPO: &str = "https://huggingface.co/phathat/parakeet-tdt-0.6b-v3-fp16-coreml/resolve/b55cc324fb7e63390b27b893fc7374196893c127";
+
+/// Parakeet TDT 0.6B v3's encoder (CC BY 4.0) in fp16, compiled for Core ML by
+/// `scripts/export_parakeet_coreml.py` from NVIDIA's checkpoint, which the Neural Engine loads in
+/// seconds. Unpacks into [`parakeet_tdt_0_6b_v3`]'s directory, like [`parakeet_fp16_encoder`].
+pub fn parakeet_coreml_encoder() -> ModelSpec {
+    ModelSpec {
+        id: parakeet_tdt_0_6b_v3().id,
+        display_name: "Parakeet Neural Engine encoder".to_owned(),
+        files: vec![ModelFile {
+            name: "encoder-model.fp16.mlmodelc.tar".to_owned(),
+            url: format!("{PARAKEET_COREML_REPO}/encoder-model.fp16.mlmodelc.tar"),
+            size: 1_231_820_800,
+            sha256: "1e6395f78771a6b779c20921d790a6afddd1bec37dbb2173f2c303799c92859d".to_owned(),
+            unpack: true,
         }],
     }
 }
@@ -96,6 +123,7 @@ pub fn silero_vad_v5() -> ModelSpec {
                 .to_owned(),
             size: 2_327_524,
             sha256: "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f".to_owned(),
+            unpack: false,
         }],
     }
 }
@@ -112,6 +140,7 @@ pub fn smart_turn_v3_2() -> ModelSpec {
                 .to_owned(),
             size: 8_679_182,
             sha256: "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f".to_owned(),
+            unpack: false,
         }],
     }
 }
@@ -130,6 +159,7 @@ pub fn campplus_zh_en_advanced() -> ModelSpec {
                 .to_owned(),
             size: 28_281_165,
             sha256: "53cab20ba8f2eb2f6e2d89ecc18e88ef3222169b61b4419cbc13666744a4574b".to_owned(),
+            unpack: false,
         }],
     }
 }
@@ -145,6 +175,7 @@ fn cmudict_file() -> ModelFile {
         ),
         size: 3_618_488,
         sha256: "81917843c7f44ce2b094ac63873c2c7a4cf802040792c455ba3ca406891c3d22".to_owned(),
+        unpack: false,
     }
 }
 
@@ -157,6 +188,7 @@ pub fn kokoro_82m_v1_int8() -> ModelSpec {
         url: format!("{KOKORO_REPO}/{path}"),
         size,
         sha256: sha256.to_owned(),
+        unpack: false,
     };
     let voice = |id: &str, sha256: &str| {
         file(
@@ -213,6 +245,7 @@ pub fn tiny_voca() -> ModelSpec {
         url: format!("{TINY_VOCA_REPO}/{path}"),
         size,
         sha256: sha256.to_owned(),
+        unpack: false,
     };
     ModelSpec {
         id: "tiny-voca-5fe0664".to_owned(),
@@ -245,6 +278,7 @@ pub fn pocket_tts_int8() -> ModelSpec {
         url: format!("{POCKET_REPO}/{name}"),
         size,
         sha256: sha256.to_owned(),
+        unpack: false,
     };
     ModelSpec {
         id: "pocket-tts-100m-int8-68ab044".to_owned(),
@@ -369,8 +403,9 @@ pub enum DownloadError {
 }
 
 /// Keeps one model's files in `<root>/<spec id>`. A download writes `<file>.part`, resumes it
-/// with an HTTP range request, verifies the SHA-256, then renames it; a marker file records that
-/// every file verified so later launches don't rehash hundreds of megabytes.
+/// with an HTTP range request, verifies the SHA-256, then renames it (or unpacks it, recording its
+/// SHA-256 in `<file>.unpacked`); a marker file records that every file verified so later launches
+/// don't rehash hundreds of megabytes.
 #[derive(Debug, Clone)]
 pub struct ModelStore {
     dir: PathBuf,
@@ -396,10 +431,18 @@ impl ModelStore {
         &self.dir
     }
 
-    pub fn status(&self) -> ModelStatus {
-        let all_present = self.spec.files.iter().all(|file| {
+    /// Whether `file` is in place: downloaded, or unpacked if it's an archive.
+    fn has_file(&self, file: &ModelFile) -> bool {
+        if file.unpack {
+            std::fs::read_to_string(self.unpacked_marker(file))
+                .is_ok_and(|sha256| sha256 == file.sha256)
+        } else {
             std::fs::metadata(self.dir.join(&file.name)).is_ok_and(|meta| meta.len() == file.size)
-        });
+        }
+    }
+
+    pub fn status(&self) -> ModelStatus {
+        let all_present = self.spec.files.iter().all(|file| self.has_file(file));
         if all_present && self.dir.join(VERIFIED_MARKER).is_file() {
             return ModelStatus::Installed;
         }
@@ -408,6 +451,9 @@ impl ModelStore {
             .files
             .iter()
             .map(|file| {
+                if self.has_file(file) {
+                    return file.size;
+                }
                 let len = |path: PathBuf| std::fs::metadata(path).map_or(0, |meta| meta.len());
                 len(self.dir.join(&file.name)).max(len(self.part_path(file)))
             })
@@ -443,18 +489,23 @@ impl ModelStore {
         let total = self.spec.total_size();
         let mut done_before = 0;
         for file in &self.spec.files {
-            let final_path = self.dir.join(&file.name);
-            let have_final = tokio::fs::metadata(&final_path)
-                .await
-                .is_ok_and(|meta| meta.len() == file.size);
-            if !have_final {
-                self.download_file(client, file, cancel, |file_downloaded| {
-                    on_progress(DownloadProgress {
-                        downloaded: done_before + file_downloaded,
-                        total,
+            if !self.has_file(file) {
+                // A verified archive whose unpacking was interrupted only needs unpacking.
+                let downloaded = tokio::fs::metadata(self.dir.join(&file.name))
+                    .await
+                    .is_ok_and(|meta| meta.len() == file.size);
+                if !downloaded {
+                    self.download_file(client, file, cancel, |file_downloaded| {
+                        on_progress(DownloadProgress {
+                            downloaded: done_before + file_downloaded,
+                            total,
+                        })
                     })
-                })
-                .await?;
+                    .await?;
+                }
+                if file.unpack {
+                    self.unpack(file).await?;
+                }
             }
             done_before += file.size;
             on_progress(DownloadProgress {
@@ -468,6 +519,24 @@ impl ModelStore {
 
     fn part_path(&self, file: &ModelFile) -> PathBuf {
         self.dir.join(format!("{}.part", file.name))
+    }
+
+    fn unpacked_marker(&self, file: &ModelFile) -> PathBuf {
+        self.dir.join(format!("{}.unpacked", file.name))
+    }
+
+    /// Unpacks the verified archive `file` into the model directory, replacing whatever the
+    /// archive holds, then deletes it.
+    async fn unpack(&self, file: &ModelFile) -> Result<(), DownloadError> {
+        let archive = self.dir.join(&file.name);
+        let staging = self.dir.join(format!("{}.unpacking", file.name));
+        let dir = self.dir.clone();
+        tokio::task::spawn_blocking(move || unpack_archive(&archive, &staging, &dir))
+            .await
+            .map_err(io::Error::other)??;
+        tokio::fs::write(self.unpacked_marker(file), &file.sha256).await?;
+        tokio::fs::remove_file(self.dir.join(&file.name)).await?;
+        Ok(())
     }
 
     async fn download_file(
@@ -639,6 +708,37 @@ impl ModelBundle {
             });
         }
         Ok(())
+    }
+}
+
+/// Unpacks the tar `archive` into `staging`, then moves its top-level entries into `dir`, so `dir`
+/// never holds a partly unpacked entry.
+fn unpack_archive(archive: &Path, staging: &Path, dir: &Path) -> io::Result<()> {
+    remove_path(staging)?;
+    std::fs::create_dir_all(staging)?;
+    let mut tar = tar::Archive::new(io::BufReader::new(std::fs::File::open(archive)?));
+    // The published archive zeroes its mtimes; stamping files with the unpack time keeps a replaced
+    // model from looking unchanged to caches keyed on modification time.
+    tar.set_preserve_mtime(false);
+    tar.unpack(staging)?;
+    for entry in std::fs::read_dir(staging)? {
+        let entry = entry?;
+        let target = dir.join(entry.file_name());
+        remove_path(&target)?;
+        std::fs::rename(entry.path(), target)?;
+    }
+    std::fs::remove_dir(staging)
+}
+
+fn remove_path(path: &Path) -> io::Result<()> {
+    let result = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) => Err(error),
+    };
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
     }
 }
 
