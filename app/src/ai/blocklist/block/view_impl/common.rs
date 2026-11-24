@@ -3109,10 +3109,15 @@ pub fn render_failed_output(props: FailedOutputProps, app: &AppContext) -> Box<d
                 app,
             );
         }
-        FailedOutputPresentation::InvalidApiKey { title, detail } => {
+        FailedOutputPresentation::InvalidApiKey {
+            title,
+            detail,
+            button_label,
+        } => {
             return render_invalid_api_key_error(
                 title,
                 &detail,
+                button_label,
                 props.invalid_api_key_button_handle,
                 app,
             );
@@ -3335,6 +3340,7 @@ fn render_out_of_credits_error(
 fn render_invalid_api_key_error(
     title: &str,
     detail: &str,
+    button_label: &str,
     state_handle: &MouseStateHandle,
     app: &AppContext,
 ) -> Box<dyn Element> {
@@ -3381,7 +3387,7 @@ fn render_invalid_api_key_error(
             background: Some(internal_colors::fg_overlay_3(theme).into()),
             ..Default::default()
         })
-        .with_text_label("Edit API Keys".to_string())
+        .with_text_label(button_label.to_string())
         .with_cursor(Some(Cursor::PointingHand))
         .build()
         .on_click(move |ctx, _, _| {

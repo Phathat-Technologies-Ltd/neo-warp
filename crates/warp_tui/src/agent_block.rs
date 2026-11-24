@@ -252,7 +252,7 @@ fn render_failure_section(
             (message.clone(), body_style),
         ])
         .finish(),
-        FailedOutputPresentation::InvalidApiKey { title, detail } => TuiText::from_spans([
+        FailedOutputPresentation::InvalidApiKey { title, detail, .. } => TuiText::from_spans([
             (FAILURE_WARNING_PREFIX.to_owned(), error_style),
             (
                 (*title).to_owned(),
@@ -363,7 +363,7 @@ fn failure_text(presentation: &FailedOutputPresentation, app: &AppContext) -> St
                  {OUT_OF_CREDITS_ACTION_LABEL} {OUT_OF_CREDITS_ACTION_HINT}\n\n  {upgrade_url}"
             )
         }
-        FailedOutputPresentation::InvalidApiKey { title, detail } => {
+        FailedOutputPresentation::InvalidApiKey { title, detail, .. } => {
             format!("{title}\n{detail}")
         }
         FailedOutputPresentation::ChatGPTSubscription {

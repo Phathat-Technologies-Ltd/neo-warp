@@ -680,6 +680,13 @@ pub(crate) fn classify_renderable_error(
                 PlatformErrorCode::AuthenticationRequired,
             )),
         ),
+        RenderableAIError::NoModelCredential => (
+            AgentTaskState::Failed,
+            Some(TaskStatusUpdate::with_error_code(
+                error.to_string(),
+                PlatformErrorCode::AuthenticationRequired,
+            )),
+        ),
         RenderableAIError::TransientNetworkError { .. } => (
             AgentTaskState::Error,
             Some(TaskStatusUpdate::with_error_code(
