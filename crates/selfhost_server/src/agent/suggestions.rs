@@ -119,7 +119,7 @@ fn trigger_context(request: &api::Request) -> Option<String> {
     }
 }
 
-fn shell_command_context(command: &str, exit_code: i32, output: &str) -> String {
+pub(super) fn shell_command_context(command: &str, exit_code: i32, output: &str) -> String {
     format!(
         "The user ran this shell command:\n{command}\n\nExit code: {exit_code}\n\nOutput (tail):\n{}",
         tail(output, OUTPUT_TAIL_CHARS)

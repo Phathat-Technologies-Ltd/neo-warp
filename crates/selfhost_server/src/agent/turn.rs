@@ -38,7 +38,7 @@ use warp_multi_agent_api::request::settings::custom_model_providers::CustomEndpo
 use super::mcp::McpTools;
 use super::monitor::{self, CliSubtask};
 use super::responses::{self, ResponsesProvider};
-use super::{helpers, prompt, tools};
+use super::{helpers, prompt, suggestions, tools};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com";
 const OAUTH_TOKEN_PREFIX: &str = "sk-ant-oat";
@@ -361,7 +361,9 @@ impl Stream {
             .input
             .as_ref()
             .ok_or_else(|| internal("the request has no input"))?;
-        self.apply_input(input, tasks, &mut messages)?;
+        if !self.apply_input(input, tasks, &mut messages)? {
+            return Ok(());
+        }
 
         let settings = request.settings.as_ref();
         let (endpoint, model) = resolve_model(settings)?;
@@ -454,13 +456,13 @@ impl Stream {
     /// Adds the request's input to the model conversation and echoes it into the task history,
     /// which the client doesn't record itself. Opens a CLI subagent when the input shows a command
     /// still running, and closes the open one once its command finishes or the user addresses the
-    /// main agent.
+    /// main agent. Returns `false` when the input leaves the model nothing to do.
     fn apply_input(
         &mut self,
         input: &api::request::Input,
         tasks: &[api::Task],
         messages: &mut Vec<Message>,
-    ) -> Result<(), TurnError> {
+    ) -> Result<bool, TurnError> {
         use api::request::input::Type;
         use api::request::input::user_inputs::user_input::Input as UserInput;
         let mut tool_responses = Message::user();
@@ -473,6 +475,10 @@ impl Stream {
         let mut running: Option<(String, String)> = None;
         let mut resumed = false;
         let mut finished = HashSet::new();
+        let mut has_new_query = false;
+        let mut suggestion_echoes = Vec::new();
+        let mut unsupported = Vec::new();
+        let mut woken = false;
         #[allow(deprecated)]
         let executed = input
             .context
@@ -590,10 +596,61 @@ impl Stream {
                                 }),
                             ));
                         }
-                        other => {
-                            log::debug!("Ignoring unsupported user input: {other:?}");
+                        Some(UserInput::PassiveSuggestionResult(accepted)) => {
+                            let Some(text) = accepted.result.as_ref().and_then(suggestion_text)
+                            else {
+                                log::warn!(
+                                    "Ignoring a passive suggestion result without a suggestion"
+                                );
+                                continue;
+                            };
+                            addresses_main_agent = true;
+                            has_new_query = true;
+                            texts.push(text);
+                            suggestion_echoes.push(Kind::PassiveSuggestionResult(
+                                api::message::PassiveSuggestionResult {
+                                    result: accepted.result.clone(),
+                                    context: input.context.clone(),
+                                },
+                            ));
                         }
+                        // A contentless marker that precedes the handed-off inputs.
+                        Some(UserInput::ConversationHandoff(_)) => {}
+                        // This server never leaves agent messages undelivered, so a wake has
+                        // nothing to inject.
+                        Some(UserInput::AgentWake(_)) => woken = true,
+                        Some(
+                            UserInput::MessagesReceivedFromAgents(_)
+                            | UserInput::EventsFromAgents(_),
+                        ) => {
+                            unsupported.push(user_input_name(user_input));
+                            log::warn!(
+                                "Ignoring {}: this server doesn't run orchestrated agents",
+                                user_input_name(user_input)
+                            );
+                        }
+                        Some(UserInput::OrchestrationConfigUpdate(_)) => {
+                            unsupported.push(user_input_name(user_input));
+                            log::warn!(
+                                "Ignoring an orchestration config update: this server doesn't \
+                                 support plan orchestration"
+                            );
+                        }
+                        None => log::warn!("Ignoring a user input that carries no input"),
                     }
+                }
+                if texts.is_empty()
+                    && tool_responses.content.is_empty()
+                    && running.is_none()
+                    && !unsupported.is_empty()
+                {
+                    return Err(internal(format!(
+                        "this server doesn't support {} inputs yet",
+                        unsupported.join(", ")
+                    )));
+                }
+                if texts.is_empty() && tool_responses.content.is_empty() && woken {
+                    return Ok(false);
                 }
             }
             Some(Type::ResumeConversation(_)) => {
@@ -615,7 +672,7 @@ impl Stream {
         }
         // A take over cancels the agent's pending poll without reporting it, so a resume after
         // one answers it too.
-        if !queries.is_empty() || resumed {
+        if !queries.is_empty() || has_new_query || resumed {
             answer_open_tool_calls(messages, &answered, tasks, &mut result_echoes, self);
         }
         self.add_messages_in_order(result_echoes);
@@ -644,6 +701,11 @@ impl Stream {
                     ..Default::default()
                 }))
             })
+            .chain(
+                suggestion_echoes
+                    .into_iter()
+                    .map(|kind| self.new_message(kind)),
+            )
             .collect();
         if !echoes.is_empty() {
             self.actions(vec![self.add_messages(echoes)]);
@@ -654,7 +716,7 @@ impl Stream {
         if !texts.is_empty() {
             messages.push(Message::user().with_text(texts.join("\n\n")));
         }
-        Ok(())
+        Ok(true)
     }
 
     async fn run_agent(
@@ -783,6 +845,11 @@ fn restore_conversation(task: &api::Task) -> Vec<Message> {
         .iter()
         .filter_map(|message| match &message.message {
             Some(Kind::UserQuery(query)) => Some(Message::user().with_text(query.query.clone())),
+            Some(Kind::PassiveSuggestionResult(accepted)) => accepted
+                .result
+                .as_ref()
+                .and_then(suggestion_text)
+                .map(|text| Message::user().with_text(text)),
             Some(Kind::AgentOutput(output)) if !output.text.is_empty() => {
                 Some(Message::assistant().with_text(output.text.clone()))
             }
@@ -923,6 +990,50 @@ fn is_root(task: &api::Task) -> bool {
     task.dependencies
         .as_ref()
         .is_none_or(|dependencies| dependencies.parent_task_id.is_empty())
+}
+
+/// What the model reads for an accepted or resolved passive suggestion: an accepted prompt runs
+/// like a typed query, with the shell command it was suggested for.
+fn suggestion_text(result: &api::PassiveSuggestionResultType) -> Option<String> {
+    use api::passive_suggestion_result_type::{Suggestion, Trigger};
+    let trigger = match &result.trigger {
+        Some(Trigger::ExecutedShellCommand(command)) => Some(suggestions::shell_command_context(
+            &command.command,
+            command.exit_code,
+            &command.output,
+        )),
+        Some(Trigger::AgentResponseCompleted(_)) | None => None,
+    };
+    let text = match result.suggestion.as_ref()? {
+        Suggestion::Prompt(prompt) if !prompt.prompt.trim().is_empty() => prompt.prompt.clone(),
+        Suggestion::Prompt(_) => return None,
+        Suggestion::CodeDiff(diff) => {
+            let verdict = if diff.accepted {
+                "accepted"
+            } else {
+                "rejected"
+            };
+            match diff.summary.trim() {
+                "" => format!("The user {verdict} the suggested code change."),
+                summary => format!("The user {verdict} the suggested code change: {summary}"),
+            }
+        }
+    };
+    Some(match trigger {
+        Some(trigger) => format!("{trigger}\n\n{text}"),
+        None => text,
+    })
+}
+
+fn user_input_name(input: &api::request::input::user_inputs::UserInput) -> String {
+    match &input.input {
+        Some(other) => format!("{other:?}")
+            .split('(')
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
+        None => "empty".to_owned(),
+    }
 }
 
 fn input_type_name(input: Option<&api::request::input::Type>) -> String {

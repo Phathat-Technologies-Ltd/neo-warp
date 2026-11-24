@@ -1583,3 +1583,117 @@ async fn a_follow_up_sent_immediately_reaches_the_monitoring_agent() {
         vec!["It has found a.log so far."]
     );
 }
+
+const SUGGESTED_PROMPT: &str = "My ssh to dev-host is failing because the AWS SSO token expired. \
+Run `aws sso login` for the right profile and then retry the ssh connection.";
+
+/// The request the client sends when the user accepts a prompt chip offered after a failed
+/// command: a `PassiveSuggestionResult` input rather than a `UserQuery`.
+fn accepted_prompt_suggestion() -> api::request::input::Type {
+    use api::passive_suggestion_result_type::{Prompt, Suggestion, Trigger};
+    use api::request::input::user_inputs::{PassiveSuggestionResultInput, UserInput, user_input};
+    api::request::input::Type::UserInputs(api::request::input::UserInputs {
+        inputs: vec![UserInput {
+            input: Some(user_input::Input::PassiveSuggestionResult(
+                PassiveSuggestionResultInput {
+                    result: Some(api::PassiveSuggestionResultType {
+                        trigger: Some(Trigger::ExecutedShellCommand(api::ExecutedShellCommand {
+                            command: "ssh dev-host".to_owned(),
+                            output: "Error when retrieving token from sso: Token has expired"
+                                .to_owned(),
+                            exit_code: 255,
+                            command_id: "block-1".to_owned(),
+                            ..Default::default()
+                        })),
+                        suggestion: Some(Suggestion::Prompt(Prompt {
+                            prompt: SUGGESTED_PROMPT.to_owned(),
+                        })),
+                    }),
+                },
+            )),
+        }],
+    })
+}
+
+#[tokio::test]
+async fn an_accepted_prompt_suggestion_runs_like_a_typed_query_with_its_command() {
+    let provider = ScriptedProvider::new(vec![vec![tool_request(
+        "call-1",
+        "run_shell_command",
+        json!({"command": "aws sso login --profile dev"}),
+    )]]);
+    let events = run_turn(
+        request(accepted_prompt_suggestion(), Vec::new()),
+        provider.clone(),
+    )
+    .await;
+
+    let added = added_messages(&events);
+    assert!(matches!(
+        &added[0].message,
+        Some(Kind::PassiveSuggestionResult(echo))
+            if matches!(
+                echo.result.as_ref().and_then(|result| result.suggestion.as_ref()),
+                Some(api::passive_suggestion_result_type::Suggestion::Prompt(prompt))
+                    if prompt.prompt == SUGGESTED_PROMPT
+            )
+    ));
+    assert!(
+        tool_calls(&added).iter().any(|tool| matches!(
+            tool,
+            api::message::tool_call::Tool::RunShellCommand(run)
+                if run.command == "aws sso login --profile dev"
+        )),
+        "the agent's tool call reaches the client"
+    );
+    assert!(matches!(
+        finish_reason(&events),
+        api::response_event::stream_finished::Reason::Done(_)
+    ));
+
+    let calls = provider.calls.lock().unwrap();
+    let query = calls[0].1.last().expect("the model sees the suggestion");
+    let text = query.as_concat_text();
+    assert!(text.contains(SUGGESTED_PROMPT));
+    assert!(text.contains("ssh dev-host"));
+    assert!(text.contains("Token has expired"));
+    assert!(text.contains("Exit code: 255"));
+}
+
+#[tokio::test]
+async fn inputs_the_server_cannot_act_on_end_the_turn_with_an_error() {
+    use api::request::input::user_inputs::{UserInput, user_input};
+    let provider = ScriptedProvider::new(Vec::new());
+    let input = api::request::input::Type::UserInputs(api::request::input::UserInputs {
+        inputs: vec![UserInput {
+            input: Some(user_input::Input::OrchestrationConfigUpdate(
+                Default::default(),
+            )),
+        }],
+    });
+    let events = run_turn(request(input, Vec::new()), provider.clone()).await;
+
+    assert!(matches!(
+        finish_reason(&events),
+        api::response_event::stream_finished::Reason::InternalError(_)
+    ));
+    assert!(provider.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_agent_wake_with_nothing_to_deliver_ends_without_a_model_call() {
+    use api::request::input::user_inputs::{UserInput, user_input};
+    let provider = ScriptedProvider::new(Vec::new());
+    let input = api::request::input::Type::UserInputs(api::request::input::UserInputs {
+        inputs: vec![UserInput {
+            input: Some(user_input::Input::AgentWake(Default::default())),
+        }],
+    });
+    let events = run_turn(request(input, Vec::new()), provider.clone()).await;
+
+    assert!(matches!(
+        finish_reason(&events),
+        api::response_event::stream_finished::Reason::Done(_)
+    ));
+    assert!(provider.calls.lock().unwrap().is_empty());
+}
