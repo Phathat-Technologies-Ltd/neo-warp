@@ -82,7 +82,7 @@ fn recording_short_title_dedupes_pane_title_and_directory() {
         "cargo test · ~/dev/warp"
     );
     assert_eq!(short_title("/Users/amit", home), "~");
-    assert_eq!(short_title("/Users/amitpaz/x", home), "/Users/amitpaz/x");
+    assert_eq!(short_title("/Users/someone/x", home), "/Users/someone/x");
     assert_eq!(short_title("vim: vim", None), "vim");
     assert_eq!(short_title("  ", None), "");
 }
