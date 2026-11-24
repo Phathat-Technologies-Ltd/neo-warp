@@ -93,6 +93,8 @@ pub struct HandsFreeSession {
     bias_terms: Vec<BiasTerm>,
     /// Bias terms the socket writer has yet to send.
     pending_bias_terms: PendingBiasTerms,
+    /// The bias terms' text, which filler removal in the socket reader keeps.
+    protected_terms: ProtectedTerms,
     /// The microphone's smoothed input level, fed by the capture thread.
     mic_level: MicLevel,
 }
@@ -100,6 +102,9 @@ pub struct HandsFreeSession {
 /// Bias terms handed from the session to its socket writer, which sends them before the next
 /// audio chunk.
 pub type PendingBiasTerms = Arc<Mutex<Option<Vec<BiasTerm>>>>;
+
+/// Terms shared with the socket reader, which never removes them from transcripts.
+type ProtectedTerms = Arc<Mutex<Vec<String>>>;
 
 /// How long "Not you — ignored" shows.
 const REJECTION_NOTICE: Duration = Duration::from_secs(3);
@@ -129,6 +134,9 @@ impl HandsFreeSession {
             return;
         }
         self.bias_terms = terms.clone();
+        if let Ok(mut protected) = self.protected_terms.lock() {
+            *protected = terms.iter().map(|term| term.text.clone()).collect();
+        }
         if let Ok(mut pending) = self.pending_bias_terms.lock() {
             *pending = Some(terms);
         }
@@ -622,6 +630,10 @@ impl HandsFreeSession {
         let (update_tx, update_rx) = mpsc::unbounded();
         let failure_tx = update_tx.clone();
         let settings = AISettings::as_ref(ctx);
+        super::disfluency::set_enabled(*settings.voice_remove_fillers);
+        if *settings.voice_remove_fillers {
+            super::disfluency::preload();
+        }
         let mut denoise = DenoiseStage::new(*settings.voice_denoise);
         let sensitivity = Sensitivity::from_setting(&settings.voice_speaker_id_sensitivity);
         let profile = SpeakerProfile::as_ref(ctx);
@@ -678,6 +690,7 @@ impl HandsFreeSession {
                 audio_rx,
                 self.audio_paused.clone(),
                 self.pending_bias_terms.clone(),
+                self.protected_terms.clone(),
                 update_tx,
             ),
             |_, _, _| {},
@@ -735,6 +748,7 @@ async fn run_socket(
     audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
     audio_paused: Arc<AtomicBool>,
     bias_terms: PendingBiasTerms,
+    protected_terms: ProtectedTerms,
     update_tx: mpsc::UnboundedSender<SocketUpdate>,
 ) {
     let socket = match server_api.open_transcribe_stream().await {
@@ -750,6 +764,7 @@ async fn run_socket(
         audio_rx,
         audio_paused,
         bias_terms,
+        protected_terms,
         update_tx,
     )
     .await;
@@ -778,6 +793,7 @@ async fn stream_session(
     mut audio_rx: mpsc::UnboundedReceiver<LiveChunk>,
     audio_paused: Arc<AtomicBool>,
     bias_terms: PendingBiasTerms,
+    protected_terms: ProtectedTerms,
     update_tx: mpsc::UnboundedSender<SocketUpdate>,
 ) {
     let (mut sink, mut stream) = socket.split().await;
@@ -804,6 +820,7 @@ async fn stream_session(
             match serde_json::from_str::<ServerMessage>(text) {
                 Ok(message) => {
                     log_server_message(&message);
+                    let message = remove_disfluencies(message, &protected_terms);
                     let _ = reader_tx.unbounded_send(SocketUpdate::Message(message));
                 }
                 Err(error) => log::warn!("Unexpected hands-free server message: {error}"),
@@ -874,6 +891,30 @@ async fn stream_session(
         }
     };
     let _ = update_tx.unbounded_send(SocketUpdate::Closed(error));
+}
+
+/// Removes filler words from a transcript message: partials with the cheap rule pass, finals with
+/// the model too. Runs on the socket reader, off the UI thread.
+fn remove_disfluencies(message: ServerMessage, protected_terms: &ProtectedTerms) -> ServerMessage {
+    let terms = || {
+        protected_terms
+            .lock()
+            .map(|terms| terms.clone())
+            .unwrap_or_default()
+    };
+    match message {
+        ServerMessage::Partial { utterance, text } => ServerMessage::Partial {
+            utterance,
+            text: super::disfluency::clean_partial(&text, &terms()),
+        },
+        ServerMessage::Final { utterance, text } => ServerMessage::Final {
+            utterance,
+            text: super::disfluency::clean_final(&text, &terms()),
+        },
+        other @ (ServerMessage::SpeechStart
+        | ServerMessage::SpeechEnd
+        | ServerMessage::Error { .. }) => other,
+    }
 }
 
 fn log_server_message(message: &ServerMessage) {

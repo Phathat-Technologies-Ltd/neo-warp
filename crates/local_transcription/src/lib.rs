@@ -12,7 +12,11 @@ pub mod bias;
 pub mod context_correction;
 #[cfg(feature = "denoise")]
 pub mod denoise;
+pub mod disfluency;
+#[cfg(feature = "disfluency")]
+mod disfluency_onnx;
 pub mod fbank;
+pub mod filler;
 mod model;
 #[cfg(any(
     feature = "parakeet",
@@ -21,7 +25,8 @@ mod model;
     feature = "tiny_voca",
     feature = "pocket",
     feature = "speaker_id",
-    feature = "smart_turn"
+    feature = "smart_turn",
+    feature = "disfluency"
 ))]
 mod ort_env;
 #[cfg(feature = "parakeet")]
@@ -45,13 +50,15 @@ mod voice_command;
 pub mod whisper_mel;
 
 pub use audio::{Audio, decode_wav};
+#[cfg(feature = "disfluency")]
+pub use disfluency_onnx::DisfluencyTagger;
 pub use model::{
     DownloadError, DownloadProgress, ModelBundle, ModelFile, ModelSpec, ModelStatus, ModelStore,
     ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8, parakeet_fp16_encoder,
     parakeet_tdt_0_6b_v3, pocket_tts_int8, silero_vad_v5, smart_turn_v3_2, tiny_voca,
 };
 #[cfg(feature = "parakeet")]
-pub use parakeet::{AccelerationSource, ParakeetTranscriber};
+pub use parakeet::{AccelerationSource, FillerSource, ParakeetTranscriber};
 #[cfg(feature = "silero")]
 pub use silero::SileroVad;
 #[cfg(feature = "smart_turn")]

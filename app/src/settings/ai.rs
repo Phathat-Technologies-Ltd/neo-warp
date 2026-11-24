@@ -1486,6 +1486,16 @@ define_settings_group!(AISettings, settings: [
         toml_path: "agents.voice.context_correction",
         description: "Whether voice transcripts are corrected towards file names, branches, and commands visible in the pane.",
     },
+    voice_remove_fillers: VoiceRemoveFillers {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        surface: settings::SettingSurfaces::GUI,
+        private: false,
+        toml_path: "agents.voice.remove_filler_words",
+        description: "Whether filler words (\"uh\", \"um\"), repeated words, and restarted phrases are removed from voice transcripts. Only whole spoken words are removed; commands, paths, and flags are kept.",
+    },
     voice_context_biasing: VoiceContextBiasing {
         type: bool,
         default: true,

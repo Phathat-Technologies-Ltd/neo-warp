@@ -16,6 +16,7 @@ use crate::TranscribeError;
 use crate::bias::{
     BiasMatch, BiasState, BoostingTree, PieceVocab, detokenize, render_with_matches,
 };
+use crate::filler::{FillerFilter, FillerSuppression, capitalize_sentences};
 
 const SAMPLE_RATE: usize = 16_000;
 const N_FFT: usize = 512;
@@ -76,6 +77,7 @@ pub struct TdtModel {
     joint: Session,
     vocab: PieceVocab,
     blank: u32,
+    fillers: Option<FillerFilter>,
     mel_basis: Vec<f32>,
     window: Vec<f32>,
     fft: Arc<dyn RealToComplex<f32>>,
@@ -132,6 +134,7 @@ impl TdtModel {
             joint,
             vocab,
             blank,
+            fillers: None,
             mel_basis: mel_filterbank(),
             window: (0..WIN)
                 .map(|i| {
@@ -144,6 +147,14 @@ impl TdtModel {
 
     pub fn vocab(&self) -> &PieceVocab {
         &self.vocab
+    }
+
+    /// Suppresses filler words while decoding, or stops with `None`.
+    pub fn set_filler_suppression(&mut self, suppression: Option<FillerSuppression>) {
+        if self.fillers.as_ref().map(FillerFilter::suppression) == suppression {
+            return;
+        }
+        self.fillers = suppression.map(|suppression| FillerFilter::new(suppression, &self.vocab));
     }
 
     /// Transcribes 16 kHz mono `samples`, biased toward `tree` when given.
@@ -284,6 +295,10 @@ impl TdtModel {
         let mut emitted = 0;
         let mut frame = vec![0.0f32; dim];
         let mut logprobs = vec![0.0f32; vocab_size];
+        let fillers = self.fillers.clone();
+        let fillers = fillers.as_ref();
+        let mut word_start = 0;
+        let mut dropped_filler = false;
         while t < steps {
             for (d, value) in frame.iter_mut().enumerate() {
                 *value = encoded[d * steps + t];
@@ -306,13 +321,14 @@ impl TdtModel {
             let duration = argmax(duration_logits).unwrap_or(0);
             let best = argmax(token_logits).unwrap_or(blank as usize) as u32;
             let token = match tree {
-                None => best,
+                None => fillers.map_or(best, |fillers| fillers.choose(token_logits, best)),
                 Some(tree) => {
                     log_softmax(token_logits, &mut logprobs);
                     let best_logprob = logprobs[best as usize];
                     let scoring_state = bias_state.without_leave_penalty();
                     let fused = |token: u32| {
-                        let logprob = logprobs[token as usize];
+                        let logprob = logprobs[token as usize]
+                            - fillers.map_or(0.0, |fillers| fillers.penalty(token));
                         let bonus = if token == blank {
                             Some(0.0)
                         } else {
@@ -365,6 +381,17 @@ impl TdtModel {
                 tokens.push(token);
                 last = token as i32;
                 emitted += 1;
+                if let Some(fillers) = fillers
+                    && self.vocab.starts_word(token)
+                {
+                    let word = word_start..tokens.len() - 1;
+                    if fillers.drop_filler_word(&mut tokens, word, &mut matches, &self.vocab) {
+                        dropped_filler = true;
+                        // A partial term match may have counted the dropped tokens.
+                        bias_state = BiasState::default();
+                    }
+                    word_start = tokens.len() - 1;
+                }
             }
             if duration > 0 {
                 t += duration;
@@ -374,11 +401,21 @@ impl TdtModel {
                 emitted = 0;
             }
         }
+        if let Some(fillers) = fillers {
+            let word = word_start..tokens.len();
+            dropped_filler |=
+                fillers.drop_filler_word(&mut tokens, word, &mut matches, &self.vocab);
+        }
         let text = match tree {
             Some(tree) if !matches.is_empty() => {
                 render_with_matches(&tokens, &matches, tree, &self.vocab)
             }
             _ => detokenize(&tokens, &self.vocab),
+        };
+        let text = if dropped_filler {
+            capitalize_sentences(text.trim())
+        } else {
+            text
         };
         Ok(Decoded {
             text: text.trim().to_owned(),
