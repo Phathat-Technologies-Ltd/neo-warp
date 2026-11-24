@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# Wraps a signed neo-warp.app in a drag-to-Applications disk image, signs it, and (with a notary
+# profile) notarizes and staples it, using only tools that ship with macOS.
+#
+# Usage:
+#   script/neo-warp/make-dmg <path/to/neo-warp.app> <output.dmg>
+#
+# Environment:
+#   NEO_WARP_SIGNING_IDENTITY  Developer ID Application identity used to sign the image.
+#   NEO_WARP_NOTARY_PROFILE    notarytool keychain profile; without it the image is signed only.
+
+set -euo pipefail
+
+if [ $# -ne 2 ]; then
+  echo "Usage: $0 <path/to/neo-warp.app> <output.dmg>" >&2
+  exit 1
+fi
+app="$1"
+dmg="$2"
+identity="${NEO_WARP_SIGNING_IDENTITY:?set NEO_WARP_SIGNING_IDENTITY to a Developer ID Application identity}"
+
+codesign --verify --deep --strict "$app"
+
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+ditto "$app" "$staging/$(basename "$app")"
+ln -s /Applications "$staging/Applications"
+
+rm -f "$dmg"
+hdiutil create -volname "neo-warp" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "$dmg"
+codesign --force --timestamp --sign "$identity" "$dmg"
+
+if [ -n "${NEO_WARP_NOTARY_PROFILE:-}" ]; then
+  echo "Submitting $dmg to Apple's notary service (this takes a few minutes)"
+  xcrun notarytool submit "$dmg" --keychain-profile "$NEO_WARP_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$dmg"
+  xcrun stapler validate "$dmg"
+fi
+spctl -a -t open --context context:primary-signature -vv "$dmg"
+echo "Created $dmg"
