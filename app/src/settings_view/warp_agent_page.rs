@@ -115,7 +115,8 @@ use crate::settings::{
     ShouldShowOzUpdatesInZeroState, ShowAgentTips, ShowConversationHistory, ShowHintText,
     SystemEchoCancellation, ThinkingDisplayMode, VOICE_INPUT_LANGUAGES, VoiceContextBiasing,
     VoiceContextCorrection, VoiceDenoise, VoiceInputEnabled, VoiceInputLanguage,
-    VoiceInputToggleKey, VoiceSmartEndOfTurn, VoiceSpeakerIdEnabled, WarpCloudModelsEnabled,
+    VoiceInputToggleKey, VoiceRemoveFillers, VoiceSmartEndOfTurn, VoiceSpeakerIdEnabled,
+    WarpCloudModelsEnabled,
 };
 use crate::terminal::input::models::query_model_picker_choices;
 use crate::ui_components::blended_colors;
@@ -526,6 +527,16 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 )),
                 &(context.clone() & id!(flags::IS_VOICE_INPUT_ENABLED)),
                 flags::VOICE_CONTEXT_BIASING_FLAG,
+            )
+            .with_group(bindings::BindingGroup::WarpAi)
+            .with_enabled(|| cfg!(feature = "voice_input")),
+            ToggleSettingActionPair::new(
+                "filler word removal",
+                builder(SettingsAction::WarpAgent(
+                    WarpAgentPageAction::ToggleVoiceRemoveFillers,
+                )),
+                &(context.clone() & id!(flags::IS_VOICE_INPUT_ENABLED)),
+                flags::REMOVE_FILLER_WORDS_FLAG,
             )
             .with_group(bindings::BindingGroup::WarpAi)
             .with_enabled(|| cfg!(feature = "voice_input")),
@@ -3002,6 +3013,7 @@ pub enum WarpAgentPageAction {
     /// Sets where on-device transcription runs, by its setting value.
     SetTranscriptionAcceleration(&'static str),
     ToggleVoiceSmartEndOfTurn,
+    ToggleVoiceRemoveFillers,
     ToggleSystemEchoCancellation,
     /// Clears a blocked or failed system echo cancellation verdict and tries the pipeline again.
     RetrySystemEchoCancellation,
@@ -3483,6 +3495,14 @@ impl TypedActionView for WarpAgentPageView {
                 ctx.notify();
             }
             #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+            WarpAgentPageAction::ToggleVoiceRemoveFillers => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.voice_remove_fillers.toggle_and_save_value(ctx));
+                    crate::voice::disfluency::set_enabled(*settings.voice_remove_fillers);
+                });
+                ctx.notify();
+            }
+            #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
             WarpAgentPageAction::ToggleVoiceSmartEndOfTurn => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.voice_smart_end_of_turn.toggle_and_save_value(ctx));
@@ -3597,6 +3617,7 @@ impl TypedActionView for WarpAgentPageView {
             WarpAgentPageAction::ToggleVoiceDenoise
             | WarpAgentPageAction::SetTranscriptionAcceleration(_)
             | WarpAgentPageAction::ToggleVoiceSmartEndOfTurn
+            | WarpAgentPageAction::ToggleVoiceRemoveFillers
             | WarpAgentPageAction::ToggleSystemEchoCancellation
             | WarpAgentPageAction::RetrySystemEchoCancellation
             | WarpAgentPageAction::ChooseMicrophoneMode
@@ -5128,6 +5149,7 @@ struct VoiceWidget {
     delete_voiceprint_button: MouseStateHandle,
     context_correction_toggle: SwitchStateHandle,
     context_biasing_toggle: SwitchStateHandle,
+    remove_fillers_toggle: SwitchStateHandle,
     correction_buttons: CorrectionButtons,
 }
 
@@ -5595,6 +5617,15 @@ impl VoiceWidget {
     ) {
         use crate::voice::context_correction::VoiceCorrections;
 
+        column.add_child(render_ai_setting_toggle::<VoiceRemoveFillers>(
+            "Remove Filler Words",
+            WarpAgentPageAction::ToggleVoiceRemoveFillers,
+            *AISettings::as_ref(app).voice_remove_fillers,
+            true,
+            self.remove_fillers_toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        ));
         column.add_child(render_ai_setting_toggle::<VoiceContextBiasing>(
             "Favor On-Screen Terms While Transcribing",
             WarpAgentPageAction::ToggleVoiceContextBiasing,
@@ -6217,7 +6248,7 @@ impl SettingsWidget for VoiceWidget {
     type View = WarpAgentPageView;
 
     fn search_terms(&self) -> &str {
-        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai engine rate speaking silence idle timeout turn off code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn acceleration neural engine gpu cpu core ml pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum apple macos system voices premium enhanced personal"
+        "voice agent oz ai a.i. speech input natural language talk english spanish french german estonian finnish model download parakeet conversation speak speech output tts kokoro tiny-voca pocket kyutai engine rate speaking silence idle timeout turn off code summaries recognize my voice speaker voiceprint enroll sensitivity noise denoise correction corrections dictionary pin vocabulary end-of-turn end of turn acceleration neural engine gpu cpu core ml pause cut off smart turn biasing bias favor on-screen terms microphone mic mode voice isolation wide spectrum apple macos system voices premium enhanced personal filler words uh um disfluency stutter repeat"
     }
 
     fn should_render(&self, app: &AppContext) -> bool {

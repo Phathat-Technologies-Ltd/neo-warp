@@ -1,11 +1,15 @@
 use std::sync::{Arc, Mutex};
 
 use crate::bias::{BiasConfig, BiasTerm, BoostingTree};
+use crate::filler::FillerSuppression;
 use crate::tdt::{Acceleration, FP16_ENCODER_FILE, TdtModel};
 use crate::{Audio, ModelStore, TranscribeError, Transcriber};
 
 /// Asks, before each transcription, where the encoder should run.
 pub type AccelerationSource = Arc<dyn Fn() -> Acceleration + Send + Sync>;
+
+/// Asks, before each transcription, whether the decoder should suppress filler words.
+pub type FillerSource = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// NVIDIA Parakeet TDT 0.6B v3 on ONNX Runtime. Loads the model from its [`ModelStore`] on
 /// first use and keeps it loaded; if the files are removed it unloads and reports
@@ -18,6 +22,7 @@ pub struct ParakeetTranscriber {
     /// The boosting tree of the last term list, rebuilt only when the list changes.
     bias: Mutex<Option<(Vec<BiasTerm>, Arc<BoostingTree>)>>,
     bias_config: BiasConfig,
+    suppress_fillers: FillerSource,
 }
 
 /// What a model was loaded with.
@@ -49,7 +54,14 @@ impl ParakeetTranscriber {
             acceleration: Arc::new(Acceleration::default),
             bias: Mutex::new(None),
             bias_config,
+            suppress_fillers: Arc::new(|| false),
         }
+    }
+
+    /// Suppresses filler words in the decoder whenever `suppress_fillers` says so.
+    pub fn with_filler_suppression(mut self, suppress_fillers: FillerSource) -> Self {
+        self.suppress_fillers = suppress_fillers;
+        self
     }
 
     /// Reloads the model whenever `acceleration` changes.
@@ -58,7 +70,12 @@ impl ParakeetTranscriber {
         self
     }
 
-    fn run(&self, audio: &Audio, terms: &[BiasTerm]) -> Result<String, TranscribeError> {
+    fn run(
+        &self,
+        audio: &Audio,
+        language: Option<&str>,
+        terms: &[BiasTerm],
+    ) -> Result<String, TranscribeError> {
         let mut model = self
             .model
             .lock()
@@ -90,6 +107,9 @@ impl ParakeetTranscriber {
         let Some((model, _)) = model.as_mut() else {
             return Err(TranscribeError::ModelNotInstalled);
         };
+        model.set_filler_suppression(
+            (self.suppress_fillers)().then(|| FillerSuppression::for_language(language)),
+        );
         let tree = (!terms.is_empty()).then(|| self.tree(terms));
         let decoded = model.transcribe(&audio.samples, tree.as_deref())?;
         Ok(decoded.text)
@@ -109,21 +129,17 @@ impl ParakeetTranscriber {
 }
 
 impl Transcriber for ParakeetTranscriber {
-    fn transcribe(
-        &self,
-        audio: &Audio,
-        _language: Option<&str>,
-    ) -> Result<String, TranscribeError> {
-        self.run(audio, &[])
+    fn transcribe(&self, audio: &Audio, language: Option<&str>) -> Result<String, TranscribeError> {
+        self.run(audio, language, &[])
     }
 
     fn transcribe_with_context(
         &self,
         audio: &Audio,
-        _language: Option<&str>,
+        language: Option<&str>,
         terms: &[BiasTerm],
     ) -> Result<String, TranscribeError> {
-        self.run(audio, terms)
+        self.run(audio, language, terms)
     }
 
     fn is_ready(&self) -> bool {

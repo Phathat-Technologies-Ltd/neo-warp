@@ -4,6 +4,8 @@ pub mod context_correction;
 pub mod conversation;
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 mod conversation_text;
+#[cfg(not(target_family = "wasm"))]
+pub mod disfluency;
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
 pub mod footer_controls;
 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]

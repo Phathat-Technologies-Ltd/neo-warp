@@ -1,0 +1,100 @@
+D	So uh what gi give me a brief on what did we look on.	Give me a brief on what did we look on.
+D	Um, can you list the files in this directory?	Can you list the files in this directory?
+D	Uh, run the the tests again.	Run the tests again.
+D	Go to the, uh, open the file main.rs.	Open the file main.rs.
+D	I want to, um, I want to check the git status.	I want to check the git status.
+D	Can you, like, explain what this error means?	Can you explain what this error means?
+D	Hmm, show me the last five commits.	Show me the last five commits.
+D	What what is using port 8080?	What is using port 8080?
+D	Delete the the build folder, uh, the target folder.	Delete the target folder.
+D	Er, how do I rebase onto master?	How do I rebase onto master?
+D	Please st start the dev server.	Please start the dev server.
+D	You know, I think the config file is wrong.	I think the config file is wrong.
+D	Make a new branch called, um, feature login.	Make a new branch called feature login.
+D	Uh, uh, what's taking up all the disk space?	What's taking up all the disk space?
+D	Can you fi find where the function is defined?	Can you find where the function is defined?
+D	Check the logs for, I mean, check the error logs.	Check the error logs.
+D	So, um, why did the build fail?	So why did the build fail?
+D	Install the, uh, the latest version of node.	Install the latest version of node.
+D	Show me, show me the diff for this file.	Show me the diff for this file.
+D	Ah, never mind, just commit everything.	Never mind, just commit everything.
+D	Open the read the readme and summarize it.	Read the readme and summarize it.
+D	I need to, uh, push this to the remote.	I need to push this to the remote.
+D	Um, how many lines are in, uh, this file?	How many lines are in this file?
+D	What does the, um, the dash r flag do?	What does the dash r flag do?
+D	Run cargo, uh, cargo check on the app crate.	Run cargo check on the app crate.
+D	It's like, it's really slow when I scroll.	It's really slow when I scroll.
+D	Can you can you help me write a test for this?	Can you help me write a test for this?
+D	Find all the, uh, TypeScript files in src.	Find all the TypeScript files in src.
+D	Eh, kill the process on port 3000.	Kill the process on port 3000.
+D	Why is the, why is the test flaky?	Why is the test flaky?
+D	Summarize the PR, um, the pull request description.	Summarize the pull request description.
+D	Let's, uh, let's refactor this function.	Let's refactor this function.
+D	Add a, add a comment explaining the loop.	Add a comment explaining the loop.
+D	Uhm, what's the difference between merge and rebase?	What's the difference between merge and rebase?
+D	Copy the file to, no, move the file to the docs folder.	Move the file to the docs folder.
+D	I mean, the server keeps crashing on startup.	The server keeps crashing on startup.
+D	Rename the variable fr from foo to bar.	Rename the variable from foo to bar.
+D	Show me the the environment variables.	Show me the environment variables.
+D	Um, uh, can you check my Docker containers?	Can you check my Docker containers?
+D	What's the, you know, the command to undo the last commit?	What's the command to undo the last commit?
+D	Write a script that, uh, backs up the database.	Write a script that backs up the database.
+D	Look at the, look at the stack trace and tell me what's wrong.	Look at the stack trace and tell me what's wrong.
+D	Explain how the, um, authentication works in this repo.	Explain how the authentication works in this repo.
+D	Hmm, list the branches, the remote branches.	List the remote branches.
+D	Can you up update the dependencies?	Can you update the dependencies?
+D	Uh, so, what does this regex match?	What does this regex match?
+D	Create a file called, uh, notes.txt.	Create a file called notes.txt.
+D	Search the code for, um, TODO comments.	Search the code for TODO comments.
+D	Why does it, like, take forever to compile?	Why does it take forever to compile?
+D	Stash my changes and, uh, switch to main.	Stash my changes and switch to main.
+D	Grep for the word, uh, timeout in the logs folder.	Grep for the word timeout in the logs folder.
+D	The tests, the unit tests are failing on CI.	The unit tests are failing on CI.
+D	Fix the, er, fix the type error in parser.rs.	Fix the type error in parser.rs.
+D	Um, I'd like to see the memory usage.	I'd like to see the memory usage.
+D	Ssh into the, uh, staging server.	Ssh into the staging server.
+D	Please, um, please format the code.	Please format the code.
+D	Tell me what what changed since yesterday.	Tell me what changed since yesterday.
+D	Uh, can you, you know, clean up the imports?	Can you clean up the imports?
+D	Build it in, uh, release mode.	Build it in release mode.
+D	Go back to the, go back to the previous directory.	Go back to the previous directory.
+F	Do you know where the config file is?	Do you know where the config file is?
+F	I'd like to see the git log.	I'd like to see the git log.
+F	Add a retry so that the request doesn't fail.	Add a retry so that the request doesn't fail.
+F	Run git commit -m "fix the the typo".	Run git commit -m "fix the the typo".
+F	List files with ls -la.	List files with ls -la.
+F	What is the difference between this and that?	What is the difference between this and that?
+F	I like the new layout, keep it.	I like the new layout, keep it.
+F	Show me how the cache works.	Show me how the cache works.
+F	Make it look like the design mockup.	Make it look like the design mockup.
+F	I mean what I said, delete the branch.	I mean what I said, delete the branch.
+F	So far the tests pass.	So far the tests pass.
+F	Open src/main.rs and fix the import.	Open src/main.rs and fix the import.
+F	Check whether the server is up.	Check whether the server is up.
+F	Run npm run build.	Run npm run build.
+F	Install it with pip install requests.	Install it with pip install requests.
+F	Count the lines in each file.	Count the lines in each file.
+F	You know the drill, run the linter.	You know the drill, run the linter.
+F	Why is this so slow?	Why is this so slow?
+F	It works, but it feels like a hack.	It works, but it feels like a hack.
+F	Find files that end in .log and delete them.	Find files that end in .log and delete them.
+F	Use rm -rf on the build directory.	Use rm -rf on the build directory.
+F	Can you tell me what this function returns?	Can you tell me what this function returns?
+F	Refactor the code so it is easier to test.	Refactor the code so it is easier to test.
+F	Do you know how to undo a rebase?	Do you know how to undo a rebase?
+F	Write a function that checks if a number is prime.	Write a function that checks if a number is prime.
+F	Set the timeout to 30 seconds.	Set the timeout to 30 seconds.
+F	I would like a summary of the changes.	I would like a summary of the changes.
+F	Kill the process with kill -9 1234.	Kill the process with kill -9 1234.
+F	That that is the problem is obvious now.	That that is the problem is obvious now.
+F	Push the branch to origin.	Push the branch to origin.
+F	Where did I put the backup script?	Where did I put the backup script?
+F	Start the server on port 8080.	Start the server on port 8080.
+F	Tell me more about the error handling.	Tell me more about the error handling.
+F	Run cd .. and then ls.	Run cd .. and then ls.
+F	Things like logging and metrics should stay.	Things like logging and metrics should stay.
+F	Echo hello hello into the file.	Echo hello hello into the file.
+F	Is there a way to speed up the build?	Is there a way to speed up the build?
+F	Summarize what we did today.	Summarize what we did today.
+F	Do you know if the tests cover this?	Do you know if the tests cover this?
+F	Check out the main branch and pull.	Check out the main branch and pull.

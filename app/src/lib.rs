@@ -2330,6 +2330,7 @@ pub(crate) fn initialize_app(
         voice::local_model::set_transcription_acceleration(
             &settings.voice_transcription_acceleration,
         );
+        voice::disfluency::set_enabled(*settings.voice_remove_fillers);
         let engine = voice::local_model::SpeechOutputEngine::from_setting(
             &settings.conversation_speech_engine,
         );

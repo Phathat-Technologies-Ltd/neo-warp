@@ -26992,6 +26992,9 @@ impl View for Workspace {
         if *AISettings::as_ref(app).voice_smart_end_of_turn {
             context.set.insert(flags::SMART_END_OF_TURN_FLAG);
         }
+        if *AISettings::as_ref(app).voice_remove_fillers {
+            context.set.insert(flags::REMOVE_FILLER_WORDS_FLAG);
+        }
 
         if self
             .active_tab_pane_group()

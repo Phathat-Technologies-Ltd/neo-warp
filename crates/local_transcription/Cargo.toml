@@ -23,6 +23,9 @@ tiny_voca = ["dep:parakeet-rs"]
 speaker_id = ["dep:parakeet-rs"]
 # Detects the end of a speaker's turn with Smart Turn v3 on the same ONNX Runtime.
 smart_turn = ["dep:parakeet-rs"]
+# Removes restarts and context-dependent fillers from transcripts with a bundled BERT-mini tagger on
+# the same ONNX Runtime.
+disfluency = ["dep:parakeet-rs"]
 # Speaks with the macOS system voices through AVSpeechSynthesizer (no download; macOS only).
 apple = ["dep:block2", "dep:objc2", "dep:objc2-avf-audio", "dep:objc2-foundation"]
 # Suppresses background noise with RNNoise (pure Rust).
@@ -70,6 +73,14 @@ required-features = ["kokoro", "silero", "smart_turn"]
 [[example]]
 name = "tts_bench"
 required-features = ["kokoro", "pocket", "tiny_voca"]
+
+[[example]]
+name = "disfluency_eval"
+required-features = ["disfluency"]
+
+[[example]]
+name = "filler_eval"
+required-features = ["parakeet", "disfluency"]
 
 [[example]]
 name = "asr_bench"

@@ -471,6 +471,20 @@ impl EditorView {
                     );
                     #[cfg(not(target_family = "wasm"))]
                     let bias_terms = self.voice_bias_terms_for_request();
+                    #[cfg(not(target_family = "wasm"))]
+                    let protected_terms: Vec<String> = self
+                        .voice_bias_terms
+                        .iter()
+                        .map(|t| t.text.clone())
+                        .collect();
+                    #[cfg(not(target_family = "wasm"))]
+                    crate::voice::disfluency::set_enabled(
+                        *AISettings::as_ref(ctx).voice_remove_fillers,
+                    );
+                    #[cfg(not(target_family = "wasm"))]
+                    if crate::voice::disfluency::is_enabled() {
+                        crate::voice::disfluency::preload();
+                    }
                     #[cfg(target_family = "wasm")]
                     let bias_terms = Vec::new();
                     if !state.lifecycle.begin_transcribing() {
@@ -483,9 +497,14 @@ impl EditorView {
 
                     state.transcription_handle = Some(ctx.spawn(
                         async move {
-                            transcriber
+                            let result = transcriber
                                 .transcribe(wav_base64, language, bias_terms, team_scope)
-                                .await
+                                .await;
+                            #[cfg(not(target_family = "wasm"))]
+                            let result = result.map(|text| {
+                                crate::voice::disfluency::clean_final(&text, &protected_terms)
+                            });
+                            result
                         },
                         EditorView::apply_transcribed_voice_input,
                     ));
