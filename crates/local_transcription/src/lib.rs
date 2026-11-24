@@ -54,8 +54,9 @@ pub use audio::{Audio, decode_wav};
 pub use disfluency_onnx::DisfluencyTagger;
 pub use model::{
     DownloadError, DownloadProgress, ModelBundle, ModelFile, ModelSpec, ModelStatus, ModelStore,
-    ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8, parakeet_fp16_encoder,
-    parakeet_tdt_0_6b_v3, pocket_tts_int8, silero_vad_v5, smart_turn_v3_2, tiny_voca,
+    ProgressThrottle, campplus_zh_en_advanced, kokoro_82m_v1_int8, parakeet_coreml_encoder,
+    parakeet_fp16_encoder, parakeet_tdt_0_6b_v3, pocket_tts_int8, silero_vad_v5, smart_turn_v3_2,
+    tiny_voca,
 };
 #[cfg(feature = "parakeet")]
 pub use parakeet::{AccelerationSource, FillerSource, ParakeetTranscriber};

@@ -5,7 +5,8 @@
 //!  <model dir> <clip.wav>...`
 //!
 //! `ACCEL=cpu|auto` picks the execution provider (`auto` needs `--features coreml` and
-//! `encoder-model.fp16.onnx` in the model dir, and waits for Core ML to load), `THREADS` the CPU
+//! `encoder-model.fp16.mlmodelc` or `encoder-model.fp16.onnx` in the model dir, and waits for Core
+//! ML to load), `THREADS` the CPU
 //! intra-op threads, `POLICY=fixed` the old fixed 600 ms partial schedule, `FINAL_ONLY=1` skips the
 //! session (for accuracy runs), and `COMPARE=1` only compares each clip's encoder output and text
 //! with the CPU encoder's.

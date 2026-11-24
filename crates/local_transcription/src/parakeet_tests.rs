@@ -40,10 +40,10 @@ fn reports_missing_model() {
 }
 
 #[test]
-fn reloads_when_the_fp16_encoder_arrives_only_under_auto() {
-    let with = |acceleration, fp16_encoder| LoadedWith {
+fn reloads_when_the_accelerated_encoder_arrives_only_under_auto() {
+    let with = |acceleration, accelerated_encoder| LoadedWith {
         acceleration,
-        fp16_encoder,
+        accelerated_encoder,
     };
     let auto = Acceleration::Auto;
     let cpu = Acceleration::Cpu;

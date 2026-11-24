@@ -227,8 +227,9 @@ fn neural_engine_model_lands_in_the_speech_model_dir() {
     assert_eq!(store.model_dir(), model_store().model_dir());
     assert_eq!(
         store.spec().files[0].name,
-        local_transcription::tdt::FP16_ENCODER_FILE
+        format!("{}.tar", local_transcription::tdt::COREML_ENCODER_DIR)
     );
+    assert!(store.spec().files[0].unpack);
     assert_eq!(
         AcceleratedSpeechKind::consent_prompt("", store.spec().total_size()),
         "Download the faster Apple Neural Engine speech model (1.2 GB)? Voice input keeps working \
