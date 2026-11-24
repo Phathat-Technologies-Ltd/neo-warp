@@ -24959,6 +24959,19 @@ impl TypedActionView for Workspace {
                 crate::voice::local_model::AcceleratedSpeechModel::handle(ctx)
                     .update(ctx, |model, ctx| model.cancel_download(ctx));
             }
+            DownloadVoiceModels => {
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    let window_id = ctx.window_id();
+                    crate::voice::setup::VoiceSetup::handle(ctx)
+                        .update(ctx, |setup, ctx| setup.download(window_id, ctx));
+                }
+            }
+            CancelVoiceModelsDownload => {
+                #[cfg(not(target_family = "wasm"))]
+                crate::voice::setup::VoiceSetup::handle(ctx)
+                    .update(ctx, |setup, ctx| setup.cancel(ctx));
+            }
             ToggleVoiceConversation => {
                 #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
                 {

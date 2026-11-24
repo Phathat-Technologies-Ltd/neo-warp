@@ -2336,6 +2336,10 @@ pub(crate) fn initialize_app(
         );
         voice::local_model::SpeechOutputModel::new(engine)
     });
+    #[cfg(not(target_family = "wasm"))]
+    ctx.add_singleton_model(voice::setup::VoiceSetup::new);
+    #[cfg(all(not(target_family = "wasm"), feature = "voice_input"))]
+    ctx.add_singleton_model(voice::setup::VoiceAutoStart::new);
 
     let notebooks = cloud_objects
         .iter()

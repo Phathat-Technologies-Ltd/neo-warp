@@ -31,6 +31,7 @@ use super::local_model::{
     LocalVoiceModelEvent, SpeechOutputEngine, SpeechOutputModel, ensure_speech_output_ready,
     is_conversation_enabled, speech_output_store,
 };
+use super::setup::{VoiceEntry, ensure_voice_ready};
 use crate::ai::agent::api::VOICE_CONVERSATION_ACTIVE;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIAgentActionId, CancellationReason};
@@ -913,10 +914,10 @@ impl Entity for ConversationSession {
 
 impl SingletonEntity for ConversationSession {}
 
-/// Turns conversation mode on or off. Turning it on first makes sure the speech output model is
-/// installed (asking the user to download it) and turns on hands-free input.
-/// Turns conversation mode on or off. `surface` is the terminal surface whose controls were
-/// used: while conversation mode runs in another pane, it moves there instead of stopping.
+/// Turns conversation mode on or off. Turning it on first makes sure every model it needs is
+/// installed, asking once to download the missing ones and starting when they're in, and turns on
+/// hands-free input. `surface` is the terminal surface whose controls were used: while
+/// conversation mode runs in another pane, it moves there instead of stopping.
 pub fn toggle_conversation(window_id: WindowId, surface: Option<EntityId>, ctx: &mut AppContext) {
     if !is_conversation_enabled() {
         return;
@@ -934,7 +935,7 @@ pub fn toggle_conversation(window_id: WindowId, surface: Option<EntityId>, ctx: 
         }
         return;
     }
-    if !ensure_speech_output_ready(window_id, ctx) {
+    if !ensure_voice_ready(VoiceEntry::Conversation, window_id, ctx) {
         return;
     }
     let started_hands_free = !HandsFreeSession::as_ref(ctx).is_active();

@@ -63,6 +63,12 @@ pub fn register_voice_models_for_tests(app: &mut warpui::App) {
                 voice::local_model::SpeechOutputModel::new(engine)
             });
         }
+        if !ctx.has_singleton_model::<voice::setup::VoiceSetup>() {
+            ctx.add_singleton_model(voice::setup::VoiceSetup::new);
+        }
+        if !ctx.has_singleton_model::<voice::setup::VoiceAutoStart>() {
+            ctx.add_singleton_model(voice::setup::VoiceAutoStart::new);
+        }
         if ctx.has_singleton_model::<crate::ai::blocklist::BlocklistAIHistoryModel>()
             && !ctx.has_singleton_model::<voice::conversation::ConversationSession>()
         {

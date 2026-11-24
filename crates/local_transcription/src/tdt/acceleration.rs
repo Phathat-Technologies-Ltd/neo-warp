@@ -45,6 +45,18 @@ pub fn has_accelerated_encoder(dir: &Path) -> bool {
         .any(|route| route.model(dir).exists())
 }
 
+/// Whether this macOS loads the precompiled Core ML encoder package.
+pub fn supports_coreml_package() -> bool {
+    #[cfg(all(feature = "coreml", target_os = "macos"))]
+    {
+        package::is_supported()
+    }
+    #[cfg(not(all(feature = "coreml", target_os = "macos")))]
+    {
+        false
+    }
+}
+
 /// Which routes to Core ML a load tries, and the records that rule them out.
 #[cfg_attr(not(all(feature = "coreml", target_os = "macos")), allow(dead_code))]
 mod route {

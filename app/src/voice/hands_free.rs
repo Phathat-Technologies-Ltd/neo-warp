@@ -30,7 +30,8 @@ use super::footer_controls::DictationMode;
 use super::hands_free_controller::{
     HandsFreeController, HandsFreeEffect, HandsFreeOptions, HandsFreeState, VoiceTarget,
 };
-use super::local_model::{ensure_ready_to_record, is_hands_free_enabled};
+use super::local_model::is_hands_free_enabled;
+use super::setup::{VoiceEntry, ensure_voice_ready};
 use super::speaker_gate::{AudioTap, GateStep, SpeakerGate, Verdict, VerifyRequest};
 use super::speaker_id::SpeakerProfile;
 use crate::server::server_api::ServerApiProvider;
@@ -940,7 +941,8 @@ impl Entity for HandsFreeSession {
 impl SingletonEntity for HandsFreeSession {}
 
 /// Turns hands-free voice input on or off. Turning it on first makes sure the models are
-/// installed, asking the user to download them when they aren't.
+/// installed, asking the user to download them when they aren't; hands-free then starts once
+/// they are.
 pub fn toggle_hands_free(window_id: WindowId, ctx: &mut AppContext) {
     if !is_hands_free_enabled() {
         return;
@@ -950,7 +952,7 @@ pub fn toggle_hands_free(window_id: WindowId, ctx: &mut AppContext) {
         session.update(ctx, |session, ctx| session.stop(ctx));
         return;
     }
-    if !ensure_ready_to_record(window_id, ctx) {
+    if !ensure_voice_ready(VoiceEntry::HandsFree, window_id, ctx) {
         return;
     }
     if let Err(message) = session.update(ctx, |session, ctx| session.start(window_id, ctx)) {

@@ -464,6 +464,19 @@ impl<K: VoiceModelKind> VoiceModel<K> {
         self.store.display_name()
     }
 
+    /// The models this downloads, in download order.
+    pub fn bundle(&self) -> &ModelBundle {
+        &self.store
+    }
+
+    /// Starts the download without a toast of its own, for a caller that shows the progress.
+    pub fn download_quietly(&mut self, ctx: &mut ModelContext<Self>) {
+        if let Some(window_id) = self.toast_window.take() {
+            remove_toast::<K>(window_id, ctx);
+        }
+        self.apply(ModelEvent::DownloadRequested, ctx);
+    }
+
     #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
     /// Records the user's attempt to record and says whether recording can go ahead.
     pub fn request_recording(&mut self, ctx: &mut ModelContext<Self>) -> RecordingReadiness {
@@ -494,7 +507,7 @@ impl<K: VoiceModelKind> VoiceModel<K> {
 
     /// Notices installed files that were deleted, e.g. outside the app or with a model sharing
     /// their directory.
-    fn sync_with_disk(&mut self, ctx: &mut ModelContext<Self>) {
+    pub(super) fn sync_with_disk(&mut self, ctx: &mut ModelContext<Self>) {
         if self.state.is_installed() && !self.store.is_installed() {
             self.apply(ModelEvent::Loaded(self.store.status()), ctx);
         }
@@ -508,7 +521,11 @@ impl<K: VoiceModelKind> VoiceModel<K> {
 
     /// Shows the running download's progress toast in `window_id`.
     #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
-    fn show_progress_toast(&mut self, window_id: WindowId, ctx: &mut ModelContext<Self>) {
+    pub(super) fn show_progress_toast(
+        &mut self,
+        window_id: WindowId,
+        ctx: &mut ModelContext<Self>,
+    ) {
         if let ModelState::Downloading(progress) = self.state {
             if let Some(previous) = self.toast_window.replace(window_id) {
                 if previous != window_id {
@@ -728,19 +745,18 @@ pub fn local_model_state(app: &AppContext) -> Option<ModelState> {
     is_local_voice_enabled().then(|| LocalVoiceModel::as_ref(app).state().clone())
 }
 
-/// Checks that the local model can transcribe before a recording starts. When it can't, tells the
-/// user why in a toast (offering the download when it isn't installed) and returns
-/// `false`. Always `true` when voice isn't transcribed locally.
+/// Checks that the models push-to-talk needs are installed before a recording starts, offering
+/// to download them when they aren't. Always `true` when voice isn't transcribed locally.
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
 pub fn ensure_ready_to_record(window_id: WindowId, ctx: &mut AppContext) -> bool {
-    if !is_local_voice_enabled() {
-        return true;
-    }
-    let ready = ensure_model_ready::<SpeechInputKind>(window_id, ctx);
-    if ready {
-        offer_accelerated_speech_model(window_id, ctx);
-    }
-    ready
+    super::setup::ensure_voice_ready(super::setup::VoiceEntry::PushToTalk, window_id, ctx)
+}
+
+/// Whether this Mac runs the Neural Engine speech encoder package: Apple silicon on macOS 15 or
+/// later.
+pub fn supports_neural_engine_package() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        && local_transcription::tdt::supports_coreml_package()
 }
 
 /// Whether to offer the Neural Engine speech encoder: once, with acceleration on Auto, on Apple
@@ -767,12 +783,12 @@ fn should_offer_accelerated_speech_model(
 /// Asks once whether to download the Neural Engine speech encoder. Transcription stays on the CPU
 /// model meanwhile.
 #[cfg_attr(not(feature = "voice_input"), allow(dead_code))]
-fn offer_accelerated_speech_model(window_id: WindowId, ctx: &mut AppContext) {
+pub(super) fn offer_accelerated_speech_model(window_id: WindowId, ctx: &mut AppContext) {
     let accelerated = AcceleratedSpeechModel::handle(ctx);
     accelerated.update(ctx, |model, ctx| model.sync_with_disk(ctx));
     let offer = should_offer_accelerated_speech_model(
         transcription_acceleration(),
-        cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        supports_neural_engine_package(),
         LocalVoiceModel::as_ref(ctx).state().is_installed(),
         accelerated.as_ref(ctx).state(),
         *AISettings::as_ref(ctx).voice_neural_engine_model_offered,
