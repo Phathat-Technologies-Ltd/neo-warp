@@ -1,3 +1,27 @@
+<h1 align="center">neo-warp</h1>
+
+<p align="center">
+  <b>Warp for organizations: your own sign-in, your own models, no Warp backend.</b><br>
+  <a href="https://github.com/Phathat-Technologies-Ltd/neo-warp/releases/latest">Download for macOS (Apple silicon)</a>
+</p>
+
+neo-warp is a fork of [Warp](https://github.com/warpdotdev/warp). It signs in through your organization's identity provider and runs the agent in an embedded server on your Mac, using the model providers you connect (Claude, ChatGPT, Anthropic, Cerebras, OpenAI-compatible endpoints). Nothing is sent to Warp's servers.
+
+**Highlights**
+- Organization sign-in (OIDC), with features that need Warp's cloud turned off and hidden.
+- Agent with your choice of model, MCP servers per session, and steerable long-running commands.
+- Local voice: dictation and hands-free conversation with on-device speech recognition (Apple Neural Engine on macOS 15+), filler-word removal, echo cancellation, and optional voice recognition.
+- Session recordings, history filters, and AI next-command suggestions.
+
+**Install**
+1. Download the latest `.dmg` from [Releases](https://github.com/Phathat-Technologies-Ltd/neo-warp/releases/latest), open it, and drag **neo-warp** onto **Applications**. Builds are signed and notarized.
+2. Get `organization.toml` from your administrator and place it at `/Library/Application Support/Warp/organization.toml`.
+3. Launch neo-warp, sign in, and connect a model when prompted (or type `/api-keys`).
+
+neo-warp is not affiliated with or endorsed by Warp (Denver Technologies, Inc.). Warp is open source under [AGPL-3.0](LICENSE-AGPL) and [MIT](LICENSE-MIT), and neo-warp keeps those licenses. The original Warp README follows.
+
+---
+
 <a href="https://www.warp.dev">
     <img width="1024" alt="Warp Agentic Development Environment product preview" src="https://github.com/user-attachments/assets/9976b2da-2edd-4604-a36c-8fd53719c6d4" />
 </a>
